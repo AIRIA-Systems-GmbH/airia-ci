@@ -64,12 +64,31 @@ runs:
           exit 0
         fi
         run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
-        gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
-          --jq '.jobs[] | select(.status == "completed")
-                | [.id, .name, .conclusion,
-                   ([.steps[]? | select(.conclusion == "failure") | .name] | join("; "))]
-                | @tsv' > "$OUT/jobs.tsv"
-        head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)"
+        # This step is context for a Claude job, never a gate: if it fails, every
+        # later step of the caller's job is skipped and the Claude run silently
+        # never happens. So a failed lookup still writes jobs.md, saying why.
+        if ! gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
+               --jq '.jobs[] | select(.status == "completed")
+                     | [.id, .name, .conclusion,
+                        ([.steps[]? | select(.conclusion == "failure") | .name] | join("; "))]
+                     | @tsv' > "$OUT/jobs.tsv" 2> "$OUT/jobs.err" \
+           || ! head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; then
+          {
+            echo "# CI results — run $run_url"
+            echo
+            echo "**The run's jobs could not be listed** (gh api exited non-zero), so there are no CI results to read. Run the gates yourself, and say that you did."
+            echo
+            echo '```'
+            cat "$OUT/jobs.err"
+            echo '```'
+          } > "$index"
+          rm -f "$OUT/jobs.tsv" "$OUT/jobs.err"
+          echo "::warning title=CI results::the jobs of run $RUN_ID could not be listed"
+          echo "collected=0" >> "$GITHUB_OUTPUT"
+          cat "$index" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        rm -f "$OUT/jobs.err"
         {
           echo "# CI results — run $run_url"
           echo
