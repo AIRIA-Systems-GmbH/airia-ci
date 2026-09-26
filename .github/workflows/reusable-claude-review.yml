@@ -35,6 +35,7 @@ name: Claude Code Review (shared)
 #         Bash(cargo test:*)
 #     secrets:
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#       FRAMEWORK_READ_TOKEN: ${{ secrets.AIRIA_FRAMEWORK_READ_TOKEN }}  # optional
 #
 # `always()` because a red gate is review input: a bare `needs:` reports this
 # job SKIPPED the moment any gate reds, and a skipped review is invisible. The
@@ -135,10 +136,18 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      FRAMEWORK_READ_TOKEN:
+        description: >-
+          Optional. Handed to the caller's claude-toolchain action as its
+          `framework-token` input, for a toolchain that checks out the private
+          AIRIA-framework as a sibling. Omit it when the toolchain needs none.
+        required: false
 
 jobs:
   claude-review:
     runs-on: [self-hosted, linux, x64, thor]
+    env:
+      HAS_FRAMEWORK_TOKEN: ${{ secrets.FRAMEWORK_READ_TOKEN != '' }}
     timeout-minutes: 45
     permissions:
       contents: read # the push boundary: `github_token` below is this token
@@ -174,9 +183,23 @@ jobs:
           fetch-depth: 0
 
       # Optional, by convention: the CALLER's own toolchain action.
+      # Two steps rather than one, so a toolchain that declares no
+      # `framework-token` input is never handed one (an undeclared input is an
+      # "Unexpected input" warning on every run). The secret is tested through
+      # env because `secrets` is not readable in a step's `if:`.
       - name: Provision the CI toolchain
-        if: steps.once.outputs.review == 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        if: >-
+          steps.once.outputs.review == 'true' && env.HAS_FRAMEWORK_TOKEN != 'true'
+          && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
         uses: ./.github/actions/claude-toolchain
+
+      - name: Provision the CI toolchain (with the framework token)
+        if: >-
+          steps.once.outputs.review == 'true' && env.HAS_FRAMEWORK_TOKEN == 'true'
+          && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        uses: ./.github/actions/claude-toolchain
+        with:
+          framework-token: ${{ secrets.FRAMEWORK_READ_TOKEN }}
 
       - name: Collect the merge gate's results
         if: steps.once.outputs.review == 'true'
