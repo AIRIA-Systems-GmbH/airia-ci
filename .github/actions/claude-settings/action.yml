@@ -1,0 +1,150 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Claude settings
+description: >-
+  Compose the Claude Code settings file for a shared Claude job: the one
+  permission policy both the automatic review and the @claude responder use,
+  plus the caller's extra-allow / extra-deny. Writes a JSON file whose path
+  claude-code-action's `settings` input accepts.
+
+# ONE POLICY, TWO PROFILES. Both jobs run on the Thor production host, so
+# Bash is an ALLOWLIST in both, never a bare `Bash`: a rule matches the
+# command TEXT Claude writes, so a deny list over a general shell is beaten
+# by another spelling of the same program (`printenv` for `env`,
+# `/usr/bin/curl`, `uv run python3 -c` — AIRIA-framework PR #746's review
+# demonstrated each). Under an allowlist those spellings are simply not
+# allowed, and a headless run has nobody to approve them.
+#
+#   review   read-only: the gate runners and read-only commands; no Write/Edit
+#   respond  the review set, plus Write/Edit and git add/commit/push, because
+#            @claude changes code
+#
+# The deny list still names the escape hatches, because a deny beats an allow:
+# an `extra-allow` cannot reopen them by accident. `extra-allow` may not grant
+# a bare `Bash`.
+#
+# RESIDUAL RISK, stated rather than hidden: an allowed gate runner (`pytest`,
+# `cargo test`) executes the repository's code — and `respond` can WRITE that
+# code first. The allowlist narrows what injected text can steer Claude into;
+# it does not isolate the job from the host. Only a container or a
+# non-production runner does, and that is true of every CI job on this pool.
+
+inputs:
+  profile:
+    description: "`review` or `respond`."
+    required: true
+  extra-allow:
+    description: Extra allow rules, one per line, in Claude Code's rule syntax.
+    required: false
+    default: ""
+  extra-deny:
+    description: Extra deny rules, one per line, in Claude Code's rule syntax.
+    required: false
+    default: ""
+
+outputs:
+  path:
+    description: The composed settings file.
+    value: ${{ steps.compose.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compose the Claude settings
+      id: compose
+      shell: bash
+      env:
+        PROFILE: ${{ inputs.profile }}
+        EXTRA_ALLOW: ${{ inputs.extra-allow }}
+        EXTRA_DENY: ${{ inputs.extra-deny }}
+      run: |
+        out="${RUNNER_TEMP}/claude-settings-${PROFILE}.json"
+        python3 - "${out}" <<'PY'
+        import json, os, sys
+
+        READ = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+        BASH_READ = [
+            "git diff", "git log", "git show", "git status", "git blame",
+            "git ls-files", "git grep", "git rev-parse", "git merge-base",
+            "gh pr view", "gh pr diff", "gh pr checks", "gh run view",
+            "cat", "head", "tail", "ls", "wc", "grep", "rg", "sort", "uniq",
+            "cut", "diff", "jq", "cd",
+        ]
+        GATES = [
+            f"uv run {sync}{tool}"
+            for tool in ("pytest", "ruff", "pyright", "mypy", "lint-imports", "reuse")
+            for sync in ("", "--no-sync ")
+        ]
+        WRITE = ["Write", "Edit"]
+        BASH_WRITE = ["git add", "git commit", "git push", "git mv", "git rm", "mkdir"]
+        DENY = [
+            # never, in either profile
+            "Bash(git push --force:*)", "Bash(git push -f:*)",
+            "Bash(git push --force-with-lease:*)", "Bash(git reset --hard:*)",
+            "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh release:*)",
+            "Bash(gh workflow:*)", "Bash(gh run rerun:*)", "Bash(gh run cancel:*)",
+            "Bash(gh secret:*)", "Bash(gh variable:*)", "Bash(gh repo:*)",
+            # escape hatches: already outside the allowlist, denied so no
+            # extra-allow can reopen them
+            "Bash(gh api:*)", "Bash(curl:*)", "Bash(wget:*)", "Bash(env:*)",
+            "Bash(printenv:*)", "Bash(sh -c:*)", "Bash(bash -c:*)",
+            "Bash(python -c:*)", "Bash(python3 -c:*)", "Bash(node -e:*)",
+            "Bash(uv run python:*)", "Bash(uv run python3:*)",
+            "Bash(uv run --no-sync python:*)", "Bash(uv run --no-sync python3:*)",
+            "Bash(uv run sh:*)", "Bash(uv run bash:*)",
+        ]
+        REVIEW_ONLY_DENY = [
+            "Write", "Edit", "NotebookEdit", "Agent", "Task",
+            "Bash(git push:*)", "Bash(git commit:*)",
+            "Bash(gh pr edit:*)", "Bash(gh pr ready:*)", "Bash(gh pr review:*)",
+            "Bash(gh pr comment:*)",
+        ]
+
+        def rules(var):
+            return [r.strip() for r in os.environ.get(var, "").splitlines() if r.strip()]
+
+        profile = os.environ["PROFILE"]
+        if profile not in ("review", "respond"):
+            sys.exit(f"profile must be review or respond, not {profile!r}")
+        extra_allow, extra_deny = rules("EXTRA_ALLOW"), rules("EXTRA_DENY")
+        if any(r in ("Bash", "Bash(*)", "Bash(:*)") for r in extra_allow):
+            sys.exit("extra-allow may not grant a bare Bash: list the gate commands instead")
+
+        allow = READ + [f"Bash({c}:*)" for c in BASH_READ + GATES] + ["Bash(pwd)"]
+        deny = list(DENY)
+        if profile == "respond":
+            allow += WRITE + [f"Bash({c}:*)" for c in BASH_WRITE]
+        else:
+            deny += REVIEW_ONLY_DENY
+        settings = {
+            "permissions": {"allow": allow + extra_allow, "deny": deny + extra_deny},
+            "sandbox": {"enabled": False},
+            "env": {
+                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                "BASH_DEFAULT_TIMEOUT_MS": "600000",
+                "BASH_MAX_TIMEOUT_MS": "1500000",
+            },
+        }
+        json.dump(settings, open(sys.argv[1], "w"), indent=2)
+        print(f"profile: {profile}")
+        print(f"allow rules: {len(settings['permissions']['allow'])} ({len(extra_allow)} from extra-allow)")
+        for rule in extra_allow:
+            print(f"+ {rule}")
+        print(f"deny rules: {len(settings['permissions']['deny'])} ({len(extra_deny)} from extra-deny)")
+        for rule in extra_deny:
+            print(f"- {rule}")
+        PY
+        echo "path=${out}" >> "$GITHUB_OUTPUT"
