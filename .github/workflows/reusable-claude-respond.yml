@@ -1,0 +1,321 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Claude (shared @claude responder)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AIRIA @claude RESPONDER, shared by every AIRIA repository, so it is
+# changed once rather than copied seven times. The caller is a short workflow:
+#
+#   on:
+#     issue_comment:               { types: [created] }
+#     pull_request_review_comment: { types: [created] }
+#     pull_request_review:         { types: [submitted] }
+#     issues:                      { types: [opened, assigned] }
+#   jobs:
+#     claude:
+#       permissions: { contents: read, pull-requests: write, issues: write,
+#                      id-token: write, actions: read }
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-respond.yml@ci-v2
+#       with:
+#         gate-workflow: ci.yml          # optional: the PR gate whose results to read
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# WHO MAY START IT. The job's `if:` below, not the caller: an `@claude` from an
+# OWNER, MEMBER or COLLABORATOR, on each of the four events, keyed on the
+# author of the comment / review / issue that carries the mention. It runs on
+# the Thor production host, so nobody else's text may start it.
+#
+# WHAT IT MAY RUN. The `respond` profile of the shared policy in the
+# claude-settings action: the review's Bash allowlist, plus Write/Edit and
+# git add/commit/push (never a force push). No bare `Bash`. Repository gates
+# outside the list come in through `extra-allow`; dangerous repository CLIs go
+# in `extra-deny`. The residual risk is stated in that action.
+#
+# SERVICES. A reusable workflow cannot take a `services:` block, so it offers
+# two slots, each started only when its image input is set (an empty image
+# starts no container): Postgres-compatible (`postgres-image`, e.g. TimescaleDB)
+# and Qdrant. Their addresses are exported as CI_POSTGRES_DSN and
+# CI_QDRANT_URL, and `job-env` maps them onto the repository's own names:
+#   job-env: |
+#     AIRIA_DATA_POSTGRES_DSN=$CI_POSTGRES_DSN
+#
+# WHICH CLAUDE. The claude-cli action's cached build, as the review uses.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      gate-workflow:
+        description: >-
+          The workflow file that gates PRs (e.g. `ci.yml`). On a PR, its run for
+          the head commit is collected for Claude to read. Empty: none.
+        required: false
+        type: string
+        default: ""
+      extra-allow:
+        description: Extra permission-allow rules, one per line (Claude Code rule syntax).
+        required: false
+        type: string
+        default: ""
+      extra-deny:
+        description: Extra permission-deny rules, one per line (Claude Code rule syntax).
+        required: false
+        type: string
+        default: ""
+      extra-prompt:
+        description: >-
+          Repository-specific sentences appended to the system prompt. No single
+          quotes: the prompt travels inside a single-quoted argument.
+        required: false
+        type: string
+        default: ""
+      job-env:
+        description: >-
+          Environment for the whole job, one KEY=VALUE per line. `$CI_POSTGRES_DSN`
+          and `$CI_QDRANT_URL` in a value are replaced by the service addresses;
+          nothing else is expanded.
+        required: false
+        type: string
+        default: ""
+      timeout-minutes:
+        description: Job timeout.
+        required: false
+        type: number
+        default: 45
+      postgres-image:
+        description: A Postgres-compatible image to run as a service. Empty starts none.
+        required: false
+        type: string
+        default: ""
+      postgres-user:
+        required: false
+        type: string
+        default: postgres
+      postgres-password:
+        description: A throwaway password for the service container, never a real credential.
+        required: false
+        type: string
+        default: postgres
+      postgres-db:
+        required: false
+        type: string
+        default: postgres
+      qdrant-image:
+        description: A Qdrant image to run as a service. Empty starts none.
+        required: false
+        type: string
+        default: ""
+      qdrant-api-key:
+        description: A throwaway API key for the service container.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      FRAMEWORK_READ_TOKEN:
+        description: >-
+          Optional. Handed to the caller's claude-toolchain action as its
+          `framework-token` input, for a toolchain that checks out the private
+          AIRIA-framework as a sibling.
+        required: false
+
+jobs:
+  claude:
+    if: >-
+      (github.event_name == 'issue_comment'
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review_comment'
+        && contains(github.event.comment.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      || (github.event_name == 'pull_request_review'
+        && contains(github.event.review.body, '@claude')
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+      || (github.event_name == 'issues'
+        && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
+        && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+    runs-on: [self-hosted, linux, x64, thor]
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write # the action exchanges an OIDC token for the Claude App token
+      actions: read # read the gate's results on a PR
+    env:
+      HAS_FRAMEWORK_TOKEN: ${{ secrets.FRAMEWORK_READ_TOKEN != '' }}
+    services:
+      postgres:
+        image: ${{ inputs.postgres-image }}
+        env:
+          POSTGRES_USER: ${{ inputs.postgres-user }}
+          POSTGRES_PASSWORD: ${{ inputs.postgres-password }}
+          POSTGRES_DB: ${{ inputs.postgres-db }}
+        ports:
+          - 5432
+        options: >-
+          --health-cmd "pg_isready -U ${{ inputs.postgres-user }} -d ${{ inputs.postgres-db }}"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      qdrant:
+        image: ${{ inputs.qdrant-image }}
+        env:
+          QDRANT__SERVICE__API_KEY: ${{ inputs.qdrant-api-key }}
+        ports:
+          - 6333
+        options: >-
+          --health-cmd "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333'"
+          --health-interval 10s --health-timeout 5s --health-retries 5 --health-start-period 10s
+
+    steps:
+      - name: Export the service addresses and the job environment
+        env:
+          PG_PORT: ${{ job.services.postgres.ports['5432'] }}
+          QD_PORT: ${{ job.services.qdrant.ports['6333'] }}
+          PG_USER: ${{ inputs.postgres-user }}
+          PG_PASSWORD: ${{ inputs.postgres-password }}
+          PG_DB: ${{ inputs.postgres-db }}
+          JOB_ENV: ${{ inputs.job-env }}
+        run: |
+          python3 - <<'PY'
+          import os
+          env = {}
+          if os.environ.get("PG_PORT"):
+              env["CI_POSTGRES_DSN"] = (
+                  f"postgres://{os.environ['PG_USER']}:{os.environ['PG_PASSWORD']}"
+                  f"@localhost:{os.environ['PG_PORT']}/{os.environ['PG_DB']}"
+              )
+          if os.environ.get("QD_PORT"):
+              env["CI_QDRANT_URL"] = f"http://localhost:{os.environ['QD_PORT']}"
+          for line in os.environ.get("JOB_ENV", "").splitlines():
+              line = line.strip()
+              if not line or line.startswith("#"):
+                  continue
+              key, sep, value = line.partition("=")
+              if not sep or not key.strip():
+                  raise SystemExit(f"job-env line is not KEY=VALUE: {line!r}")
+              for name in ("CI_POSTGRES_DSN", "CI_QDRANT_URL"):
+                  for ref in ("${" + name + "}", "$" + name):
+                      if ref in value:
+                          if name not in env:
+                              raise SystemExit(f"job-env {key.strip()} uses {name}, but that service is not configured")
+                          value = value.replace(ref, env[name])
+              env[key.strip()] = value
+          with open(os.environ["GITHUB_ENV"], "a") as out:
+              for key, value in env.items():
+                  out.write(f"{key}={value}\n")
+          print("job environment:", ", ".join(env) or "(none)")
+          PY
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Full history. On an `issue_comment` event this lands on the DEFAULT
+          # branch; the action switches to the PR branch afterwards.
+          fetch-depth: 0
+
+      # Two steps, so a toolchain without a `framework-token` input is never
+      # handed one; the secret is tested through env, as `secrets` is not
+      # readable in a step `if:`.
+      - name: Provision the CI toolchain
+        if: env.HAS_FRAMEWORK_TOKEN != 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        uses: ./.github/actions/claude-toolchain
+
+      - name: Provision the CI toolchain (with the framework token)
+        if: env.HAS_FRAMEWORK_TOKEN == 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        uses: ./.github/actions/claude-toolchain
+        with:
+          framework-token: ${{ secrets.FRAMEWORK_READ_TOKEN }}
+
+      # The gate's latest run for the PR's head commit; it may still be running,
+      # and ci-results then collects only the jobs that have finished. Context,
+      # not a gate: a failed lookup must not skip Claude below.
+      - name: Find the gate run for this PR
+        id: gate-run
+        if: inputs.gate-workflow != '' && (github.event.issue.pull_request || github.event.pull_request)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+          WORKFLOW: ${{ inputs.gate-workflow }}
+        run: |
+          sha="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid --jq .headRefOid)"
+          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" --commit "$sha" \
+                  --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          echo "run-id=${id}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect the gate's results
+        if: steps.gate-run.outcome == 'success'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v2
+        with:
+          run-id: ${{ steps.gate-run.outputs.run-id }}
+          out-dir: ${{ runner.temp }}/ci-results
+          github-token: ${{ github.token }}
+
+      - name: Resolve the cached Claude Code
+        id: claude-cli
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v2
+
+      - name: Compose the Claude settings
+        id: settings
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v2
+        with:
+          profile: respond
+          extra-allow: ${{ inputs.extra-allow }}
+          extra-deny: ${{ inputs.extra-deny }}
+
+      - name: Compose the system prompt
+        id: prompt
+        env:
+          HAS_GATE: ${{ inputs.gate-workflow != '' }}
+          EXTRA_PROMPT: ${{ inputs.extra-prompt }}
+        run: |
+          python3 - <<'PY'
+          import os
+          extra = " ".join(os.environ.get("EXTRA_PROMPT", "").split())
+          if "'" in extra:
+              raise SystemExit("extra-prompt may not contain a single quote")
+          parts = [
+              "You are running inside a one-shot GitHub Action on the self-hosted Thor runner pool, with the same toolchain as the CI of this repository.",
+              'Run `cat "$RUNNER_TEMP/claude-toolchain-status.md"` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change.',
+          ]
+          if os.environ["HAS_GATE"] == "true":
+              parts.append('On a pull request, `cat "$RUNNER_TEMP/ci-results/jobs.md"` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in $RUNNER_TEMP/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. If the file is missing, the lookup failed: run the gates yourself.')
+          else:
+              parts.append("This repository has no gate workflow, so verify by running its gates yourself instead of restating numbers from the PR.")
+          parts += [
+              "Bash is an allowlist: read-only commands, the gate runners, and git add/commit/push. A command outside it is refused and nobody can approve it here - report that gate as NOT RUN with its command, never work around the refusal.",
+              "Run a gate for what CI does not cover, and always for any change you make yourself.",
+              "When you report on a PR, end with a table of the gates you ran and the gates you could not run, each with its command and result; a skip is not a pass.",
+              "Finish all work inside this turn and run every command in the foreground: background tasks are disabled here, and anything that outlives the turn is killed.",
+          ]
+          if extra:
+              parts.append(extra)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("args=--append-system-prompt '" + " ".join(parts) + "'\n")
+          PY
+
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+          settings: ${{ steps.settings.outputs.path }}
+          claude_args: ${{ steps.prompt.outputs.args }}

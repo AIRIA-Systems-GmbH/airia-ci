@@ -79,21 +79,12 @@ name: Claude Code Review (shared)
 # WHICH CLAUDE. The claude-cli action: a build cached on the runner's
 # persistent volume, refreshed to the latest release at most once a day.
 #
-# WHAT IT MAY RUN. An explicit allowlist: read-only git/gh/shell commands and
-# the common Python gate runners, plus the caller's `extra-allow` for its own
-# gates. There is no bare `Bash`: the job runs on the Thor production host,
-# and a reviewer steered by prompt injection in the PR it reads must not get a
-# general shell there. The deny list also names the usual escape hatches
-# (interpreter one-liners, shells, curl/wget, `gh api`, `env`), because a deny
-# beats an allow — an `extra-allow` cannot reopen them by accident.
-# The cost is drift: a command the list does not cover is refused (headless,
-# nobody approves it — AIRIA-framework PR #733 lost `xargs … reuse lint-file`
-# that way). The prompt tells the reviewer to report such a gate as not run.
-# RESIDUAL RISK, stated rather than hidden: an allowed gate runner (`pytest`,
-# `cargo test`) executes the PR's own code — conftest, tests, build scripts.
-# The allowlist narrows what injected TEXT can make the reviewer do; it does
-# not isolate the PR's CODE from the host. Only a container or a
-# non-production runner does that, and so for every CI job on this pool.
+# WHAT IT MAY RUN. The `review` profile of the shared policy in the
+# claude-settings action: an explicit Bash allowlist (read-only commands and
+# the Python gate runners), plus the caller's `extra-allow` for its own gates.
+# No bare `Bash`, and no Write/Edit. Why, and the residual risk, are stated
+# there. A command outside the list is refused (headless, nobody approves it);
+# the prompt tells the reviewer to report that gate as not run.
 #
 # WHAT STOPS IT PUSHING. The credential, not the tool list: `github_token` is
 # this job's GITHUB_TOKEN, scoped by the `permissions:` block below to
@@ -215,131 +206,17 @@ jobs:
         if: steps.once.outputs.review == 'true'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v2
 
-      # The review's Claude Code settings: the shared allow/deny lists plus the
-      # caller's `extra-deny`. Written to a file, which claude-code-action's
-      # `settings` input accepts as a path.
+      # The review's Claude Code settings: the shared policy's read-only
+      # `review` profile plus the caller's extra-allow / extra-deny. The policy
+      # itself, and why Bash is an allowlist, lives in the claude-settings action.
       - name: Compose the review settings
         id: settings
         if: steps.once.outputs.review == 'true'
-        env:
-          EXTRA_DENY: ${{ inputs.extra-deny }}
-          EXTRA_ALLOW: ${{ inputs.extra-allow }}
-        run: |
-          out="${RUNNER_TEMP}/claude-review-settings.json"
-          python3 - "${out}" <<'PY'
-          import json, os, sys
-          settings = json.loads('''
-          {
-            "permissions": {
-              "allow": [
-                "Read",
-                "Grep",
-                "Glob",
-                "WebFetch",
-                "WebSearch",
-                "Bash(git diff:*)",
-                "Bash(git log:*)",
-                "Bash(git show:*)",
-                "Bash(git status:*)",
-                "Bash(git blame:*)",
-                "Bash(git ls-files:*)",
-                "Bash(git grep:*)",
-                "Bash(git rev-parse:*)",
-                "Bash(git merge-base:*)",
-                "Bash(gh pr view:*)",
-                "Bash(gh pr diff:*)",
-                "Bash(gh pr checks:*)",
-                "Bash(gh run view:*)",
-                "Bash(cat:*)",
-                "Bash(head:*)",
-                "Bash(tail:*)",
-                "Bash(ls:*)",
-                "Bash(wc:*)",
-                "Bash(grep:*)",
-                "Bash(rg:*)",
-                "Bash(sort:*)",
-                "Bash(uniq:*)",
-                "Bash(cut:*)",
-                "Bash(diff:*)",
-                "Bash(jq:*)",
-                "Bash(cd:*)",
-                "Bash(pwd)",
-                "Bash(uv run pytest:*)",
-                "Bash(uv run --no-sync pytest:*)",
-                "Bash(uv run ruff:*)",
-                "Bash(uv run --no-sync ruff:*)",
-                "Bash(uv run pyright:*)",
-                "Bash(uv run --no-sync pyright:*)",
-                "Bash(uv run mypy:*)",
-                "Bash(uv run --no-sync mypy:*)",
-                "Bash(uv run lint-imports:*)",
-                "Bash(uv run --no-sync lint-imports:*)",
-                "Bash(uv run reuse:*)",
-                "Bash(uv run --no-sync reuse:*)"
-              ],
-              "deny": [
-                "Write",
-                "Edit",
-                "NotebookEdit",
-                "Agent",
-                "Task",
-                "Bash(git push:*)",
-                "Bash(git commit:*)",
-                "Bash(git reset --hard:*)",
-                "Bash(gh pr merge:*)",
-                "Bash(gh pr close:*)",
-                "Bash(gh pr edit:*)",
-                "Bash(gh pr ready:*)",
-                "Bash(gh pr review:*)",
-                "Bash(gh pr comment:*)",
-                "Bash(gh release:*)",
-                "Bash(gh workflow:*)",
-                "Bash(gh run rerun:*)",
-                "Bash(gh run cancel:*)",
-                "Bash(gh secret:*)",
-                "Bash(gh variable:*)",
-                "Bash(gh api:*)",
-                "Bash(curl:*)",
-                "Bash(wget:*)",
-                "Bash(env:*)",
-                "Bash(sh -c:*)",
-                "Bash(bash -c:*)",
-                "Bash(python -c:*)",
-                "Bash(python3 -c:*)",
-                "Bash(node -e:*)",
-                "Bash(uv run python:*)",
-                "Bash(uv run --no-sync python:*)",
-                "Bash(uv run sh:*)",
-                "Bash(uv run bash:*)"
-              ]
-            },
-            "sandbox": {
-              "enabled": false
-            },
-            "env": {
-              "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-              "BASH_DEFAULT_TIMEOUT_MS": "600000",
-              "BASH_MAX_TIMEOUT_MS": "1500000"
-            }
-          }
-          ''')
-          def rules(var):
-              return [r.strip() for r in os.environ.get(var, "").splitlines() if r.strip()]
-          extra, extra_allow = rules("EXTRA_DENY"), rules("EXTRA_ALLOW")
-          # A bare `Bash` would undo the allowlist; refuse it rather than compose it.
-          if any(r in ("Bash", "Bash(*)", "Bash(:*)") for r in extra_allow):
-              sys.exit("extra-allow may not grant a bare Bash: list the gate commands instead")
-          settings["permissions"]["deny"] += extra
-          settings["permissions"]["allow"] += extra_allow
-          json.dump(settings, open(sys.argv[1], "w"), indent=2)
-          print(f"allow rules: {len(settings['permissions']['allow'])} ({len(extra_allow)} from extra-allow)")
-          for rule in extra_allow:
-              print(f"+ {rule}")
-          print(f"deny rules: {len(settings['permissions']['deny'])} ({len(extra)} from extra-deny)")
-          for rule in extra:
-              print(f"- {rule}")
-          PY
-          echo "path=${out}" >> "$GITHUB_OUTPUT"
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v2
+        with:
+          profile: review
+          extra-allow: ${{ inputs.extra-allow }}
+          extra-deny: ${{ inputs.extra-deny }}
 
       - name: Run Claude Code Review
         id: claude-review

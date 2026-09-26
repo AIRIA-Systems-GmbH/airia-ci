@@ -5,11 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
-The shared CI harness for AIRIA repositories. It has one reusable workflow and two composite actions, consumed at the moving tag `@ci-v2`.
+The shared CI harness for AIRIA repositories. It has two reusable workflows and three composite actions, consumed at the moving tag `@ci-v2`.
 
 | Path | What it is |
 |---|---|
 | `.github/workflows/reusable-claude-review.yml` | The automatic Claude review. It runs once per PR, as the last job of the caller's merge-gate workflow, and reads the gate results instead of re-running them. |
+| `.github/workflows/reusable-claude-respond.yml` | The `@claude` responder. Only an OWNER, MEMBER or COLLABORATOR can start it; it can edit, commit and push, and it reads the PR's gate results. Its call contract is its own header. |
+| `.github/actions/claude-settings` | The one Claude Code permission policy both workflows use: an explicit Bash allowlist (never a bare `Bash`), in a read-only `review` profile and a `respond` profile that can also write and commit. |
 | `.github/actions/ci-results` | Downloads every completed job of a workflow run (its conclusion, failed steps and full log) for a Claude job to read. |
 | `.github/actions/claude-cli` | A Claude Code build cached on the runner's `/var/cache/ci` volume, refreshed at most once a day. |
 
