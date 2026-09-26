@@ -28,9 +28,11 @@ name: Claude Code Review (shared)
 #     needs: [<every gate job>]
 #     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
 #     permissions: { contents: read, pull-requests: write, issues: write, actions: read }
-#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v1
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v2
 #     with:
 #       pr-number: ${{ github.event.pull_request.number }}
+#       extra-allow: |          # optional: this repo's own gates, if not covered
+#         Bash(cargo test:*)
 #     secrets:
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -48,8 +50,10 @@ name: Claude Code Review (shared)
 #       the repo's own review rules (how its gates are invoked, its traps). The
 #       reviewer reads it before anything else.
 #
-# VERSIONING. Consumers pin `@ci-v1`. A compatible change moves the tag; a
-# change to the call contract above is `ci-v2`. The actions this workflow uses
+# VERSIONING. Consumers pin `@ci-v2`. A compatible change moves the tag; a
+# change to the call contract above is the next major (`ci-v3`). `ci-v2` began
+# when the bare `Bash` allow became an explicit allowlist: a caller whose gates
+# fall outside it must now pass `extra-allow`. `ci-v1` is frozen. The actions this workflow uses
 # are pinned to the same tag, because `./` inside a called workflow is the
 # CALLER's checkout, not this repository.
 #
@@ -74,11 +78,21 @@ name: Claude Code Review (shared)
 # WHICH CLAUDE. The claude-cli action: a build cached on the runner's
 # persistent volume, refreshed to the latest release at most once a day.
 #
-# WHAT IT MAY RUN. Everything Claude Code can, minus writes: see `settings`
-# below. A hand-maintained allowlist was tried and drifts from CI — on
-# AIRIA-framework PR #733 it had no `xargs` and no `uv run reuse`, so the CI
-# command `git ls-files -z | … | xargs -0 uv run reuse lint-file` was refused
-# as "requires approval", and a headless run has nobody to approve it.
+# WHAT IT MAY RUN. An explicit allowlist: read-only git/gh/shell commands and
+# the common Python gate runners, plus the caller's `extra-allow` for its own
+# gates. There is no bare `Bash`: the job runs on the Thor production host,
+# and a reviewer steered by prompt injection in the PR it reads must not get a
+# general shell there. The deny list also names the usual escape hatches
+# (interpreter one-liners, shells, curl/wget, `gh api`, `env`), because a deny
+# beats an allow — an `extra-allow` cannot reopen them by accident.
+# The cost is drift: a command the list does not cover is refused (headless,
+# nobody approves it — AIRIA-framework PR #733 lost `xargs … reuse lint-file`
+# that way). The prompt tells the reviewer to report such a gate as not run.
+# RESIDUAL RISK, stated rather than hidden: an allowed gate runner (`pytest`,
+# `cargo test`) executes the PR's own code — conftest, tests, build scripts.
+# The allowlist narrows what injected TEXT can make the reviewer do; it does
+# not isolate the PR's CODE from the host. Only a container or a
+# non-production runner does that, and so for every CI job on this pool.
 #
 # WHAT STOPS IT PUSHING. The credential, not the tool list: `github_token` is
 # this job's GITHUB_TOKEN, scoped by the `permissions:` block below to
@@ -107,6 +121,14 @@ on:
           Extra permission-deny rules for this repository, one per line, in
           Claude Code's rule syntax (e.g. `Bash(my-money-cli:*)`). They are
           added to the shared deny list, never replace it.
+        required: false
+        type: string
+        default: ""
+      extra-allow:
+        description: >-
+          Extra permission-allow rules for this repository's own gates, one per
+          line, in Claude Code's rule syntax (e.g. `Bash(cargo test:*)`). They
+          are added to the shared allowlist; the shared deny list still wins.
         required: false
         type: string
         default: ""
@@ -158,7 +180,7 @@ jobs:
 
       - name: Collect the merge gate's results
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v1
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v2
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
@@ -168,7 +190,7 @@ jobs:
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v1
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v2
 
       # The review's Claude Code settings: the shared allow/deny lists plus the
       # caller's `extra-deny`. Written to a file, which claude-code-action's
@@ -178,6 +200,7 @@ jobs:
         if: steps.once.outputs.review == 'true'
         env:
           EXTRA_DENY: ${{ inputs.extra-deny }}
+          EXTRA_ALLOW: ${{ inputs.extra-allow }}
         run: |
           out="${RUNNER_TEMP}/claude-review-settings.json"
           python3 - "${out}" <<'PY'
@@ -186,12 +209,50 @@ jobs:
           {
             "permissions": {
               "allow": [
-                "Bash",
                 "Read",
                 "Grep",
                 "Glob",
                 "WebFetch",
-                "WebSearch"
+                "WebSearch",
+                "Bash(git diff:*)",
+                "Bash(git log:*)",
+                "Bash(git show:*)",
+                "Bash(git status:*)",
+                "Bash(git blame:*)",
+                "Bash(git ls-files:*)",
+                "Bash(git grep:*)",
+                "Bash(git rev-parse:*)",
+                "Bash(git merge-base:*)",
+                "Bash(gh pr view:*)",
+                "Bash(gh pr diff:*)",
+                "Bash(gh pr checks:*)",
+                "Bash(gh run view:*)",
+                "Bash(cat:*)",
+                "Bash(head:*)",
+                "Bash(tail:*)",
+                "Bash(ls:*)",
+                "Bash(wc:*)",
+                "Bash(grep:*)",
+                "Bash(rg:*)",
+                "Bash(sort:*)",
+                "Bash(uniq:*)",
+                "Bash(cut:*)",
+                "Bash(diff:*)",
+                "Bash(jq:*)",
+                "Bash(cd:*)",
+                "Bash(pwd)",
+                "Bash(uv run pytest:*)",
+                "Bash(uv run --no-sync pytest:*)",
+                "Bash(uv run ruff:*)",
+                "Bash(uv run --no-sync ruff:*)",
+                "Bash(uv run pyright:*)",
+                "Bash(uv run --no-sync pyright:*)",
+                "Bash(uv run mypy:*)",
+                "Bash(uv run --no-sync mypy:*)",
+                "Bash(uv run lint-imports:*)",
+                "Bash(uv run --no-sync lint-imports:*)",
+                "Bash(uv run reuse:*)",
+                "Bash(uv run --no-sync reuse:*)"
               ],
               "deny": [
                 "Write",
@@ -213,7 +274,20 @@ jobs:
                 "Bash(gh run rerun:*)",
                 "Bash(gh run cancel:*)",
                 "Bash(gh secret:*)",
-                "Bash(gh variable:*)"
+                "Bash(gh variable:*)",
+                "Bash(gh api:*)",
+                "Bash(curl:*)",
+                "Bash(wget:*)",
+                "Bash(env:*)",
+                "Bash(sh -c:*)",
+                "Bash(bash -c:*)",
+                "Bash(python -c:*)",
+                "Bash(python3 -c:*)",
+                "Bash(node -e:*)",
+                "Bash(uv run python:*)",
+                "Bash(uv run --no-sync python:*)",
+                "Bash(uv run sh:*)",
+                "Bash(uv run bash:*)"
               ]
             },
             "sandbox": {
@@ -226,9 +300,18 @@ jobs:
             }
           }
           ''')
-          extra = [r.strip() for r in os.environ.get("EXTRA_DENY", "").splitlines() if r.strip()]
+          def rules(var):
+              return [r.strip() for r in os.environ.get(var, "").splitlines() if r.strip()]
+          extra, extra_allow = rules("EXTRA_DENY"), rules("EXTRA_ALLOW")
+          # A bare `Bash` would undo the allowlist; refuse it rather than compose it.
+          if any(r in ("Bash", "Bash(*)", "Bash(:*)") for r in extra_allow):
+              sys.exit("extra-allow may not grant a bare Bash: list the gate commands instead")
           settings["permissions"]["deny"] += extra
+          settings["permissions"]["allow"] += extra_allow
           json.dump(settings, open(sys.argv[1], "w"), indent=2)
+          print(f"allow rules: {len(settings['permissions']['allow'])} ({len(extra_allow)} from extra-allow)")
+          for rule in extra_allow:
+              print(f"+ {rule}")
           print(f"deny rules: {len(settings['permissions']['deny'])} ({len(extra)} from extra-deny)")
           for rule in extra:
               print(f"- {rule}")
@@ -263,7 +346,10 @@ jobs:
               in `$RUNNER_TEMP/ci-results/logs/`. Those are the gate figures: quote them, grep them
               for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
               duplicated work, and the log is the more faithful record.
-            - Bash is allowed in full, for what CI does NOT cover: a cell the diff affects that no
+            - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
+              runners. A command outside it is refused, and nobody can approve it here — report
+              that gate as NOT RUN, with the command, rather than working around the refusal.
+              Run commands for what CI does NOT cover: a cell the diff affects that no
               gate exercises, a behaviour claim no test pins, a gate the diff should have extended
               but did not. Say why CI does not cover it each time you run something.
               `.github/workflows/` holds the exact commands and floors; the repository's CLAUDE.md
@@ -276,7 +362,7 @@ jobs:
               whole review yourself, in this turn, and post it before you finish. Do not start
               background work (subagents, skills that fork agents such as the `code-review` plugin,
               background shells) — it is disabled here, and anything that outlives the turn is killed.
-              Run each command in the foreground (Bash allows up to 25 minutes per command); run
+              Run each command in the foreground (up to 25 minutes per command); run
               them one after another rather than in parallel.
 
             WHAT TO DO
