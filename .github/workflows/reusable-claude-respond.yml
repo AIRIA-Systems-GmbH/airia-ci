@@ -34,10 +34,15 @@ name: Claude (shared @claude responder)
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
-# WHO MAY START IT. The job's `if:` below, not the caller: an `@claude` from an
-# OWNER, MEMBER or COLLABORATOR, on each of the four events, keyed on the
-# author of the comment / review / issue that carries the mention. It runs on
-# the Thor production host, so nobody else's text may start it.
+# WHO MAY START IT. Someone with WRITE or ADMIN access, checked twice, both
+# here and not in the caller. The job's `if:` is the cheap filter: an `@claude`
+# from an OWNER, MEMBER or COLLABORATOR, keyed on the author of the comment /
+# review / issue that carries the mention. It is not the write check:
+# `COLLABORATOR` is any invited collaborator, READ and TRIAGE included. The
+# first step is, before any checkout: it asks the collaborator-permission API
+# for `github.actor` and stops unless the answer is `write` or `admin` —
+# claude-code-action's own rule, which it applies only after the checkout and
+# toolchain steps have already run on the Thor production host.
 #
 # WHAT IT MAY RUN. The `respond` profile of the shared policy in the
 # claude-settings action: the review's Bash allowlist, plus Write/Edit and
@@ -182,6 +187,29 @@ jobs:
           --health-interval 10s --health-timeout 5s --health-retries 5 --health-start-period 10s
 
     steps:
+      # Before anything from the repository runs. `permission` is the legacy
+      # field: `maintain` reads as `write`, `triage` as `read`.
+      - name: Require write access
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          permission="$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq .permission || true)"
+          case "${permission}" in
+            write|admin) echo "${ACTOR} has ${permission} access to ${GITHUB_REPOSITORY}" ;;
+            *) echo "::error title=Not permitted::${ACTOR} has ${permission:-no readable} access to ${GITHUB_REPOSITORY}; @claude runs only for write or admin."
+               exit 1 ;;
+          esac
+
+      - name: Require the Claude credential
+        env:
+          HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "${HAS_CLAUDE_TOKEN}" != "true" ]; then
+            echo "::error title=No Claude credential::CLAUDE_CODE_OAUTH_TOKEN is empty: ${GITHUB_REPOSITORY} has no such secret, or the caller does not pass it. Set it with 'gh secret set CLAUDE_CODE_OAUTH_TOKEN -R ${GITHUB_REPOSITORY}'."
+            exit 1
+          fi
+
       - name: Export the service addresses and the job environment
         env:
           PG_PORT: ${{ job.services.postgres.ports['5432'] }}
@@ -287,14 +315,16 @@ jobs:
           python3 - <<'PY'
           import os
           extra = " ".join(os.environ.get("EXTRA_PROMPT", "").split())
+          # Spelled out: Bash refuses a command that expands a variable.
+          tmp = os.environ["RUNNER_TEMP"]
           if "'" in extra:
               raise SystemExit("extra-prompt may not contain a single quote")
           parts = [
               "You are running inside a one-shot GitHub Action on the self-hosted Thor runner pool, with the same toolchain as the CI of this repository.",
-              'Run `cat "$RUNNER_TEMP/claude-toolchain-status.md"` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change.',
+              f"Run `cat {tmp}/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP means {tmp}. Write every path out in full: Bash refuses a command that expands a variable.",
           ]
           if os.environ["HAS_GATE"] == "true":
-              parts.append('On a pull request, `cat "$RUNNER_TEMP/ci-results/jobs.md"` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in $RUNNER_TEMP/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. If the file is missing, the lookup failed: run the gates yourself.')
+              parts.append(f"On a pull request, `cat {tmp}/ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in {tmp}/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. If the file is missing, the lookup failed: run the gates yourself.")
           else:
               parts.append("This repository has no gate workflow, so verify by running its gates yourself instead of restating numbers from the PR.")
           parts += [

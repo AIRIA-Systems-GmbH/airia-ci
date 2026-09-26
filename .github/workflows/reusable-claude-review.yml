@@ -164,6 +164,19 @@ jobs:
             echo "review=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Without it the only symptom is claude-code-action's "Environment variable
+      # validation failed" and the post step's advice to retry with `@claude`,
+      # which cannot help (ParlAIment #2, AIRIA-SiteBuilder #10, 2026-09-26).
+      - name: Require the Claude credential
+        if: steps.once.outputs.review == 'true'
+        env:
+          HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "${HAS_CLAUDE_TOKEN}" != "true" ]; then
+            echo "::error title=No Claude credential::CLAUDE_CODE_OAUTH_TOKEN is empty: ${GITHUB_REPOSITORY} has no such secret, or the caller does not pass it. Set it with 'gh secret set CLAUDE_CODE_OAUTH_TOKEN -R ${GITHUB_REPOSITORY}'; an @claude retry cannot succeed until then."
+            exit 1
+          fi
+
       - name: Checkout repository
         if: steps.once.outputs.review == 'true'
         uses: actions/checkout@v4
@@ -238,14 +251,16 @@ jobs:
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
               rules for the review, and following them is not optional.
             - You are on the same self-hosted Thor runner pool as this repository's CI. If
-              `$RUNNER_TEMP/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+              `${{ runner.temp }}/claude-toolchain-status.md` exists, `cat` it: it says what the setup
               step provisioned and anything it could NOT provision. If it does not, no toolchain
               was provisioned beyond what the runner has.
-            - CI HAS ALREADY RUN on this exact commit. `cat "$RUNNER_TEMP/ci-results/jobs.md"` lists
+            - CI HAS ALREADY RUN on this exact commit. `cat ${{ runner.temp }}/ci-results/jobs.md` lists
               every gate job with its conclusion and failed steps; the full log of each is beside it
-              in `$RUNNER_TEMP/ci-results/logs/`. Those are the gate figures: quote them, grep them
+              in `${{ runner.temp }}/ci-results/logs/`. Those are the gate figures: quote them, grep them
               for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
               duplicated work, and the log is the more faithful record.
+            - Write every path out in full. Bash refuses a command that expands a variable, so
+              `$RUNNER_TEMP` in `.github/claude-review.md` means `${{ runner.temp }}`.
             - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
               runners. A command outside it is refused, and nobody can approve it here — report
               that gate as NOT RUN, with the command, rather than working around the refusal.
