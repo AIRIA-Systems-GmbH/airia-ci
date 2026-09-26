@@ -102,6 +102,14 @@ on:
         description: The pull request to review.
         required: true
         type: number
+      extra-deny:
+        description: >-
+          Extra permission-deny rules for this repository, one per line, in
+          Claude Code's rule syntax (e.g. `Bash(my-money-cli:*)`). They are
+          added to the shared deny list, never replace it.
+        required: false
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -162,6 +170,71 @@ jobs:
         if: steps.once.outputs.review == 'true'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v1
 
+      # The review's Claude Code settings: the shared allow/deny lists plus the
+      # caller's `extra-deny`. Written to a file, which claude-code-action's
+      # `settings` input accepts as a path.
+      - name: Compose the review settings
+        id: settings
+        if: steps.once.outputs.review == 'true'
+        env:
+          EXTRA_DENY: ${{ inputs.extra-deny }}
+        run: |
+          out="${RUNNER_TEMP}/claude-review-settings.json"
+          python3 - "${out}" <<'PY'
+          import json, os, sys
+          settings = json.loads('''
+          {
+            "permissions": {
+              "allow": [
+                "Bash",
+                "Read",
+                "Grep",
+                "Glob",
+                "WebFetch",
+                "WebSearch"
+              ],
+              "deny": [
+                "Write",
+                "Edit",
+                "NotebookEdit",
+                "Agent",
+                "Task",
+                "Bash(git push:*)",
+                "Bash(git commit:*)",
+                "Bash(git reset --hard:*)",
+                "Bash(gh pr merge:*)",
+                "Bash(gh pr close:*)",
+                "Bash(gh pr edit:*)",
+                "Bash(gh pr ready:*)",
+                "Bash(gh pr review:*)",
+                "Bash(gh pr comment:*)",
+                "Bash(gh release:*)",
+                "Bash(gh workflow:*)",
+                "Bash(gh run rerun:*)",
+                "Bash(gh run cancel:*)",
+                "Bash(gh secret:*)",
+                "Bash(gh variable:*)"
+              ]
+            },
+            "sandbox": {
+              "enabled": false
+            },
+            "env": {
+              "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+              "BASH_DEFAULT_TIMEOUT_MS": "600000",
+              "BASH_MAX_TIMEOUT_MS": "1500000"
+            }
+          }
+          ''')
+          extra = [r.strip() for r in os.environ.get("EXTRA_DENY", "").splitlines() if r.strip()]
+          settings["permissions"]["deny"] += extra
+          json.dump(settings, open(sys.argv[1], "w"), indent=2)
+          print(f"deny rules: {len(settings['permissions']['deny'])} ({len(extra)} from extra-deny)")
+          for rule in extra:
+              print(f"- {rule}")
+          PY
+          echo "path=${out}" >> "$GITHUB_OUTPUT"
+
       - name: Run Claude Code Review
         id: claude-review
         if: steps.once.outputs.review == 'true'
@@ -170,49 +243,7 @@ jobs:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          settings: |
-            {
-              "permissions": {
-                "allow": [
-                  "Bash",
-                  "Read",
-                  "Grep",
-                  "Glob",
-                  "WebFetch",
-                  "WebSearch"
-                ],
-                "deny": [
-                  "Write",
-                  "Edit",
-                  "NotebookEdit",
-                  "Agent",
-                  "Task",
-                  "Bash(git push:*)",
-                  "Bash(git commit:*)",
-                  "Bash(git reset --hard:*)",
-                  "Bash(gh pr merge:*)",
-                  "Bash(gh pr close:*)",
-                  "Bash(gh pr edit:*)",
-                  "Bash(gh pr ready:*)",
-                  "Bash(gh pr review:*)",
-                  "Bash(gh pr comment:*)",
-                  "Bash(gh release:*)",
-                  "Bash(gh workflow:*)",
-                  "Bash(gh run rerun:*)",
-                  "Bash(gh run cancel:*)",
-                  "Bash(gh secret:*)",
-                  "Bash(gh variable:*)"
-                ]
-              },
-              "sandbox": {
-                "enabled": false
-              },
-              "env": {
-                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-                "BASH_DEFAULT_TIMEOUT_MS": "600000",
-                "BASH_MAX_TIMEOUT_MS": "1500000"
-              }
-            }
+          settings: ${{ steps.settings.outputs.path }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ inputs.pr-number }}
