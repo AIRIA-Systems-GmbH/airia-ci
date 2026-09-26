@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI results for Claude
+description: >-
+  Download every completed job of one workflow run — conclusion, per-step
+  conclusions and full log — into a directory, so a Claude job reads the merge
+  gate's own results instead of re-running the gates. Repository-agnostic.
+
+# Logs come from the jobs API (`actions/jobs/<id>/logs`), never
+# `gh run view --job <id> --log`: that one resolves the job by NAME inside the
+# run's archive and can hand back a different job's log.
+#
+# `--allow-escape-sequences` is passed only when this gh has it. Recent gh
+# writes NOTHING for a log carrying terminal escapes without it; the gh 2.46
+# on the Thor pool rejects it as an unknown flag. Passing it blind emptied
+# every log on PR #741's first run, and the reviewer caught it — so a log that
+# cannot be fetched now says why, and jobs.md counts it, rather than failing quiet.
+
+inputs:
+  run-id:
+    description: The workflow run whose jobs to collect. Empty collects nothing.
+    required: true
+  out-dir:
+    description: Where to write jobs.md and logs/.
+    required: true
+  github-token:
+    description: "A token with `actions: read`."
+    required: true
+
+outputs:
+  collected:
+    description: Number of completed jobs whose results were written.
+    value: ${{ steps.collect.outputs.collected }}
+
+runs:
+  using: composite
+  steps:
+    - name: Collect the run's job results
+      id: collect
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RUN_ID: ${{ inputs.run-id }}
+        OUT: ${{ inputs.out-dir }}
+      run: |
+        mkdir -p "$OUT/logs"
+        index="$OUT/jobs.md"
+        if [ -z "$RUN_ID" ]; then
+          echo "No CI run was found for this commit: there are no CI results to read." > "$index"
+          echo "collected=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
+        gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
+          --jq '.jobs[] | select(.status == "completed")
+                | [.id, .name, .conclusion,
+                   ([.steps[]? | select(.conclusion == "failure") | .name] | join("; "))]
+                | @tsv' > "$OUT/jobs.tsv"
+        head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha)"
+        {
+          echo "# CI results — run $run_url"
+          echo
+          echo "Commit: $head_sha. One log per job in logs/, named by job id."
+          echo
+          echo "| Job | Conclusion | Failed steps | Log |"
+          echo "|---|---|---|---|"
+        } > "$index"
+        # Capture, then match: `gh ... | grep -q` under pipefail reads as "no" when
+        # grep exits early and gh dies on SIGPIPE.
+        esc=()
+        case "$(gh api --help 2>&1)" in
+          *--allow-escape-sequences*) esc=(--allow-escape-sequences) ;;
+        esac
+        n=0; missing=0
+        while IFS=$'\t' read -r id name conclusion failed; do
+          log="$OUT/logs/$id.log"
+          if ! gh api "${esc[@]}" "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$log" 2> "$log.err" || [ ! -s "$log" ]; then
+            { echo "(log unavailable: gh api exited non-zero or wrote nothing)"; cat "$log.err"; } > "$log"
+            missing=$((missing + 1))
+          fi
+          rm -f "$log.err"
+          echo "| $name | $conclusion | ${failed:--} | logs/$id.log |" >> "$index"
+          n=$((n + 1))
+        done < "$OUT/jobs.tsv"
+        rm -f "$OUT/jobs.tsv"
+        if [ "$missing" -gt 0 ]; then
+          echo "::warning title=CI results::$missing of $n job logs could not be fetched"
+          { echo; echo "**WARNING: $missing of $n job logs could not be fetched** — their files say why. Report those gates as conclusion-only, not as read."; } >> "$index"
+        fi
+        echo "collected=$n" >> "$GITHUB_OUTPUT"
+        cat "$index" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Claude CLI (runner-cached)
+description: >-
+  Resolve a Claude Code executable cached on the runner's persistent
+  /var/cache/ci volume, refreshed to the latest release at most once a day, and
+  hand its path to anthropics/claude-code-action's
+  `path_to_claude_code_executable` so a job does not reinstall it every run.
+  Repository-agnostic: no input names anything in this repo.
+
+# WHY DAILY, NOT PINNED. New models and features reach CI only through new
+# Claude Code releases, so the cache follows `latest`; a day bounds how stale it
+# can be. Every Claude job prints the version it ran (the `version` output), so
+# a change in review behaviour can be traced to the release that caused it.
+#
+# WHY IT CANNOT BREAK A JOB. A refresh installs into a fresh versions/<v>/,
+# runs `--version` on it, and only then swaps the `current` symlink with a
+# rename, so a job already running keeps its binary. Any failure keeps the
+# previous `current`; with no `current` at all the `path` output is empty and
+# claude-code-action falls back to installing its own, as it did before.
+# `flock` serialises the refresh across the runners sharing the volume.
+
+outputs:
+  path:
+    description: Absolute path to the claude executable, or empty to let the action install one.
+    value: ${{ steps.resolve.outputs.path }}
+  version:
+    description: The Claude Code version at `path`, or empty.
+    value: ${{ steps.resolve.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the cached Claude Code
+      id: resolve
+      shell: bash
+      run: |
+        root=/var/cache/ci/claude
+        if ! mkdir -p "$root/versions" 2>/dev/null || [ ! -w "$root" ]; then
+          echo "::warning title=Claude CLI::$root is not writable; claude-code-action will install its own copy"
+          echo "path=" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        exec 9>"$root/.lock"
+        flock -w 600 9 || echo "::warning title=Claude CLI::lock wait timed out; reading the cache without refreshing"
+
+        # Refresh when there is no current binary or the last check is a day old.
+        if [ ! -x "$root/current" ] || [ -z "$(find "$root/.checked" -mmin -1440 2>/dev/null)" ]; then
+          tmp="$(mktemp -d)"
+          if curl -fsSL https://claude.ai/install.sh -o "$tmp/install.sh" \
+             && HOME="$tmp" bash "$tmp/install.sh" > "$tmp/install.log" 2>&1 \
+             && bin="$(readlink -f "$tmp/.local/bin/claude")" \
+             && ver="$("$bin" --version | awk '{print $1}')" \
+             && [ -n "$ver" ]; then
+            if [ ! -x "$root/versions/$ver" ]; then
+              cp "$bin" "$root/versions/$ver.new" && mv "$root/versions/$ver.new" "$root/versions/$ver"
+            fi
+            if "$root/versions/$ver" --version > /dev/null; then
+              ln -sfn "versions/$ver" "$root/current.new" && mv -T "$root/current.new" "$root/current"
+              touch "$root/.checked"
+              # Keep the three newest releases; a job still running an older one
+              # holds its inode open, so removal cannot break it.
+              ls -1t "$root/versions" | grep -v '\.new$' | tail -n +4 | sed "s|^|$root/versions/|" | xargs -r rm -f || true
+            else
+              echo "::warning title=Claude CLI::claude $ver failed its --version smoke test; keeping the previous build"
+            fi
+          else
+            echo "::warning title=Claude CLI::refresh failed; keeping the previous build"
+            tail -20 "$tmp/install.log" 2>/dev/null || true
+          fi
+          rm -rf "$tmp"
+        fi
+
+        if [ -x "$root/current" ]; then
+          path="$(readlink -f "$root/current")"
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "version=$("$path" --version | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "Claude Code: $("$path" --version) at $path"
+        else
+          echo "path=" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"
+        fi

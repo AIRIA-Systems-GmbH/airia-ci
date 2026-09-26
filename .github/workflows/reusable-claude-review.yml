@@ -1,0 +1,332 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Claude Code Review (shared)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AIRIA AUTOMATIC REVIEW, shared by every AIRIA repository. It lives here
+# so it is changed once, not copied seven times, and this repository is PUBLIC
+# because two of its consumers are private repositories outside the
+# AIRIA-Systems-GmbH organization: GitHub lets a private repository's reusable
+# workflow be called only from repositories with the same owner. Until
+# 2026-09-26 it lived in AIRIA-Systems-GmbH/AIRIA-DevTools. A consumer calls it as the
+# LAST job of its merge-gate workflow:
+#
+#   claude-review:
+#     needs: [<every gate job>]
+#     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
+#     permissions: { contents: read, pull-requests: write, issues: write, actions: read }
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v1
+#     with:
+#       pr-number: ${{ github.event.pull_request.number }}
+#     secrets:
+#       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# `always()` because a red gate is review input: a bare `needs:` reports this
+# job SKIPPED the moment any gate reds, and a skipped review is invisible. The
+# gate workflow's `pull_request` types must include `ready_for_review`, or a PR
+# opened as a draft is never reviewed.
+#
+# WHAT THE CONSUMER MAY ADD — both optional, both by convention:
+#   .github/actions/claude-toolchain/action.yml
+#       a composite action that provisions the repo's CI toolchain, so the
+#       reviewer can run what CI does not cover. It should write what it did to
+#       $RUNNER_TEMP/claude-toolchain-status.md.
+#   .github/claude-review.md
+#       the repo's own review rules (how its gates are invoked, its traps). The
+#       reviewer reads it before anything else.
+#
+# VERSIONING. Consumers pin `@ci-v1`. A compatible change moves the tag; a
+# change to the call contract above is `ci-v2`. The actions this workflow uses
+# are pinned to the same tag, because `./` inside a called workflow is the
+# CALLER's checkout, not this repository.
+#
+# WHEN. After the merge gate, never beside it. Until 2026-09-25 each repo fired
+# its review on `opened` in parallel with CI and re-ran the gates itself: every
+# PR paid for its tests twice (AIRIA-framework PR #741 moved it).
+#
+# ONCE PER PR. The first step looks for an earlier automatic review (the
+# footer this workflow writes, unchanged from the per-repo copies so their
+# reviews count) and stops if there is one. That check, not the event type,
+# is what makes it once: a gate run cancelled by a new push takes its review
+# job with it, and the next push's run then reviews instead. Deliberately
+# never a re-roll on every push: a stateless reviewer re-rolling manufactures
+# an endless ping-pong (AIRIA-framework PR #405 ran eight rounds that way).
+# Later reviews are `@claude`.
+#
+# WHAT IT READS. The calling run's job results and full logs, collected by the
+# ci-results action into $RUNNER_TEMP/ci-results/. Those ARE the gate figures
+# for this commit; the reviewer checks the PR's claims against them and runs a
+# command only for what CI does not cover. No service containers run here.
+#
+# WHICH CLAUDE. The claude-cli action: a build cached on the runner's
+# persistent volume, refreshed to the latest release at most once a day.
+#
+# WHAT IT MAY RUN. Everything Claude Code can, minus writes: see `settings`
+# below. A hand-maintained allowlist was tried and drifts from CI — on
+# AIRIA-framework PR #733 it had no `xargs` and no `uv run reuse`, so the CI
+# command `git ls-files -z | … | xargs -0 uv run reuse lint-file` was refused
+# as "requires approval", and a headless run has nobody to approve it.
+#
+# WHAT STOPS IT PUSHING. The credential, not the tool list: `github_token` is
+# this job's GITHUB_TOKEN, scoped by the `permissions:` block below to
+# `contents: read`. Without that input the action mints the Claude App's own
+# token, which can write whatever this block says. Reviews therefore post as
+# github-actions[bot]. Side effect worth knowing: with `github_token` set the
+# action skips its "workflow must match the default branch" check (that check
+# lives in the App-token exchange), so a PR that edits this file IS reviewed.
+#
+# GREEN MEANS POSTED. Claude's final message is the review, and the last step
+# posts it; the job fails when there is none. Before this, `claude-review` went
+# green having posted nothing on AIRIA-process PR #49 and Portfolio-Dashboard
+# PRs #26–#32, and a run asked to post for itself could still end without
+# doing so (Portfolio-Dashboard PR #36).
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: The pull request to review.
+        required: true
+        type: number
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+jobs:
+  claude-review:
+    runs-on: [self-hosted, linux, x64, thor]
+    timeout-minutes: 45
+    permissions:
+      contents: read # the push boundary: `github_token` below is this token
+      pull-requests: write # post the review
+      issues: write # `gh pr comment` goes through the issues API
+      actions: read # read the calling run's job results and logs
+
+    steps:
+
+      - name: Skip if this PR already has its automatic review
+        id: once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr-number }}
+        run: |
+          prior="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]")
+                      | select(.body | contains("_Automatic review by `claude-code-review.yml`")) | .html_url' | head -1)"
+          if [ -n "${prior}" ]; then
+            echo "PR #${PR} already has its automatic review: ${prior}" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "review=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "review=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout repository
+        if: steps.once.outputs.review == 'true'
+        uses: actions/checkout@v4
+        with:
+          # Full history: `git diff origin/<base>...HEAD` and `git merge-base`
+          # are how a reviewer separates a defect this PR introduced from one
+          # it inherited, and a shallow clone has neither.
+          fetch-depth: 0
+
+      # Optional, by convention: the CALLER's own toolchain action.
+      - name: Provision the CI toolchain
+        if: steps.once.outputs.review == 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        uses: ./.github/actions/claude-toolchain
+
+      - name: Collect the merge gate's results
+        if: steps.once.outputs.review == 'true'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v1
+        with:
+          # A called workflow shares its caller's run, so this IS the gate run.
+          run-id: ${{ github.run_id }}
+          out-dir: ${{ runner.temp }}/ci-results
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the cached Claude Code
+        id: claude-cli
+        if: steps.once.outputs.review == 'true'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v1
+
+      - name: Run Claude Code Review
+        id: claude-review
+        if: steps.once.outputs.review == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          settings: |
+            {
+              "permissions": {
+                "allow": [
+                  "Bash",
+                  "Read",
+                  "Grep",
+                  "Glob",
+                  "WebFetch",
+                  "WebSearch"
+                ],
+                "deny": [
+                  "Write",
+                  "Edit",
+                  "NotebookEdit",
+                  "Agent",
+                  "Task",
+                  "Bash(git push:*)",
+                  "Bash(git commit:*)",
+                  "Bash(git reset --hard:*)",
+                  "Bash(gh pr merge:*)",
+                  "Bash(gh pr close:*)",
+                  "Bash(gh pr edit:*)",
+                  "Bash(gh pr ready:*)",
+                  "Bash(gh pr review:*)",
+                  "Bash(gh pr comment:*)",
+                  "Bash(gh release:*)",
+                  "Bash(gh workflow:*)",
+                  "Bash(gh run rerun:*)",
+                  "Bash(gh run cancel:*)",
+                  "Bash(gh secret:*)",
+                  "Bash(gh variable:*)"
+                ]
+              },
+              "sandbox": {
+                "enabled": false
+              },
+              "env": {
+                "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+                "BASH_DEFAULT_TIMEOUT_MS": "600000",
+                "BASH_MAX_TIMEOUT_MS": "1500000"
+              }
+            }
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ inputs.pr-number }}
+
+            You are the automatic review of this pull request. It runs ONCE, after the merge gate
+            has finished on this commit. Later reviews are requested by commenting `@claude` on the PR.
+
+            HOW THIS JOB IS SET UP — read this before you start
+            - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
+              rules for the review, and following them is not optional.
+            - You are on the same self-hosted Thor runner pool as this repository's CI. If
+              `$RUNNER_TEMP/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+              step provisioned and anything it could NOT provision. If it does not, no toolchain
+              was provisioned beyond what the runner has.
+            - CI HAS ALREADY RUN on this exact commit. `cat "$RUNNER_TEMP/ci-results/jobs.md"` lists
+              every gate job with its conclusion and failed steps; the full log of each is beside it
+              in `$RUNNER_TEMP/ci-results/logs/`. Those are the gate figures: quote them, grep them
+              for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
+              duplicated work, and the log is the more faithful record.
+            - Bash is allowed in full, for what CI does NOT cover: a cell the diff affects that no
+              gate exercises, a behaviour claim no test pins, a gate the diff should have extended
+              but did not. Say why CI does not cover it each time you run something.
+              `.github/workflows/` holds the exact commands and floors; the repository's CLAUDE.md
+              (and docs/ it points to) says how to run them correctly. No service containers
+              (databases, vector stores) run in this job: a real-engine cell you run here SKIPS,
+              and a skip is not a pass — read CI's engine logs instead.
+            - You cannot change the branch. Write/Edit are unavailable and your GitHub token is
+              read-only for repository contents. Propose fixes; never commit or push.
+            - This is a one-shot GitHub Action: the process exits the moment your turn ends. Do the
+              whole review yourself, in this turn, and post it before you finish. Do not start
+              background work (subagents, skills that fork agents such as the `code-review` plugin,
+              background shells) — it is disabled here, and anything that outlives the turn is killed.
+              Run each command in the foreground (Bash allows up to 25 minutes per command); run
+              them one after another rather than in parallel.
+
+            WHAT TO DO
+            1. Read the PR and what has already been said on it: `gh pr view <n> --comments` and
+               `gh pr diff <n>`. Do not re-raise a point already answered or declined with reasons.
+            2. Read the diff and enough of the surrounding code to judge it. Where the PR description
+               makes a claim about behaviour or about a gate result, check it rather than accept it.
+               `git diff origin/<base>...HEAD` separates what this branch introduced from what it
+               inherited.
+            3. VERIFY against CI. Check every gate claim in the PR against the CI logs; a CI number
+               that disagrees with the author's IS a finding — quote the job and the log line. A red
+               or cancelled gate job is a finding in its own right; read its failed step first. Check
+               the gates actually cover the diff: a package the diff touches that no job tested, or
+               a skip on a cell that matters, is a finding. Run commands only for those gaps.
+            4. Report what you are confident is wrong, most serious first, each with file:line and a
+               concrete failing case. If you find nothing worth changing, say so.
+
+            For ANY host / scheme / URL / origin / network-address classification, or any guard that
+            must hold on more than one entry path, enumerate the FULL product space in a SINGLE pass
+            and report every affected cell together — do not dribble one cell per review round:
+            - host form: IPv4; IPv6 bare / bracketed `[::1]` / scoped `fe80::1%eth0`; bind-all
+              `0.0.0.0` / `::` (never a connect target); loopback `127.0.0.0/8` / `::1` / `localhost`,
+              and the loopback-prefix-vs-DNS-suffix trap (`127.0.0.1.evil.com` is NOT loopback).
+            - scheme: `http` vs `https` (a non-loopback issuer MUST be https); flag any scheme
+              hardcoded per call-site instead of derived once from TLS config.
+            - entry path: CLI, library `start()`, subprocess, readiness probe, CLI probe — a guard
+              present on only some paths is a bug.
+            - allowlist form: bare host AND `host:*` (RFC 7230) for allowed_hosts/origins.
+
+            CLOSE the comment with a table of the gates: for each CI job, its conclusion from
+            jobs.md; then every command you ran yourself, with why CI did not cover it and its
+            result. A skipped test is not a pass — name the skips. An unrun gate reported as green is
+            worse than an unrun gate reported as unrun.
+
+            YOUR FINAL MESSAGE IS THE REVIEW. End your turn with the complete review, in Markdown, as
+            your last message and nothing else: the workflow posts that message to the PR as one
+            comment. Do NOT post it yourself (`gh pr comment` is disabled here). If a hook makes you
+            continue after it, end again with the complete review as your final message.
+
+      # The workflow posts, not the model. Asked to finish with `gh pr comment`,
+      # a run can end its turn without doing it: Portfolio-Dashboard PR #36 ran
+      # 55 turns, 0 permission denials, `subtype: success`, and posted nothing,
+      # while AIRIA-framework PR #734 posted fine. The final message is the one
+      # thing every successful run produces, so that is what gets posted.
+      - name: Post the review
+        if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr-number }}
+          CLAUDE_VERSION: ${{ steps.claude-cli.outputs.version }}
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="${RUNNER_TEMP}/claude-review-body.md"
+          rm -f "${body}"
+          python3 - "${EXECUTION_FILE}" "${body}" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json, os, sys
+          path, out = sys.argv[1], sys.argv[2]
+          try:
+              msgs = json.load(open(path))
+          except (OSError, ValueError) as exc:
+              print(f"No execution file ({exc}); Claude did not run to completion.")
+              sys.exit(0)
+          result = next((m for m in reversed(msgs) if m.get("type") == "result"), {})
+          print(f"subtype: {result.get('subtype')}, turns: {result.get('num_turns')}, is_error: {result.get('is_error')}")
+          # Denials are not failures on their own (a denied push is the settings
+          # working), but they are the first thing to read when a review is thin.
+          denials = result.get("permission_denials") or []
+          print(f"permission denials: {len(denials)}")
+          for d in denials[:20]:
+              print(f"- {d.get('tool_name')}: {json.dumps(d.get('tool_input'))[:200]}")
+          text = (result.get("result") or "").strip()
+          if result.get("is_error") or not text:
+              print("No review text in the final message.")
+              sys.exit(0)
+          with open(out, "w") as fh:
+              fh.write(text + "\n\n---\n_Automatic review by `claude-code-review.yml` — [run log](" + os.environ["RUN_URL"] + "), Claude Code " + (os.environ.get("CLAUDE_VERSION") or "installed by the action") + "._\n")
+          PY
+
+          if [ ! -s "${body}" ]; then
+            echo "::error title=No review posted::claude-review produced no review text for PR #${PR}. Treat this PR as UNREVIEWED; comment \`@claude please review\` to retry."
+            exit 1
+          fi
+          gh pr comment "${PR}" --repo "${GITHUB_REPOSITORY}" --body-file "${body}"
