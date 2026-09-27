@@ -35,7 +35,6 @@ name: Claude Code Review (shared)
 #         Bash(cargo test:*)
 #     secrets:
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-#       FRAMEWORK_READ_TOKEN: ${{ secrets.AIRIA_FRAMEWORK_READ_TOKEN }}  # optional
 #
 # `always()` because a red gate is review input: a bare `needs:` reports this
 # job SKIPPED the moment any gate reds, and a skipped review is invisible. The
@@ -127,18 +126,10 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      FRAMEWORK_READ_TOKEN:
-        description: >-
-          Optional. Handed to the caller's claude-toolchain action as its
-          `framework-token` input, for a toolchain that checks out the private
-          AIRIA-framework as a sibling. Omit it when the toolchain needs none.
-        required: false
 
 jobs:
   claude-review:
     runs-on: [self-hosted, linux, x64, thor]
-    env:
-      HAS_FRAMEWORK_TOKEN: ${{ secrets.FRAMEWORK_READ_TOKEN != '' }}
     timeout-minutes: 45
     permissions:
       contents: read # the push boundary: `github_token` below is this token
@@ -164,6 +155,19 @@ jobs:
             echo "review=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Without it the only symptom is claude-code-action's "Environment variable
+      # validation failed" and the post step's advice to retry with `@claude`,
+      # which cannot help (ParlAIment #2, AIRIA-SiteBuilder #10, 2026-09-26).
+      - name: Require the Claude credential
+        if: steps.once.outputs.review == 'true'
+        env:
+          HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+        run: |
+          if [ "${HAS_CLAUDE_TOKEN}" != "true" ]; then
+            echo "::error title=No Claude credential::CLAUDE_CODE_OAUTH_TOKEN is empty: ${GITHUB_REPOSITORY} has no such secret, or the caller does not pass it. Set it with 'gh secret set CLAUDE_CODE_OAUTH_TOKEN -R ${GITHUB_REPOSITORY}'; an @claude retry cannot succeed until then."
+            exit 1
+          fi
+
       - name: Checkout repository
         if: steps.once.outputs.review == 'true'
         uses: actions/checkout@v4
@@ -173,24 +177,14 @@ jobs:
           # it inherited, and a shallow clone has neither.
           fetch-depth: 0
 
-      # Optional, by convention: the CALLER's own toolchain action.
-      # Two steps rather than one, so a toolchain that declares no
-      # `framework-token` input is never handed one (an undeclared input is an
-      # "Unexpected input" warning on every run). The secret is tested through
-      # env because `secrets` is not readable in a step's `if:`.
+      # Optional, by convention: the CALLER's own toolchain action. It gets no
+      # token: airia-* packages install from the internal index, so no job
+      # needs to read another repository.
       - name: Provision the CI toolchain
         if: >-
-          steps.once.outputs.review == 'true' && env.HAS_FRAMEWORK_TOKEN != 'true'
+          steps.once.outputs.review == 'true'
           && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
         uses: ./.github/actions/claude-toolchain
-
-      - name: Provision the CI toolchain (with the framework token)
-        if: >-
-          steps.once.outputs.review == 'true' && env.HAS_FRAMEWORK_TOKEN == 'true'
-          && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
-        uses: ./.github/actions/claude-toolchain
-        with:
-          framework-token: ${{ secrets.FRAMEWORK_READ_TOKEN }}
 
       - name: Collect the merge gate's results
         if: steps.once.outputs.review == 'true'
@@ -238,14 +232,16 @@ jobs:
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
               rules for the review, and following them is not optional.
             - You are on the same self-hosted Thor runner pool as this repository's CI. If
-              `$RUNNER_TEMP/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+              `${{ runner.temp }}/claude-toolchain-status.md` exists, `cat` it: it says what the setup
               step provisioned and anything it could NOT provision. If it does not, no toolchain
               was provisioned beyond what the runner has.
-            - CI HAS ALREADY RUN on this exact commit. `cat "$RUNNER_TEMP/ci-results/jobs.md"` lists
+            - CI HAS ALREADY RUN on this exact commit. `cat ${{ runner.temp }}/ci-results/jobs.md` lists
               every gate job with its conclusion and failed steps; the full log of each is beside it
-              in `$RUNNER_TEMP/ci-results/logs/`. Those are the gate figures: quote them, grep them
+              in `${{ runner.temp }}/ci-results/logs/`. Those are the gate figures: quote them, grep them
               for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
               duplicated work, and the log is the more faithful record.
+            - Write every path out in full. Bash refuses a command that expands a variable, so
+              `$RUNNER_TEMP` in `.github/claude-review.md` means `${{ runner.temp }}`.
             - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
               runners. A command outside it is refused, and nobody can approve it here — report
               that gate as NOT RUN, with the command, rather than working around the refusal.
