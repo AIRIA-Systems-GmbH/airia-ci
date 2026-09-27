@@ -132,12 +132,6 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      FRAMEWORK_READ_TOKEN:
-        description: >-
-          Optional. Handed to the caller's claude-toolchain action as its
-          `framework-token` input, for a toolchain that checks out the private
-          AIRIA-framework as a sibling.
-        required: false
 
 jobs:
   claude:
@@ -162,8 +156,6 @@ jobs:
       issues: write
       id-token: write # the action exchanges an OIDC token for the Claude App token
       actions: read # read the gate's results on a PR
-    env:
-      HAS_FRAMEWORK_TOKEN: ${{ secrets.FRAMEWORK_READ_TOKEN != '' }}
     services:
       postgres:
         image: ${{ inputs.postgres-image }}
@@ -256,18 +248,11 @@ jobs:
           # branch; the action switches to the PR branch afterwards.
           fetch-depth: 0
 
-      # Two steps, so a toolchain without a `framework-token` input is never
-      # handed one; the secret is tested through env, as `secrets` is not
-      # readable in a step `if:`.
+      # The caller's own toolchain action, given no token: airia-* packages
+      # install from the internal index, so no job reads another repository.
       - name: Provision the CI toolchain
-        if: env.HAS_FRAMEWORK_TOKEN != 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
+        if: hashFiles('.github/actions/claude-toolchain/action.yml') != ''
         uses: ./.github/actions/claude-toolchain
-
-      - name: Provision the CI toolchain (with the framework token)
-        if: env.HAS_FRAMEWORK_TOKEN == 'true' && hashFiles('.github/actions/claude-toolchain/action.yml') != ''
-        uses: ./.github/actions/claude-toolchain
-        with:
-          framework-token: ${{ secrets.FRAMEWORK_READ_TOKEN }}
 
       # The gate's latest run for the PR's head commit; it may still be running,
       # and ci-results then collects only the jobs that have finished. Context,
