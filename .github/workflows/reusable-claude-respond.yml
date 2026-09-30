@@ -279,6 +279,15 @@ jobs:
           out-dir: ${{ runner.temp }}/ci-results
           github-token: ${{ github.token }}
 
+      # Claude may read only ci-results/ outside the checkout (the
+      # claude-settings action says why), so the toolchain's status goes there.
+      - name: Stage the toolchain status for Claude
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-results"
+          if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
+            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$RUNNER_TEMP/ci-results/"
+          fi
+
       - name: Resolve the cached Claude Code
         id: claude-cli
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v3
@@ -306,7 +315,7 @@ jobs:
               raise SystemExit("extra-prompt may not contain a single quote")
           parts = [
               "You are running inside a one-shot GitHub Action on the self-hosted Thor runner pool, with the same toolchain as the CI of this repository.",
-              f"Run `cat {tmp}/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP means {tmp}. Write every path out in full: Bash refuses a command that expands a variable.",
+              f"Run `cat {tmp}/ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP means {tmp}. Write every path out in full: Bash refuses a command that expands a variable.",
           ]
           if os.environ["HAS_GATE"] == "true":
               parts.append(f"On a pull request, `cat {tmp}/ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in {tmp}/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. If the file is missing, the lookup failed: run the gates yourself.")

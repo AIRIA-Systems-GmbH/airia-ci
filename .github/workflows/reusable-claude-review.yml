@@ -199,6 +199,16 @@ jobs:
           out-dir: ${{ runner.temp }}/ci-results
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Claude may read only ci-results/ outside the checkout (the
+      # claude-settings action says why), so the toolchain's status goes there.
+      - name: Stage the toolchain status for Claude
+        if: steps.once.outputs.review == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-results"
+          if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
+            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$RUNNER_TEMP/ci-results/"
+          fi
+
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
@@ -236,7 +246,7 @@ jobs:
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
               rules for the review, and following them is not optional.
             - You are on the same self-hosted Thor runner pool as this repository's CI. If
-              `${{ runner.temp }}/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+              `${{ runner.temp }}/ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
               step provisioned and anything it could NOT provision. If it does not, no toolchain
               was provisioned beyond what the runner has.
             - CI HAS ALREADY RUN on this exact commit. `cat ${{ runner.temp }}/ci-results/jobs.md` lists
