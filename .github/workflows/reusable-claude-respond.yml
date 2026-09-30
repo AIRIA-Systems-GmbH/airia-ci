@@ -28,7 +28,7 @@ name: Claude (shared @claude responder)
 #     claude:
 #       permissions: { contents: read, pull-requests: write, issues: write,
 #                      id-token: write, actions: read }
-#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-respond.yml@ci-v2
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-respond.yml@ci-v3
 #       with:
 #         gate-workflow: ci.yml          # optional: the PR gate whose results to read
 #       secrets:
@@ -273,7 +273,7 @@ jobs:
 
       - name: Collect the gate's results
         if: steps.gate-run.outcome == 'success'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
         with:
           run-id: ${{ steps.gate-run.outputs.run-id }}
           out-dir: ${{ runner.temp }}/ci-results
@@ -281,11 +281,11 @@ jobs:
 
       - name: Resolve the cached Claude Code
         id: claude-cli
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v3
 
       - name: Compose the Claude settings
         id: settings
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v3
         with:
           profile: respond
           extra-allow: ${{ inputs.extra-allow }}
