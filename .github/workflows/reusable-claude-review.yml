@@ -28,7 +28,7 @@ name: Claude Code Review (shared)
 #     needs: [<every gate job>]
 #     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
 #     permissions: { contents: read, pull-requests: write, issues: write, actions: read }
-#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v2
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v3
 #     with:
 #       pr-number: ${{ github.event.pull_request.number }}
 #       extra-allow: |          # optional: this repo's own gates, if not covered
@@ -50,10 +50,14 @@ name: Claude Code Review (shared)
 #       the repo's own review rules (how its gates are invoked, its traps). The
 #       reviewer reads it before anything else.
 #
-# VERSIONING. Consumers pin `@ci-v2`. A compatible change moves the tag; a
-# change to the call contract above is the next major (`ci-v3`). `ci-v2` began
-# when the bare `Bash` allow became an explicit allowlist: a caller whose gates
-# fall outside it must now pass `extra-allow`. `ci-v1` is frozen. The actions this workflow uses
+# VERSIONING. Consumers pin `@ci-v3`. A compatible change moves the tag; a
+# change to the call contract above is the next major (`ci-v4`). `ci-v3` began
+# when the optional FRAMEWORK_READ_TOKEN secret left the contract: a caller
+# still passing it fails with an undefined-secret error, so it must drop it.
+# `ci-v2` began when the bare `Bash` allow became an explicit allowlist: a
+# caller whose gates fall outside it must pass `extra-allow`. `ci-v2` is frozen
+# at 9ed10a6, whose prompt names `$RUNNER_TEMP` in a command Bash refuses, so
+# its reviewer never reads the gate results; `ci-v1` is frozen. The actions this workflow uses
 # are pinned to the same tag, because `./` inside a called workflow is the
 # CALLER's checkout, not this repository.
 #
@@ -188,7 +192,7 @@ jobs:
 
       - name: Collect the merge gate's results
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
@@ -198,7 +202,7 @@ jobs:
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v3
 
       # The review's Claude Code settings: the shared policy's read-only
       # `review` profile plus the caller's extra-allow / extra-deny. The policy
@@ -206,7 +210,7 @@ jobs:
       - name: Compose the review settings
         id: settings
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v2
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v3
         with:
           profile: review
           extra-allow: ${{ inputs.extra-allow }}
