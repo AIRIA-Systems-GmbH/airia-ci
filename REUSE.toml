@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+version = 1
+
+# Recorded CI output of a public actions/checkout run (MIT), used as a test fixture.
+[[annotations]]
+path = "validation/**/fixture/**"
+SPDX-FileCopyrightText = "GitHub, Inc. and actions/checkout contributors"
+SPDX-License-Identifier = "MIT"
+
+# Harness output captured when the validating PR was opened.
+[[annotations]]
+path = "validation/**/evidence-*.txt"
+SPDX-FileCopyrightText = "2026 AIRIA Systems GmbH"
+SPDX-License-Identifier = "Apache-2.0"

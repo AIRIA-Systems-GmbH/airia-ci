@@ -1,0 +1,41 @@
+PASS  new settings grant no directory outside the checkout
+PASS  new settings no longer allow 'gh pr checks'
+PASS  old settings (origin/main) DID grant $RUNNER_TEMP/ci-results
+source: recorded fixture of actions/checkout#36514614158 (public)
+--- jobs.md as collected ---
+# CI results — run https://github.com/actions/checkout/actions/runs/36514614158
+
+Commit: 384ec1874287eccce8e9af4362bf8096f614c5f8. One log per job in logs/, named by job id.
+
+| Job | Conclusion | Failed steps | Log |
+|---|---|---|---|
+| test-git-container | success | - | logs/109234028743.log |
+| build | failure | Verify no unstaged changes | logs/109234028900.log |
+| test (windows-latest) | success | - | logs/109234028948.log |
+| test (macos-latest) | success | - | logs/109234028966.log |
+| test-proxy | success | - | logs/109234029018.log |
+| test (ubuntu-latest) | success | - | logs/109234029044.log |
+| test-output | success | - | logs/109234029109.log |
+| test-bypass-proxy | success | - | logs/109234029565.log |
+---
+PASS  collected=8 reported in GITHUB_OUTPUT
+PASS  jobs.md names the run's head commit
+PASS  jobs.md has one row per completed job
+PASS  every log was fetched (no 'log unavailable')
+PASS  ci-results/ is invisible to git status
+PASS  git add -A stages nothing from ci-results/
+claude: 2.1.287 (Claude Code) (the Thor pool runs the claude-cli action's cached build)
+  [A] command: cat ci-results/jobs.md
+  [A] permission_denials=0 result=Commit: 384ec1874287eccce8e9af4362bf8096f614c5f8. One log per job in logs/, named by job id. 
+PASS  A  NEW: relative ci-results/jobs.md, no grant -> figures read
+  [B] command: cat $RUNNER_TEMP/ci-results/jobs.md
+  [B] permission_denials=1 result=REFUSED 
+  [B] denied: {"tool_name":"Bash","command":"cat $RUNNER_TEMP/ci-results/jobs.md"}
+PASS  B  OLD var form ($RUNNER_TEMP), even WITH the grant -> refused
+  [C] command: cat /var/folders/12/9c5gy96s0h1ggdksjk1ll3xh0000gn/T/tmp.CRZ14f8Lj0/runner-temp/ci-results/jobs.md
+  [C] permission_denials=1 result=REFUSED 
+  [C] denied: {"tool_name":"Bash","command":"cat /var/folders/12/9c5gy96s0h1ggdksjk1ll3xh0000gn/T/tmp.CRZ14f8Lj0/runner-temp/ci-results/jobs.md"}
+PASS  C  absolute path outside the checkout, no grant -> refused
+  [D] command: cat /var/folders/12/9c5gy96s0h1ggdksjk1ll3xh0000gn/T/tmp.CRZ14f8Lj0/runner-temp/ci-results/jobs.md
+  [D] permission_denials=0 result=Commit: 384ec1874287eccce8e9af4362bf8096f614c5f8. One log per job in logs/, named by job id. 
+PASS  D  control: same absolute path WITH the old grant -> read (the grant was load-bearing)

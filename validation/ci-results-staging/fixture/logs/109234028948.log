@@ -1,0 +1,40 @@
+2026-09-29T02:54:36.4379615Z Removing HTTP extra header
+2026-09-29T02:54:36.4389933Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-29T02:54:36.4663594Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-09-29T02:54:36.9614108Z Removing includeIf entries pointing to credentials config files
+2026-09-29T02:54:36.9625468Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-29T02:54:36.9897333Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-09-29T02:54:37.5133126Z Post job cleanup.
+2026-09-29T02:54:37.6765435Z [command]"C:\Program Files\Git\bin\git.exe" version
+2026-09-29T02:54:37.7007830Z git version 2.55.0.windows.5
+2026-09-29T02:54:37.7058144Z Copying 'C:\Users\runneradmin\.gitconfig' to 'D:\a\_temp\710b3bf0-58cb-46a9-80bc-2635575cd63e\.gitconfig'
+2026-09-29T02:54:37.7075487Z Temporarily overriding HOME='D:\a\_temp\710b3bf0-58cb-46a9-80bc-2635575cd63e' before making global git config changes
+2026-09-29T02:54:37.7076781Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-29T02:54:37.7085759Z [command]"C:\Program Files\Git\bin\git.exe" config --global --add safe.directory D:\a\checkout\checkout
+2026-09-29T02:54:37.7356232Z Removing SSH command configuration
+2026-09-29T02:54:37.7365853Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp core\.sshCommand
+2026-09-29T02:54:37.7650264Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :\""
+2026-09-29T02:54:38.2298175Z Removing HTTP extra header
+2026-09-29T02:54:38.2307705Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-29T02:54:38.2587497Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "sh -c \"git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :\""
+2026-09-29T02:54:38.7393936Z Removing includeIf entries pointing to credentials config files
+2026-09-29T02:54:38.7405020Z [command]"C:\Program Files\Git\bin\git.exe" config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-29T02:54:38.7644734Z includeif.gitdir:D:/a/checkout/checkout/.git.path
+2026-09-29T02:54:38.7645178Z includeif.gitdir:D:/a/checkout/checkout/.git/worktrees/*.path
+2026-09-29T02:54:38.7645516Z includeif.gitdir:/github/workspace/.git.path
+2026-09-29T02:54:38.7645817Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-29T02:54:38.7686365Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/checkout/checkout/.git.path
+2026-09-29T02:54:38.7919820Z D:\a\_temp\git-credentials-ac67cc5c-edfc-41d5-b648-447f5994525c.config
+2026-09-29T02:54:38.7961575Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/checkout/checkout/.git.path D\:\\a\\_temp\\git\-credentials\-ac67cc5c\-edfc\-41d5\-b648\-447f5994525c\.config
+2026-09-29T02:54:38.8244390Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:D:/a/checkout/checkout/.git/worktrees/*.path
+2026-09-29T02:54:38.8476601Z D:\a\_temp\git-credentials-ac67cc5c-edfc-41d5-b648-447f5994525c.config
+2026-09-29T02:54:38.8517411Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:D:/a/checkout/checkout/.git/worktrees/*.path D\:\\a\\_temp\\git\-credentials\-ac67cc5c\-edfc\-41d5\-b648\-447f5994525c\.config
+2026-09-29T02:54:38.8782272Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-29T02:54:38.9009530Z /github/runner_temp/git-credentials-ac67cc5c-edfc-41d5-b648-447f5994525c.config
+2026-09-29T02:54:38.9047897Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-ac67cc5c\-edfc\-41d5\-b648\-447f5994525c\.config
+2026-09-29T02:54:38.9309307Z [command]"C:\Program Files\Git\bin\git.exe" config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-29T02:54:38.9522871Z /github/runner_temp/git-credentials-ac67cc5c-edfc-41d5-b648-447f5994525c.config
+2026-09-29T02:54:38.9597849Z [command]"C:\Program Files\Git\bin\git.exe" config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-ac67cc5c\-edfc\-41d5\-b648\-447f5994525c\.config
+2026-09-29T02:54:38.9856712Z [command]"C:\Program Files\Git\bin\git.exe" submodule foreach --recursive "git config --local --show-origin --name-only --get-regexp remote.origin.url"
+2026-09-29T02:54:39.4504706Z Removing credentials config 'D:\a\_temp\git-credentials-ac67cc5c-edfc-41d5-b648-447f5994525c.config'
+2026-09-29T02:54:39.4694028Z Cleaning up orphan processes

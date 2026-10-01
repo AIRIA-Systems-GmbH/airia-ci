@@ -1,0 +1,40 @@
+2026-09-29T02:52:39.1512299Z   persist-credentials: true
+2026-09-29T02:52:39.1512591Z   clean: true
+2026-09-29T02:52:39.1512863Z   sparse-checkout-cone-mode: true
+2026-09-29T02:52:39.1513177Z   fetch-depth: 1
+2026-09-29T02:52:39.1513433Z   fetch-tags: false
+2026-09-29T02:52:39.1513712Z   show-progress: true
+2026-09-29T02:52:39.1514019Z   lfs: false
+2026-09-29T02:52:39.1514460Z   submodules: false
+2026-09-29T02:52:39.1514733Z   set-safe-directory: true
+2026-09-29T02:52:39.1515041Z   allow-unsafe-pr-checkout: false
+2026-09-29T02:52:39.1515346Z env:
+2026-09-29T02:52:39.1515961Z   https_proxy: http://no-such-proxy:3128
+2026-09-29T02:52:39.1516364Z   no_proxy: api.github.com,github.com
+2026-09-29T02:52:39.1516681Z ##[endgroup]
+2026-09-29T02:52:39.2348674Z Syncing repository: actions/checkout
+2026-09-29T02:52:39.2353280Z ##[group]Getting Git version info
+2026-09-29T02:52:39.2373214Z Working directory is '/home/runner/work/checkout/checkout/basic'
+2026-09-29T02:52:39.2386217Z [command]/home/runner/work/checkout/checkout/override-git-version/git version
+2026-09-29T02:52:39.2422183Z override git version 1.2.3
+2026-09-29T02:52:39.2474649Z ##[endgroup]
+2026-09-29T02:52:39.2475129Z The repository will be downloaded using the GitHub REST API
+2026-09-29T02:52:39.2476063Z To create a local Git repository instead, add Git 2.18 or higher to the PATH
+2026-09-29T02:52:39.2477346Z Downloading the archive
+2026-09-29T02:52:39.6761094Z Writing archive to disk
+2026-09-29T02:52:39.6771272Z Extracting the archive
+2026-09-29T02:52:39.6841060Z [command]/usr/bin/tar xz --warning=no-unknown-keyword --overwrite -C /home/runner/work/checkout/checkout/basic/59659697-16e7-4bd1-9e64-69b8399cd430 -f /home/runner/work/checkout/checkout/basic/59659697-16e7-4bd1-9e64-69b8399cd430.tar.gz
+2026-09-29T02:52:39.6888142Z Resolved version actions-checkout-82f7190
+2026-09-29T02:52:39.7066710Z ##[group]Run __test__/verify-basic.sh --archive
+2026-09-29T02:52:39.7067482Z [36;1m__test__/verify-basic.sh --archive[0m
+2026-09-29T02:52:39.7162781Z shell: /usr/bin/bash -e {0}
+2026-09-29T02:52:39.7163256Z env:
+2026-09-29T02:52:39.7163687Z   https_proxy: http://no-such-proxy:3128
+2026-09-29T02:52:39.7164365Z   no_proxy: api.github.com,github.com
+2026-09-29T02:52:39.7164875Z ##[endgroup]
+2026-09-29T02:52:39.7396575Z Post job cleanup.
+2026-09-29T02:52:39.8331975Z Post job cleanup.
+2026-09-29T02:52:39.9268665Z Post job cleanup.
+2026-09-29T02:52:40.0165226Z [command]/home/runner/work/checkout/checkout/override-git-version/git version
+2026-09-29T02:52:40.0204632Z override git version 1.2.3
+2026-09-29T02:52:40.0340508Z Cleaning up orphan processes

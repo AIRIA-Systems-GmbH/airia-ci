@@ -75,9 +75,15 @@ name: Claude Code Review (shared)
 # Later reviews are `@claude`.
 #
 # WHAT IT READS. The calling run's job results and full logs, collected by the
-# ci-results action into $RUNNER_TEMP/ci-results/. Those ARE the gate figures
-# for this commit; the reviewer checks the PR's claims against them and runs a
-# command only for what CI does not cover. No service containers run here.
+# ci-results action into ci-results/ INSIDE the checkout — Claude's working
+# directory — and kept out of git by .git/info/exclude. Those ARE the gate
+# figures for this commit, and the only CI source: the reviewer reads them by
+# the relative path `ci-results/jobs.md`, so no command expands a variable and
+# no directory outside the checkout is granted, and it never asks
+# `gh pr checks` (this job has no `checks: read`; its "Resource not
+# accessible" read as "no CI results"). The reviewer checks the PR's claims
+# against them and runs a command only for what CI does not cover. No service
+# containers run here.
 #
 # WHICH CLAUDE. The claude-cli action: a build cached on the runner's
 # persistent volume, refreshed to the latest release at most once a day.
@@ -181,6 +187,13 @@ jobs:
           # it inherited, and a shallow clone has neither.
           fetch-depth: 0
 
+      # The gate results are staged in ci-results/ inside the checkout, where
+      # Claude can read them by a relative path; this keeps them out of
+      # `git status` and out of any commit.
+      - name: Keep ci-results/ out of git
+        if: steps.once.outputs.review == 'true'
+        run: echo 'ci-results/' >> "$(git rev-parse --git-path info/exclude)"
+
       # Optional, by convention: the CALLER's own toolchain action. It gets no
       # token: airia-* packages install from the internal index, so no job
       # needs to read another repository.
@@ -196,17 +209,18 @@ jobs:
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
-          out-dir: ${{ runner.temp }}/ci-results
+          out-dir: ${{ github.workspace }}/ci-results
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Claude may read only ci-results/ outside the checkout (the
-      # claude-settings action says why), so the toolchain's status goes there.
+      # Claude reads nothing outside the checkout (the claude-settings action
+      # says why), so the toolchain's status goes into ci-results/ beside the
+      # gate results.
       - name: Stage the toolchain status for Claude
         if: steps.once.outputs.review == 'true'
         run: |
-          mkdir -p "$RUNNER_TEMP/ci-results"
+          mkdir -p "$GITHUB_WORKSPACE/ci-results"
           if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
-            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$RUNNER_TEMP/ci-results/"
+            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$GITHUB_WORKSPACE/ci-results/"
           fi
 
       - name: Resolve the cached Claude Code
@@ -246,16 +260,21 @@ jobs:
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
               rules for the review, and following them is not optional.
             - You are on the same self-hosted Thor runner pool as this repository's CI. If
-              `${{ runner.temp }}/ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+              `ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
               step provisioned and anything it could NOT provision. If it does not, no toolchain
               was provisioned beyond what the runner has.
-            - CI HAS ALREADY RUN on this exact commit. `cat ${{ runner.temp }}/ci-results/jobs.md` lists
-              every gate job with its conclusion and failed steps; the full log of each is beside it
-              in `${{ runner.temp }}/ci-results/logs/`. Those are the gate figures: quote them, grep them
-              for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
-              duplicated work, and the log is the more faithful record.
-            - Write every path out in full. Bash refuses a command that expands a variable, so
-              `$RUNNER_TEMP` in `.github/claude-review.md` means `${{ runner.temp }}`.
+            - CI HAS ALREADY RUN on this exact commit. `cat ci-results/jobs.md` lists every gate
+              job with its conclusion and failed steps; the full log of each is beside it in
+              `ci-results/logs/`. Those are the gate figures: quote them, grep them for counts,
+              coverage and skips. Do NOT re-run a gate CI already ran here — that is duplicated
+              work, and the log is the more faithful record.
+            - ci-results/ is your ONLY source of CI results. Do not use `gh pr checks` or the
+              check-runs API: this job's token cannot read checks, and that refusal is not "no CI
+              results". If `ci-results/jobs.md` is missing or says the lookup failed, say so.
+            - ci-results/ is in your working directory (the checkout) and ignored by git. Use
+              relative paths: Bash refuses a command that expands a variable, and nothing outside
+              the checkout is readable, so `$RUNNER_TEMP/ci-results` in `.github/claude-review.md`
+              means `ci-results` here.
             - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
               runners. A command outside it is refused, and nobody can approve it here — report
               that gate as NOT RUN, with the command, rather than working around the refusal.

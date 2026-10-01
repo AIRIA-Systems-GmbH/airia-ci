@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# A stand-in for `gh` that serves the recorded jobs-API fixture, so the
+# ci-results action's shipped script runs offline and deterministically.
+# Only the calls that script makes are implemented; anything else fails loud.
+set -euo pipefail
+fixture="${FAKE_GH_FIXTURE:?FAKE_GH_FIXTURE must point at the fixture directory}"
+[ "${1:-}" = api ] || { echo "fake-gh: only 'gh api' is implemented, got: $*" >&2; exit 2; }
+shift
+jqexpr="."; endpoint=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help) echo "  --allow-escape-sequences"; exit 0 ;;
+    --paginate|--allow-escape-sequences) shift ;;
+    --jq) jqexpr="$2"; shift 2 ;;
+    -*) echo "fake-gh: unexpected flag $1" >&2; exit 2 ;;
+    *) endpoint="$1"; shift ;;
+  esac
+done
+case "$endpoint" in
+  */actions/runs/*/jobs*) file="$fixture/jobs.json" ;;
+  */actions/jobs/*/logs) id="${endpoint%/logs}"; id="${id##*/}"; cat "$fixture/logs/$id.log"; exit 0 ;;
+  */actions/runs/*) file="$fixture/run.json" ;;
+  *) echo "fake-gh: no fixture for $endpoint" >&2; exit 2 ;;
+esac
+jq -r "$jqexpr" "$file"
