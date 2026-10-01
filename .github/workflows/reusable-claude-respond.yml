@@ -318,7 +318,7 @@ jobs:
               f"Run `cat {tmp}/ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP means {tmp}. Write every path out in full: Bash refuses a command that expands a variable.",
           ]
           if os.environ["HAS_GATE"] == "true":
-              parts.append(f"On a pull request, `cat {tmp}/ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in {tmp}/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. If the file is missing, the lookup failed: run the gates yourself.")
+              parts.append(f"On a pull request, `cat {tmp}/ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in {tmp}/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. They are the only source of gate results: this job cannot read the checks API, so `gh pr checks` and check-runs are not available. If the file is missing, the lookup failed: run the gates yourself.")
           else:
               parts.append("This repository has no gate workflow, so verify by running its gates yourself instead of restating numbers from the PR.")
           parts += [
