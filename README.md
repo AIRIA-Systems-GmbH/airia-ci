@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
-The shared CI harness for AIRIA repositories. It has two reusable workflows and three composite actions, consumed at the moving tag `@ci-v3`.
+The shared CI harness for AIRIA repositories. It has two reusable workflows and four composite actions, consumed at the moving tag `@ci-v3`.
 
 | Path | What it is |
 |---|---|
@@ -14,6 +14,7 @@ The shared CI harness for AIRIA repositories. It has two reusable workflows and 
 | `.github/actions/claude-settings` | The one Claude Code permission policy both workflows use: an explicit Bash allowlist (never a bare `Bash`), in a read-only `review` profile and a `respond` profile that can also write and commit. |
 | `.github/actions/ci-results` | Downloads every completed job of a workflow run (its conclusion, failed steps and full log) for a Claude job to read. |
 | `.github/actions/claude-cli` | A Claude Code build cached on the runner's `/var/cache/ci` volume, refreshed at most once a day. |
+| `.github/actions/verified-commit` | Commits a job's working-tree changes as a GitHub-signed ("Verified") commit, through `createCommitOnBranch` and a contents-only token minted for the AIRIA commit App, so no signing key lives on the runner. `verified_commit.py` beside it is the same thing as a CLI. Its contract and limits are its own header. |
 
 ## Using it
 
@@ -23,6 +24,10 @@ The call contract is the header of `reusable-claude-review.yml`. Read it before 
 - has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository holds no secrets);
 - has self-hosted runners labelled `[self-hosted, linux, x64, thor]`;
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
+
+## Tests
+
+`python3 -m unittest discover -s tests` (stdlib only). The `self-test` workflow runs it on every pull request, on a GitHub-hosted runner.
 
 ## Versioning
 
