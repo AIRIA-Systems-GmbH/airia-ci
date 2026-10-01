@@ -37,6 +37,7 @@ class FakeGitHub:
         self.branches = dict(branches)
         self.verified = verified
         self.mutations, self.created_refs = [], []
+        self.reject_graphql = False
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -68,6 +69,8 @@ class FakeGitHub:
                     fake.created_refs.append(body)
                     fake.branches[body["ref"].removeprefix("refs/heads/")] = body["sha"]
                     return self.reply(201, {})
+                if fake.reject_graphql:
+                    return self.reply(401, {"message": "Bad credentials"})
                 inp = body["variables"]["input"]
                 fake.mutations.append(inp)
                 name = inp["branch"]["branchName"]
@@ -106,12 +109,18 @@ class VerifiedCommitTest(unittest.TestCase):
         os.environ.update(self.env)
         self.tmp.cleanup()
 
+    def point_at(self, fake):
+        # Both: a GitHub runner exports GITHUB_GRAPHQL_URL, which would send
+        # the mutation to the real API.
+        os.environ["GITHUB_API_URL"] = fake.url
+        os.environ["GITHUB_GRAPHQL_URL"] = fake.url + "/graphql"
+
     def run_main(self, *args, fake=None, token="t0ken"):
         os.environ.pop("GITHUB_OUTPUT", None)
         os.environ.pop("GITHUB_TOKEN", None)
         os.environ["GH_TOKEN"] = token
         if fake:
-            os.environ["GITHUB_API_URL"] = fake.url
+            self.point_at(fake)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = vc.main(["--repo", "o/r", "--cwd", str(self.repo), *args])
@@ -192,6 +201,15 @@ class VerifiedCommitTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("STALE_DATA", err)
 
+    def test_a_rejected_token_is_reported_not_swallowed(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        fake.reject_graphql = True
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn("Bad credentials", err)
+
     def test_an_unverified_commit_fails_loud(self):
         self.edit_tree()
         fake = FakeGitHub({"b": self.head}, verified=False)
@@ -206,7 +224,7 @@ class VerifiedCommitTest(unittest.TestCase):
         self.addCleanup(fake.close)
         out_file = self.repo.parent / f"{self.repo.name}.out"
         self.addCleanup(lambda: out_file.unlink(missing_ok=True))
-        os.environ["GITHUB_API_URL"] = fake.url
+        self.point_at(fake)
         os.environ["GH_TOKEN"] = "t"
         os.environ["GITHUB_OUTPUT"] = str(out_file)
         with contextlib.redirect_stdout(io.StringIO()):

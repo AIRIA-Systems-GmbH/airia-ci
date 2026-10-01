@@ -130,9 +130,10 @@ class GitHub:
             raise RuntimeError(f"could not create {branch} at {sha}: {status} {data}")
 
     def create_commit(self, variables: dict) -> tuple[dict | None, list]:
-        _, data = self.request("POST", self.graphql_url, {"query": MUTATION, "variables": variables})
+        status, data = self.request("POST", self.graphql_url, {"query": MUTATION, "variables": variables})
         commit = ((data.get("data") or {}).get("createCommitOnBranch") or {}).get("commit")
-        return commit, data.get("errors") or []
+        # A 401/403 has no `errors`, only a `message`: report that, not `[]`.
+        return commit, data.get("errors") or [{"status": status, "message": data.get("message")}]
 
     def verification(self, repo: str, sha: str) -> dict:
         _, data = self.request("GET", f"{self.api}/repos/{repo}/commits/{sha}")
