@@ -253,7 +253,9 @@ jobs:
               every gate job with its conclusion and failed steps; the full log of each is beside it
               in `${{ runner.temp }}/ci-results/logs/`. Those are the gate figures: quote them, grep them
               for counts, coverage and skips. Do NOT re-run a gate CI already ran here — that is
-              duplicated work, and the log is the more faithful record.
+              duplicated work, and the log is the more faithful record. ci-results/ is the only
+              source of gate results: this job's token cannot read the checks API, so
+              `gh pr checks` and `gh api .../check-runs` are not available.
             - Write every path out in full. Bash refuses a command that expands a variable, so
               `$RUNNER_TEMP` in `.github/claude-review.md` means `${{ runner.temp }}`.
             - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate

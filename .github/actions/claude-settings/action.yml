@@ -43,6 +43,12 @@ description: >-
 # the rest of $RUNNER_TEMP holds other actions' files, credentials included.
 # Both shared workflows stage what Claude must read there.
 #
+# NO CHECKS API. `gh pr checks` is not allowed: the callers' `permissions:`
+# blocks grant no `checks: read`, so it can only fail ("Resource not
+# accessible by integration"; AIRIA-process PR #74, Portfolio-Dashboard PR #53),
+# and granting it would make every caller widen its block. ci-results/ comes
+# from the same run and carries the logs, which the checks API does not.
+#
 # RESIDUAL RISK, stated rather than hidden: an allowed gate runner (`pytest`,
 # `cargo test`) executes the repository's code — and `respond` can WRITE that
 # code first. The allowlist narrows what injected text can steer Claude into;
@@ -86,7 +92,7 @@ runs:
         BASH_READ = [
             "git diff", "git log", "git show", "git status", "git blame",
             "git ls-files", "git grep", "git rev-parse", "git merge-base",
-            "gh pr view", "gh pr diff", "gh pr checks", "gh run view",
+            "gh pr view", "gh pr diff", "gh run view",
             "cat", "head", "tail", "ls", "wc", "grep", "rg", "sort", "uniq",
             "cut", "diff", "jq", "cd",
         ]
