@@ -101,8 +101,8 @@ runs:
       with:
         client-id: ${{ inputs.client-id }}
         private-key: ${{ inputs.private-key }}
-        # this repository only, and only what a commit needs
-        repositories: ${{ github.event.repository.name }}
+        # no owner/repositories: the token covers this repository only;
+        # and only what a commit needs
         permission-contents: write
 
     - name: Commit through the API

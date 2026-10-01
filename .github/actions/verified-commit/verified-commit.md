@@ -110,9 +110,10 @@ and never commit, so they stay as they are. Only the bump commit moves:
    version declaration the release-engineer lists today (`pyproject.toml`,
    `__version__`, the `uv.lock` project entry) plus the CHANGELOG heading;
    then `verified-commit` with `branch: release/v<version>` and `paths:` set to
-   exactly those files; then `gh pr create` with the App token
-   (`pull_requests: write`). Because the commit is the App's, the PR's
-   `ci.yml` gate runs.
+   exactly those files; then `gh pr create` with a token from its own
+   `actions/create-github-app-token` step (`permission-pull-requests: write`)
+   — the action's internal token is not exposed and carries `contents: write`
+   only. Because the commit is the App's, the PR's `ci.yml` gate runs.
 2. The release-engineer agent stops committing the bump: it dispatches
    `bump.yml`, writes the CHANGELOG body / "surface delta" paragraph into the
    PR (a second `verified-commit` call, or a PR suggestion the operator
