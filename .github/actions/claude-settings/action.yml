@@ -44,9 +44,11 @@ description: >-
 # name that relative path: no `additionalDirectories` grant, and the rest of
 # $RUNNER_TEMP — other actions' files, credentials included — stays unreadable.
 #
-# NO `gh pr checks`. It reads the Checks API, and neither caller grants
-# `checks: read`: its "Resource not accessible by integration" was read as
-# "no CI results". ci-results/ is the one CI source.
+# NO CHECKS API. `gh pr checks` is not allowed: the callers' `permissions:`
+# blocks grant no `checks: read`, so it can only fail ("Resource not
+# accessible by integration"; AIRIA-process PR #74, Portfolio-Dashboard PR #53),
+# and granting it would make every caller widen its block. ci-results/ comes
+# from the same run and carries the logs, which the checks API does not.
 #
 # RESIDUAL RISK, stated rather than hidden: an allowed gate runner (`pytest`,
 # `cargo test`) executes the repository's code — and `respond` can WRITE that
