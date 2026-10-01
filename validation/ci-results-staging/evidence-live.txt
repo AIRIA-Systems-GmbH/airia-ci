@@ -1,0 +1,27 @@
+PASS  new settings grant no directory outside the checkout
+PASS  new settings no longer allow 'gh pr checks'
+PASS  old settings (origin/main) DID grant $RUNNER_TEMP/ci-results
+source: LIVE run actions/checkout#36514614158 via the real gh
+--- jobs.md as collected ---
+# CI results — run https://github.com/actions/checkout/actions/runs/36514614158
+
+Commit: 384ec1874287eccce8e9af4362bf8096f614c5f8. One log per job in logs/, named by job id.
+
+| Job | Conclusion | Failed steps | Log |
+|---|---|---|---|
+| test-git-container | success | - | logs/109234028743.log |
+| build | failure | Verify no unstaged changes | logs/109234028900.log |
+| test (windows-latest) | success | - | logs/109234028948.log |
+| test (macos-latest) | success | - | logs/109234028966.log |
+| test-proxy | success | - | logs/109234029018.log |
+| test (ubuntu-latest) | success | - | logs/109234029044.log |
+| test-output | success | - | logs/109234029109.log |
+| test-bypass-proxy | success | - | logs/109234029565.log |
+---
+PASS  collected=8 reported in GITHUB_OUTPUT
+PASS  jobs.md names the run's head commit
+PASS  jobs.md has one row per completed job
+PASS  every log was fetched (no 'log unavailable')
+PASS  ci-results/ is invisible to git status
+PASS  git add -A stages nothing from ci-results/
+SKIP_CLAUDE set: headless-reader cases not run

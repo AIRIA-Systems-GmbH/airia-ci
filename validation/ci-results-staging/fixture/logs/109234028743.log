@@ -1,0 +1,40 @@
+2026-09-29T02:52:59.5385375Z includeif.gitdir:/github/workspace/.git.path
+2026-09-29T02:52:59.5385811Z includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-29T02:52:59.5390722Z [command]/opt/bitnami/git/bin/git config --local --get-all includeif.gitdir:/__w/checkout/checkout/.git.path
+2026-09-29T02:52:59.5409819Z /__w/_temp/git-credentials-fdb0550d-4950-4991-8e50-903408722cd1.config
+2026-09-29T02:52:59.5417151Z [command]/opt/bitnami/git/bin/git config --local --unset includeif.gitdir:/__w/checkout/checkout/.git.path \/__w\/_temp\/git\-credentials\-fdb0550d\-4950\-4991\-8e50\-903408722cd1\.config
+2026-09-29T02:52:59.5446795Z [command]/opt/bitnami/git/bin/git config --local --get-all includeif.gitdir:/__w/checkout/checkout/.git/worktrees/*.path
+2026-09-29T02:52:59.5465708Z /__w/_temp/git-credentials-fdb0550d-4950-4991-8e50-903408722cd1.config
+2026-09-29T02:52:59.5472790Z [command]/opt/bitnami/git/bin/git config --local --unset includeif.gitdir:/__w/checkout/checkout/.git/worktrees/*.path \/__w\/_temp\/git\-credentials\-fdb0550d\-4950\-4991\-8e50\-903408722cd1\.config
+2026-09-29T02:52:59.5499075Z [command]/opt/bitnami/git/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git.path
+2026-09-29T02:52:59.5517785Z /github/runner_temp/git-credentials-fdb0550d-4950-4991-8e50-903408722cd1.config
+2026-09-29T02:52:59.5523878Z [command]/opt/bitnami/git/bin/git config --local --unset includeif.gitdir:/github/workspace/.git.path \/github\/runner_temp\/git\-credentials\-fdb0550d\-4950\-4991\-8e50\-903408722cd1\.config
+2026-09-29T02:52:59.5550875Z [command]/opt/bitnami/git/bin/git config --local --get-all includeif.gitdir:/github/workspace/.git/worktrees/*.path
+2026-09-29T02:52:59.5568923Z /github/runner_temp/git-credentials-fdb0550d-4950-4991-8e50-903408722cd1.config
+2026-09-29T02:52:59.5574717Z [command]/opt/bitnami/git/bin/git config --local --unset includeif.gitdir:/github/workspace/.git/worktrees/*.path \/github\/runner_temp\/git\-credentials\-fdb0550d\-4950\-4991\-8e50\-903408722cd1\.config
+2026-09-29T02:52:59.5602430Z [command]/opt/bitnami/git/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-29T02:52:59.5844920Z Removing credentials config '/__w/_temp/git-credentials-fdb0550d-4950-4991-8e50-903408722cd1.config'
+2026-09-29T02:52:59.6000917Z Post job cleanup.
+2026-09-29T02:52:59.6007003Z ##[command]/usr/bin/docker exec  0870d86108d55a1c4e8a7219550a5c64ce321a82f5759a31b17a3c603966b61c sh -c "cat /etc/*release | grep ^ID"
+2026-09-29T02:52:59.7591850Z [command]/opt/bitnami/git/bin/git version
+2026-09-29T02:52:59.7621163Z git version 2.56.0
+2026-09-29T02:52:59.7645458Z Copying '/github/home/.gitconfig' to '/__w/_temp/b1e01a8b-1332-485b-a2bd-91c2fc5d7f4d/.gitconfig'
+2026-09-29T02:52:59.7654489Z Temporarily overriding HOME='/__w/_temp/b1e01a8b-1332-485b-a2bd-91c2fc5d7f4d' before making global git config changes
+2026-09-29T02:52:59.7655320Z Adding repository directory to the temporary git global config as a safe directory
+2026-09-29T02:52:59.7657829Z [command]/opt/bitnami/git/bin/git config --global --add safe.directory /__w/checkout/checkout/localClone
+2026-09-29T02:52:59.7683191Z Removing SSH command configuration
+2026-09-29T02:52:59.7687824Z [command]/opt/bitnami/git/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-09-29T02:52:59.7716558Z [command]/opt/bitnami/git/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-09-29T02:52:59.7959265Z Removing HTTP extra header
+2026-09-29T02:52:59.7962997Z [command]/opt/bitnami/git/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+2026-09-29T02:52:59.7988458Z [command]/opt/bitnami/git/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+2026-09-29T02:52:59.8225736Z Removing includeIf entries pointing to credentials config files
+2026-09-29T02:52:59.8230002Z [command]/opt/bitnami/git/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-09-29T02:52:59.8253883Z [command]/opt/bitnami/git/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-09-29T02:52:59.8618866Z Stop and remove container: 52f1a44c838c4316b434ec55c2bebe47_bitnamigitlatest_543f59
+2026-09-29T02:52:59.8623383Z ##[command]/usr/bin/docker rm --force 0870d86108d55a1c4e8a7219550a5c64ce321a82f5759a31b17a3c603966b61c
+2026-09-29T02:52:59.9695791Z 0870d86108d55a1c4e8a7219550a5c64ce321a82f5759a31b17a3c603966b61c
+2026-09-29T02:52:59.9721024Z Remove container network: github_network_f0629512bd0042a589656095e721526f
+2026-09-29T02:52:59.9724731Z ##[command]/usr/bin/docker network rm github_network_f0629512bd0042a589656095e721526f
+2026-09-29T02:53:00.0568520Z github_network_f0629512bd0042a589656095e721526f
+2026-09-29T02:53:00.0632668Z Cleaning up orphan processes

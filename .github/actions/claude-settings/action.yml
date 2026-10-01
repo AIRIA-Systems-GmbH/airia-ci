@@ -36,12 +36,13 @@ description: >-
 # an `extra-allow` cannot reopen them by accident. `extra-allow` may not grant
 # a bare `Bash`.
 #
-# ONE DIRECTORY OUTSIDE THE CHECKOUT. Claude Code refuses a path outside its
-# working directory even for an allowed `cat`, so without a grant the gate
-# results in $RUNNER_TEMP/ci-results/ are unreadable and the reviewer re-runs
-# gates CI already ran (AIRIA-framework PR #758). Only that directory is added:
-# the rest of $RUNNER_TEMP holds other actions' files, credentials included.
-# Both shared workflows stage what Claude must read there.
+# NOTHING OUTSIDE THE CHECKOUT. Claude Code refuses a path outside its
+# working directory even for an allowed `cat`, so gate results in
+# $RUNNER_TEMP/ci-results/ were unreadable and the reviewer re-ran gates CI
+# had already run (AIRIA-framework PR #758). The shared workflows therefore
+# stage them in ci-results/ inside the checkout, git-excluded, and the prompts
+# name that relative path: no `additionalDirectories` grant, and the rest of
+# $RUNNER_TEMP — other actions' files, credentials included — stays unreadable.
 #
 # NO CHECKS API. `gh pr checks` is not allowed: the callers' `permissions:`
 # blocks grant no `checks: read`, so it can only fail ("Resource not
@@ -146,7 +147,6 @@ runs:
             "permissions": {
                 "allow": allow + extra_allow,
                 "deny": deny + extra_deny,
-                "additionalDirectories": [os.path.join(os.environ["RUNNER_TEMP"], "ci-results")],
             },
             "sandbox": {"enabled": False},
             "env": {

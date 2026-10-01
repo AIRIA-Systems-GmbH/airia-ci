@@ -1,0 +1,40 @@
+2026-09-29T02:52:55.2762536Z  2026/09/29 02:52:51| Process Roles: master worker
+2026-09-29T02:52:55.2762877Z  2026/09/29 02:52:51| With 1024 file descriptors available
+2026-09-29T02:52:55.2763214Z  2026/09/29 02:52:51| Initializing IP Cache...
+2026-09-29T02:52:55.2763539Z  2026/09/29 02:52:51| DNS IPv6 socket created at [::], FD 8
+2026-09-29T02:52:55.2763899Z  2026/09/29 02:52:51| DNS IPv4 socket created at 0.0.0.0, FD 9
+2026-09-29T02:52:55.2764288Z  2026/09/29 02:52:51| Adding nameserver 127.0.0.11 from /etc/resolv.conf
+2026-09-29T02:52:55.2764869Z  2026/09/29 02:52:51| Adding domain 2ghgzfemkatehlg24j53rdxfub.dx.internal.cloudapp.net from /etc/resolv.conf
+2026-09-29T02:52:55.2765637Z  2026/09/29 02:52:51| Adding ndots 1 from /etc/resolv.conf
+2026-09-29T02:52:55.2766071Z  2026/09/29 02:52:51| Logfile: opening log daemon:/var/log/squid/access.log
+2026-09-29T02:52:55.2766514Z  2026/09/29 02:52:51| Logfile Daemon: opening log /var/log/squid/access.log
+2026-09-29T02:52:55.2766977Z  2026/09/29 02:52:51| Local cache digest enabled; rebuild/rewrite every 3600/3600 sec
+2026-09-29T02:52:55.2767969Z  2026/09/29 02:52:51| Store logging disabled
+2026-09-29T02:52:55.2768385Z  2026/09/29 02:52:51| Swap maxSize 0 + 262144 KB, estimated 20164 objects
+2026-09-29T02:52:55.2768768Z  2026/09/29 02:52:51| Target number of buckets: 1008
+2026-09-29T02:52:55.2769078Z  2026/09/29 02:52:51| Using 8192 Store buckets
+2026-09-29T02:52:55.2769365Z  2026/09/29 02:52:51| Max Mem  size: 262144 KB
+2026-09-29T02:52:55.2769642Z  2026/09/29 02:52:51| Max Swap size: 0 KB
+2026-09-29T02:52:55.2769962Z  2026/09/29 02:52:51| Using Least Load store dir selection
+2026-09-29T02:52:55.2770342Z  2026/09/29 02:52:51| Set Current Directory to /var/spool/squid
+2026-09-29T02:52:55.2770717Z  2026/09/29 02:52:51| Finished loading MIME types and icons.
+2026-09-29T02:52:55.2771026Z  2026/09/29 02:52:51| HTCP Disabled.
+2026-09-29T02:52:55.2771304Z  2026/09/29 02:52:51| Pinger socket opened on FD 14
+2026-09-29T02:52:55.2771617Z  2026/09/29 02:52:51| Squid plugin modules loaded: 0
+2026-09-29T02:52:55.2771932Z  2026/09/29 02:52:51| Adaptation support is off.
+2026-09-29T02:52:55.2772397Z  2026/09/29 02:52:51| Accepting HTTP Socket connections at conn3 local=[::]:3128 remote=[::] FD 12 flags=9
+2026-09-29T02:52:55.2772855Z      listening port: 3128
+2026-09-29T02:52:55.2773139Z  2026/09/29 02:52:51 pinger| Initialising ICMP pinger ...
+2026-09-29T02:52:55.2773485Z  2026/09/29 02:52:51 pinger| ICMP socket opened.
+2026-09-29T02:52:55.2773800Z  2026/09/29 02:52:51 pinger| ICMPv6 socket opened
+2026-09-29T02:52:55.2774137Z  2026/09/29 02:52:52| storeLateRelease: released 0 objects
+2026-09-29T02:52:55.2774647Z  1790650373.703    801 172.18.0.2 TCP_TUNNEL/200 502671 CONNECT github.com:443 - HIER_DIRECT/20.29.134.23 -
+2026-09-29T02:52:55.2775290Z  1790650374.296    244 172.18.0.2 TCP_TUNNEL/200 4636 CONNECT api.github.com:443 - HIER_DIRECT/172.182.252.137 -
+2026-09-29T02:52:55.2775976Z  1790650374.486    181 172.18.0.2 TCP_TUNNEL/200 4328 CONNECT codeload.github.com:443 - HIER_DIRECT/172.182.252.132 -
+2026-09-29T02:52:55.2781297Z Stop and remove container: 6c3df6e85ac44b20968e8ffe408718f9_ubuntusquidlatest_cb285b
+2026-09-29T02:52:55.2782439Z ##[command]/usr/bin/docker rm --force e0589c2b8135794318278af226002380d0ea0a5b50861ada492ef5e54fcec51d
+2026-09-29T02:52:55.3904613Z e0589c2b8135794318278af226002380d0ea0a5b50861ada492ef5e54fcec51d
+2026-09-29T02:52:55.3932875Z Remove container network: github_network_a3ac15ccabf747cfa137a33389b241b2
+2026-09-29T02:52:55.3939083Z ##[command]/usr/bin/docker network rm github_network_a3ac15ccabf747cfa137a33389b241b2
+2026-09-29T02:52:55.4983147Z github_network_a3ac15ccabf747cfa137a33389b241b2
+2026-09-29T02:52:55.5054607Z Cleaning up orphan processes

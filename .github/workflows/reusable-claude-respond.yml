@@ -248,6 +248,12 @@ jobs:
           # branch; the action switches to the PR branch afterwards.
           fetch-depth: 0
 
+      # The gate results are staged in ci-results/ inside the checkout, where
+      # Claude can read them by a relative path; this keeps them out of
+      # `git status` and out of anything @claude commits.
+      - name: Keep ci-results/ out of git
+        run: echo 'ci-results/' >> "$(git rev-parse --git-path info/exclude)"
+
       # The caller's own toolchain action, given no token: airia-* packages
       # install from the internal index, so no job reads another repository.
       - name: Provision the CI toolchain
@@ -276,16 +282,17 @@ jobs:
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
         with:
           run-id: ${{ steps.gate-run.outputs.run-id }}
-          out-dir: ${{ runner.temp }}/ci-results
+          out-dir: ${{ github.workspace }}/ci-results
           github-token: ${{ github.token }}
 
-      # Claude may read only ci-results/ outside the checkout (the
-      # claude-settings action says why), so the toolchain's status goes there.
+      # Claude reads nothing outside the checkout (the claude-settings action
+      # says why), so the toolchain's status goes into ci-results/ beside the
+      # gate results.
       - name: Stage the toolchain status for Claude
         run: |
-          mkdir -p "$RUNNER_TEMP/ci-results"
+          mkdir -p "$GITHUB_WORKSPACE/ci-results"
           if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
-            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$RUNNER_TEMP/ci-results/"
+            cp "$RUNNER_TEMP/claude-toolchain-status.md" "$GITHUB_WORKSPACE/ci-results/"
           fi
 
       - name: Resolve the cached Claude Code
@@ -309,16 +316,14 @@ jobs:
           python3 - <<'PY'
           import os
           extra = " ".join(os.environ.get("EXTRA_PROMPT", "").split())
-          # Spelled out: Bash refuses a command that expands a variable.
-          tmp = os.environ["RUNNER_TEMP"]
           if "'" in extra:
               raise SystemExit("extra-prompt may not contain a single quote")
           parts = [
               "You are running inside a one-shot GitHub Action on the self-hosted Thor runner pool, with the same toolchain as the CI of this repository.",
-              f"Run `cat {tmp}/ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP means {tmp}. Write every path out in full: Bash refuses a command that expands a variable.",
+              "Run `cat ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP/ci-results means ci-results here. ci-results/ is in your working directory and ignored by git: use relative paths, because Bash refuses a command that expands a variable and nothing outside the checkout is readable. Never commit ci-results/.",
           ]
           if os.environ["HAS_GATE"] == "true":
-              parts.append(f"On a pull request, `cat {tmp}/ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in {tmp}/ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. They are the only source of gate results: this job cannot read the checks API, so `gh pr checks` and check-runs are not available. If the file is missing, the lookup failed: run the gates yourself.")
+              parts.append("On a pull request, `cat ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. It is your only source of CI results: do not use `gh pr checks` or the check-runs API, which this job cannot read. If the file is missing, the lookup failed: run the gates yourself.")
           else:
               parts.append("This repository has no gate workflow, so verify by running its gates yourself instead of restating numbers from the PR.")
           parts += [
