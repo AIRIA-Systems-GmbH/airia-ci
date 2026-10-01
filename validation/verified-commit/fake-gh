@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+"""A local stand-in for GitHub, for the calls commit.sh makes through `gh`.
+
+  gh api graphql --input F [--jq E]    applies createCommitOnBranch to the bare
+                                       repository FAKE_REMOTE with git plumbing,
+                                       and rejects it, as GitHub does, when the
+                                       branch is not at expectedHeadOid
+  gh api repos/O/R/commits/SHA --jq E  reports verification.verified = true
+
+FAKE, by design: the "verified" answer is canned. Only the real API can prove
+a signature (the post-setup self-test does). FAKE_RACE=1 pushes one more
+commit right after the mutation, as a concurrent pusher would; FAKE_DROP=1
+silently drops the last addition, so the parity check has something to catch.
+"""
+
+import base64, json, os, subprocess, sys, tempfile
+
+remote = os.environ["FAKE_REMOTE"]
+
+
+def git(*args, stdin=None, env=None):
+    return subprocess.run(["git", f"--git-dir={remote}", *args], input=stdin, check=True,
+                          capture_output=True, env={**os.environ, **(env or {})}).stdout.decode().strip()
+
+
+def emit(obj, jq):
+    if jq:
+        out = subprocess.run(["jq", "-r", jq], input=json.dumps(obj).encode(), capture_output=True, check=True)
+        sys.stdout.write(out.stdout.decode())
+    else:
+        print(json.dumps(obj))
+
+
+args = sys.argv[1:]
+if args[:1] != ["api"]:
+    sys.exit(f"fake-gh: only `gh api` is implemented, got {args}")
+jq = args[args.index("--jq") + 1] if "--jq" in args else None
+endpoint = args[1]
+
+if endpoint == "graphql":
+    request = json.load(open(args[args.index("--input") + 1]))
+    i = request["variables"]["input"]
+    ref = f"refs/heads/{i['branch']['branchName']}"
+    try:
+        current = git("rev-parse", "--verify", ref)
+    except subprocess.CalledProcessError:
+        sys.exit("gh: GraphQL: Could not resolve to a ref (createCommitOnBranch)")
+    if current != i["expectedHeadOid"]:
+        sys.exit(f"gh: GraphQL: Expected branch to point to \"{i['expectedHeadOid']}\" but it did not. (createCommitOnBranch)")
+    with tempfile.NamedTemporaryFile() as idx, tempfile.TemporaryDirectory() as wt:
+        env = {"GIT_INDEX_FILE": idx.name, "GIT_WORK_TREE": wt}  # update-index wants a work tree
+        git("read-tree", current, env=env)
+        for d in i["fileChanges"].get("deletions", []):
+            git("update-index", "--force-remove", d["path"], env=env)
+        additions = i["fileChanges"].get("additions", [])
+        if os.environ.get("FAKE_DROP") == "1":  # a server that loses a file
+            additions = additions[:-1]
+        for a in additions:
+            blob = git("hash-object", "-w", "--stdin", stdin=base64.b64decode(a["contents"]))
+            git("update-index", "--add", "--cacheinfo", f"100644,{blob},{a['path']}", env=env)
+        tree = git("write-tree", env=env)
+    msg = i["message"]["headline"] + ("\n\n" + i["message"]["body"] if i["message"].get("body") else "")
+    ident = {"GIT_AUTHOR_NAME": "fake-app[bot]", "GIT_AUTHOR_EMAIL": "bot@example.invalid",
+             "GIT_COMMITTER_NAME": "GitHub", "GIT_COMMITTER_EMAIL": "noreply@github.com"}
+    new = git("commit-tree", tree, "-p", current, "-m", msg, env=ident)
+    git("update-ref", ref, new, current)  # compare-and-swap, like the real thing
+    if os.environ.get("FAKE_RACE") == "1":
+        racer = git("commit-tree", tree, "-p", new, "-m", "a concurrent push", env=ident)
+        git("update-ref", ref, racer, new)
+    emit({"data": {"createCommitOnBranch": {"commit": {"oid": new, "url": "fake"}}}}, jq)
+elif "/commits/" in endpoint:
+    emit({"commit": {"verification": {"verified": True, "reason": "valid (FAKE)"}}}, jq)
+else:
+    sys.exit(f"fake-gh: no fake for {endpoint}")

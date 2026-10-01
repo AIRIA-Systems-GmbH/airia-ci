@@ -1,0 +1,50 @@
+o/r@main on abe88b3b7e8cdf0f40599424cc3ba60afcbc4289: 3 addition(s), 1 deletion(s)
+  + a.txt (4 bytes)
+  + c/d/e.txt (5 bytes)
+  + dir/new.bin (4096 bytes)
+  - gone.txt
+dry run: nothing sent; the request is in /var/folders/12/9c5gy96s0h1ggdksjk1ll3xh0000gn/T/tmp.4bUVCzOHpT/payload.json
+committed=false
+PASS  dry run exits 0
+PASS  additions = modified + new binary + new nested untracked
+PASS  deletions = the removed file
+PASS  .gitignore'd file is not sent
+PASS  binary contents round-trip byte-for-byte
+PASS  expectedHeadOid = the remote head
+PASS  headline and body split
+PASS  the caller's index is untouched
+PASS  dry run sent nothing (remote unchanged)
+PASS  dry run reports committed=false
+PASS  paths: only dir/ is packaged
+PASS  empty change: committed=false, exit 0
+PASS  refuses a new symlink
+PASS  refuses a new executable file
+PASS  refuses a mode change
+PASS  refuses editing an executable (it would land as 100644)
+PASS  refuses unpushed local commits
+PASS  refuses when the remote moved
+PASS  refuses a detached HEAD without a branch
+PASS  refuses a branch missing on origin
+PASS  refuses committing to a branch other than the checked-out one
+o/r@main on 35a31bfcd59736b2a0d7530bb1f33e74f233f223: 2 addition(s), 1 deletion(s)
+  + a.txt (4 bytes)
+  + dir/new.bin (2048 bytes)
+  - gone.txt
+sha=6ee63530ac7356aba633db08bf19f154f6853490
+committed=true
+committed 6ee63530ac7356aba633db08bf19f154f6853490 to o/r@main
+verified=true
+PASS  committed=true and a sha
+PASS  the remote branch is at the new commit
+PASS  the new commit's parent is the old head (no force)
+PASS  the local branch fast-forwarded to it
+PASS  still on the branch, not detached
+PASS  parity: working tree == committed tree
+PASS  ignored file still on disk, not committed
+PASS  verified=true reported (FAKE server's canned answer)
+PASS  detached + branch: commits, HEAD moves to the new commit
+PASS  race: the action fails loud (non-zero)
+PASS  race: the local ref is left where it was
+PASS  race: the working tree is intact
+PASS  parity: a commit missing a file fails loud
+PASS  stale expectedHeadOid is rejected by the server

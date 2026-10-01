@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: verified-commit self-test
+
+# The post-setup test of the AIRIA CI GitHub App (the setup is in
+# .github/actions/verified-commit/verified-commit.md). It commits one file to a
+# throwaway branch through the verified-commit action, prints what GitHub says
+# about the commit's signature as `verified: <true|false>`, and deletes the
+# branch. Run by hand only; it touches nothing but its own branch.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create and delete the throwaway branch; the commit itself is the App's
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the throwaway branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: verified-commit-selftest/${{ github.run_id }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$(git rev-parse HEAD)" > /dev/null
+          git checkout -q -b "$BRANCH"
+          echo "self-test run ${GITHUB_RUN_ID}" > verified-commit-selftest.txt
+
+      - name: Commit through the App
+        id: commit
+        uses: ./.github/actions/verified-commit
+        with:
+          client-id: ${{ vars.AIRIA_CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.AIRIA_CI_APP_PRIVATE_KEY }}
+          message: "verified-commit self-test, run ${{ github.run_id }}"
+
+      - name: Report
+        if: always() && steps.commit.outputs.sha != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" \
+            --jq '"author: \(.author.login // .commit.author.name)", "reason: \(.commit.verification.reason)", "verified: \(.commit.verification.verified)"'
+
+      - name: Delete the throwaway branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: verified-commit-selftest/${{ github.run_id }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" || true
