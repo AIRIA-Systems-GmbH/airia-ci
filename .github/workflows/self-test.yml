@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+
+name: self-test
+
+# This repository's own tests. GitHub-hosted on purpose: the repository is
+# public, so a fork's pull request must never reach the self-hosted Thor pool.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s tests -v
