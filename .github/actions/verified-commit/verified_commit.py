@@ -149,7 +149,7 @@ class GitHub:
 def check_fast_forward(root: Path, branch: str, head: str) -> None:
     """Refuse, before any write, a checkout whose ref cannot follow the commit."""
     current = subprocess.run(["git", "symbolic-ref", "-q", "--short", "HEAD"],
-                             cwd=root, capture_output=True, text=True).stdout.strip()
+                             cwd=root, capture_output=True, text=True, check=False).stdout.strip()
     if current and current != branch:
         raise Refused(f"--fast-forward: the checkout is on {current}, not {branch}")
     if git(root, "rev-parse", "HEAD").strip() != head:
@@ -162,7 +162,7 @@ def fast_forward(root: Path, branch: str, head: str, oid: str, paths: list[str])
     fetched = git(root, "rev-parse", "FETCH_HEAD").strip()
     if fetched != oid:
         return f"origin/{branch} is at {fetched}, not {oid}: it moved again; the checkout stays at {head}"
-    if subprocess.run(["git", "merge-base", "--is-ancestor", head, oid], cwd=root).returncode:
+    if subprocess.run(["git", "merge-base", "--is-ancestor", head, oid], cwd=root, check=False).returncode:
         return f"{oid} does not descend from {head}; the checkout stays there"
     git(root, "reset", "-q", "--mixed", oid)
     drift = git(root, "status", "--porcelain", "--untracked-files=all", "--", *paths)
@@ -174,8 +174,7 @@ def fast_forward(root: Path, branch: str, head: str, oid: str, paths: list[str])
 def set_output(**values: str) -> None:
     if path := os.environ.get("GITHUB_OUTPUT"):
         with open(path, "a") as fh:
-            for key, value in values.items():
-                fh.write(f"{key}={value}\n")
+            fh.writelines(f"{key}={value}\n" for key, value in values.items())
 
 
 def main(argv: list[str] | None = None) -> int:

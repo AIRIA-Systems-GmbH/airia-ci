@@ -239,7 +239,7 @@ class VerifiedCommitTest(unittest.TestCase):
         self.edit_tree()
         fake = FakeGitHub({"b": self.head}, verified=False)
         self.addCleanup(fake.close)
-        code, out, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
         self.assertEqual(code, 3)
         self.assertIn("Commit not Verified", err)
 
@@ -269,7 +269,7 @@ class VerifiedCommitTest(unittest.TestCase):
     def with_origin(self, branch="main"):
         remote = self.repo.parent / f"{self.repo.name}.git"
         sh(self.repo.parent, "git", "init", "-q", "--bare", str(remote))
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(remote)]))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(remote)], check=True))
         sh(self.repo, "git", "remote", "add", "origin", str(remote))
         sh(self.repo, "git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
         fake = FakeGitHub({branch: self.head}, remote=str(remote))
