@@ -104,10 +104,14 @@ class FakeGitHub:
                 blob = git("hash-object", "-w", "--stdin", data=base64.b64decode(a["contents"]))
                 git("update-index", "--add", "--cacheinfo", f"100644,{blob},{a['path']}", env=env)
             tree = git("write-tree", env=env)
-        oid = git("commit-tree", tree, "-p", parent, "-m", inp["message"]["headline"])
+        # GitHub sets the identity itself; a runner has none to guess from.
+        ident = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
+                 for what, value in (("NAME", "fake-app[bot]"), ("EMAIL", "bot@example.invalid"))}
+        oid = git("commit-tree", tree, "-p", parent, "-m", inp["message"]["headline"], env=ident)
         git("update-ref", ref, oid, parent)
         if self.race:
-            git("update-ref", ref, git("commit-tree", tree, "-p", oid, "-m", "a concurrent push"), oid)
+            racer = git("commit-tree", tree, "-p", oid, "-m", "a concurrent push", env=ident)
+            git("update-ref", ref, racer, oid)
         return oid
 
     def close(self):
