@@ -33,9 +33,13 @@ def sh(cwd, *args):
 class FakeGitHub:
     """Just enough of GitHub: refs, createCommitOnBranch, commit verification."""
 
-    def __init__(self, branches, verified=True):
+    def __init__(self, branches, verified=True, remote=None):
         self.branches = dict(branches)
         self.verified = verified
+        # With a bare `remote`, the mutation really builds the commit there,
+        # so a fast-forward can fetch it. `race`: someone pushes right after;
+        # `drop`: the commit silently loses its last file.
+        self.remote, self.race, self.drop = remote, False, False
         self.mutations, self.created_refs = [], []
         self.reject_graphql = False
         fake = self
@@ -77,13 +81,38 @@ class FakeGitHub:
                 if fake.branches.get(name) != inp["expectedHeadOid"]:
                     return self.reply(200, {"data": {"createCommitOnBranch": None}, "errors": [
                         {"type": "STALE_DATA", "message": "Expected branch to point to ..."}]})
-                fake.branches[name] = "c0ffee" * 6 + "abcd"
+                fake.branches[name] = fake.build(inp) if fake.remote else "c0ffee" * 6 + "abcd"
                 return self.reply(200, {"data": {"createCommitOnBranch": {"commit": {
                     "oid": fake.branches[name], "url": "https://github.example/commit"}}}})
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def build(self, inp):
+        def git(*args, data=None, env=None):
+            return subprocess.run(["git", f"--git-dir={self.remote}", *args], input=data, check=True,
+                                  capture_output=True, env={**os.environ, **(env or {})}).stdout.decode().strip()
+        ref, parent = f"refs/heads/{inp['branch']['branchName']}", inp["expectedHeadOid"]
+        additions = inp["fileChanges"]["additions"][:-1 if self.drop else None]
+        with tempfile.NamedTemporaryFile() as idx, tempfile.TemporaryDirectory() as wt:
+            env = {"GIT_INDEX_FILE": idx.name, "GIT_WORK_TREE": wt}
+            git("read-tree", parent, env=env)
+            for d in inp["fileChanges"]["deletions"]:
+                git("update-index", "--force-remove", d["path"], env=env)
+            for a in additions:
+                blob = git("hash-object", "-w", "--stdin", data=base64.b64decode(a["contents"]))
+                git("update-index", "--add", "--cacheinfo", f"100644,{blob},{a['path']}", env=env)
+            tree = git("write-tree", env=env)
+        # GitHub sets the identity itself; a runner has none to guess from.
+        ident = {f"GIT_{who}_{what}": value for who in ("AUTHOR", "COMMITTER")
+                 for what, value in (("NAME", "fake-app[bot]"), ("EMAIL", "bot@example.invalid"))}
+        oid = git("commit-tree", tree, "-p", parent, "-m", inp["message"]["headline"], env=ident)
+        git("update-ref", ref, oid, parent)
+        if self.race:
+            racer = git("commit-tree", tree, "-p", oid, "-m", "a concurrent push", env=ident)
+            git("update-ref", ref, racer, oid)
+        return oid
 
     def close(self):
         self.server.shutdown()
@@ -214,7 +243,7 @@ class VerifiedCommitTest(unittest.TestCase):
         self.edit_tree()
         fake = FakeGitHub({"b": self.head}, verified=False)
         self.addCleanup(fake.close)
-        code, out, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
         self.assertEqual(code, 3)
         self.assertIn("Commit not Verified", err)
 
@@ -237,6 +266,81 @@ class VerifiedCommitTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn('"expectedHeadOid"', out)
         self.assertIn("base64 chars", out)
+
+
+    # -- --fast-forward ---------------------------------------------------
+
+    def with_origin(self, branch="main"):
+        remote = self.repo.parent / f"{self.repo.name}.git"
+        sh(self.repo.parent, "git", "init", "-q", "--bare", str(remote))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(remote)], check=True))
+        sh(self.repo, "git", "remote", "add", "origin", str(remote))
+        sh(self.repo, "git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        fake = FakeGitHub({branch: self.head}, remote=str(remote))
+        self.addCleanup(fake.close)
+        return fake
+
+    def test_fast_forward_moves_the_checkout_to_the_new_commit(self):
+        fake = self.with_origin()
+        self.edit_tree()
+        code, out, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward", fake=fake)
+        self.assertEqual(code, 0, out + err)
+        new = sh(self.repo, "git", "rev-parse", "HEAD")
+        self.assertEqual(new, fake.branches["main"])
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD^"), self.head, "only forward: parent is the old head")
+        self.assertEqual(sh(self.repo, "git", "symbolic-ref", "--short", "HEAD"), "main")
+        self.assertEqual(sh(self.repo, "git", "status", "--porcelain"), "", "the tree is exactly the commit")
+
+    def test_fast_forward_works_on_a_detached_checkout(self):
+        fake = self.with_origin("release/bump")
+        sh(self.repo, "git", "checkout", "-q", "--detach")
+        self.edit_tree()
+        code, out, err = self.run_main("--branch", "release/bump", "--message", "m", "--fast-forward", fake=fake)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), fake.branches["release/bump"])
+
+    def test_without_fast_forward_the_checkout_stays(self):
+        fake = self.with_origin()
+        self.edit_tree()
+        code, _, _ = self.run_main("--branch", "main", "--message", "m", fake=fake)
+        self.assertEqual(code, 0)
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), self.head)
+
+    def test_fast_forward_refuses_a_checkout_on_another_branch_before_writing(self):
+        fake = self.with_origin()
+        sh(self.repo, "git", "checkout", "-q", "-b", "other")
+        self.edit_tree()
+        code, _, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward", fake=fake)
+        self.assertEqual(code, 1)
+        self.assertIn("on other, not main", err)
+        self.assertEqual(fake.mutations, [])
+
+    def test_fast_forward_refuses_a_checkout_not_at_expected_head_before_writing(self):
+        fake = self.with_origin()
+        self.edit_tree()
+        code, _, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward",
+                                     "--expected-head", "f" * 40, fake=fake)
+        self.assertEqual(code, 1)
+        self.assertIn("not at --expected-head", err)
+        self.assertEqual(fake.mutations, [])
+
+    def test_a_push_right_after_the_commit_leaves_the_checkout_alone(self):
+        fake = self.with_origin()
+        fake.race = True
+        self.edit_tree()
+        code, _, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward", fake=fake)
+        self.assertEqual(code, 4)
+        self.assertIn("moved again", err)
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), self.head)
+        self.assertEqual((self.repo / "new.md").read_text(), "new\n", "the working tree is untouched")
+
+    def test_a_commit_that_differs_from_the_working_tree_fails_loud(self):
+        fake = self.with_origin()
+        fake.drop = True
+        self.edit_tree()
+        code, _, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward", fake=fake)
+        self.assertEqual(code, 4)
+        self.assertIn("differs from the working tree", err)
 
 
 if __name__ == "__main__":
