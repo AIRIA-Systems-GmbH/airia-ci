@@ -8,11 +8,17 @@ GitHub signs it ("Verified"): the mutation takes no author, committer or
 signature, which is the condition GitHub sets for signing a bot's API commit.
 
     GH_TOKEN=... python3 verified_commit.py --repo OWNER/NAME --branch B \
-        --message-file msg.txt [--paths auto|FILE...] [--dry-run]
+        --message-file msg.txt [--paths auto|FILE...] [--fast-forward] [--dry-run]
+
+With --fast-forward the checkout's own ref then moves to the new commit
+(fetched from `origin`, which must be --repo), never anywhere else: only when
+origin's branch is exactly that commit and it descends from the old HEAD. The
+working tree must then match it for every committed path.
 
 Exit codes: 0 committed and Verified (or dry run) · 1 refused before any
 write (nothing to commit, unsupported file, bad input) · 2 the API refused the
-commit (e.g. the branch moved since HEAD) · 3 committed but NOT Verified.
+commit (e.g. the branch moved since HEAD) · 3 committed but NOT Verified ·
+4 committed and Verified, but the checkout could not be fast-forwarded to it.
 """
 
 from __future__ import annotations
@@ -140,6 +146,31 @@ class GitHub:
         return (data.get("commit") or {}).get("verification") or {}
 
 
+def check_fast_forward(root: Path, branch: str, head: str) -> None:
+    """Refuse, before any write, a checkout whose ref cannot follow the commit."""
+    current = subprocess.run(["git", "symbolic-ref", "-q", "--short", "HEAD"],
+                             cwd=root, capture_output=True, text=True).stdout.strip()
+    if current and current != branch:
+        raise Refused(f"--fast-forward: the checkout is on {current}, not {branch}")
+    if git(root, "rev-parse", "HEAD").strip() != head:
+        raise Refused("--fast-forward: the checkout is not at --expected-head")
+
+
+def fast_forward(root: Path, branch: str, head: str, oid: str, paths: list[str]) -> str | None:
+    """Move the checkout to `oid`; return why not, or None."""
+    git(root, "fetch", "-q", "origin", f"refs/heads/{branch}")
+    fetched = git(root, "rev-parse", "FETCH_HEAD").strip()
+    if fetched != oid:
+        return f"origin/{branch} is at {fetched}, not {oid}: it moved again; the checkout stays at {head}"
+    if subprocess.run(["git", "merge-base", "--is-ancestor", head, oid], cwd=root).returncode:
+        return f"{oid} does not descend from {head}; the checkout stays there"
+    git(root, "reset", "-q", "--mixed", oid)
+    drift = git(root, "status", "--porcelain", "--untracked-files=all", "--", *paths)
+    if drift.strip():
+        return f"{oid} differs from the working tree:\n{drift}"
+    return None
+
+
 def set_output(**values: str) -> None:
     if path := os.environ.get("GITHUB_OUTPUT"):
         with open(path, "a") as fh:
@@ -161,6 +192,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--expected-head", help="the commit the change was made on (default: local HEAD); "
                     "the commit is refused if the branch has moved past it")
     ap.add_argument("--cwd", default=".", help="any directory inside the checkout")
+    ap.add_argument("--fast-forward", action="store_true",
+                    help="then move the checkout's ref to the new commit (see above)")
     ap.add_argument("--dry-run", action="store_true", help="print the request; send nothing")
     args = ap.parse_args(argv)
 
@@ -173,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
             writes, deletes = list(args.paths), list(args.delete)
         if not writes and not deletes:
             raise Refused("nothing to commit")
+        if args.fast_forward:
+            check_fast_forward(root, args.branch, head)
         text = args.message if args.message is not None else Path(args.message_file).read_text()
         variables = {"input": {
             "branch": {"repositoryNameWithOwner": args.repo, "branchName": args.branch},
@@ -220,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
               f"GitHub reports it unverified ({v.get('reason')}). Authenticate with a GitHub App "
               "installation token.", file=sys.stderr)
         return 3
+    if args.fast_forward:
+        problem = fast_forward(root, args.branch, head, commit["oid"], writes + deletes)
+        if problem:
+            print(f"::error title=Checkout not fast-forwarded::{problem}", file=sys.stderr)
+            return 4
+        print(f"fast-forwarded the checkout to {commit['oid'][:12]}")
     return 0
 
 

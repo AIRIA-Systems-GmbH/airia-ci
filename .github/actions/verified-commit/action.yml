@@ -37,7 +37,14 @@ description: >-
 # write a symlink or set a file mode, so a symlink or an executable file in the
 # change set fails the step before anything is written. The commit lands on top
 # of `expected-head` (default: the checkout's HEAD) or not at all: if the
-# branch has moved, the API refuses it and the step fails.
+# branch has moved, the API refuses it and the step fails. Then, unless
+# `fast-forward: false`, the checkout's ref follows the new commit — only
+# forward, only if nobody pushed after it, and only if the working tree
+# matches it (otherwise the step fails, exit 4). Never a force.
+#
+# INSTALL the App wherever it commits. A repository under a personal account
+# (tumma72/CryptoStudio) can install an organization's App only if the App is
+# set to "Any account"; otherwise give that account its own App.
 #
 #   - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/verified-commit@ci-v3
 #     with:
@@ -78,6 +85,12 @@ inputs:
     description: Any directory inside the checkout.
     required: false
     default: "."
+  fast-forward:
+    description: >-
+      `true` (default): move the checkout's ref to the new commit afterwards.
+      The checkout must be on `branch` (or detached) at `expected-head`.
+    required: false
+    default: "true"
 
 outputs:
   sha:
@@ -123,9 +136,11 @@ runs:
         MESSAGE: ${{ inputs.message }}
         PATHS: ${{ inputs.paths }}
         EXPECTED_HEAD: ${{ inputs.expected-head }}
+        FAST_FORWARD: ${{ inputs.fast-forward }}
       run: |
         args=(--repo "$REPOSITORY" --branch "$BRANCH" "--message=$MESSAGE")
         [ -n "$EXPECTED_HEAD" ] && args+=(--expected-head "$EXPECTED_HEAD")
+        [ "$FAST_FORWARD" = true ] && args+=(--fast-forward)
         if [ -n "$PATHS" ]; then
           mapfile -t files < <(printf '%s\n' "$PATHS" | sed '/^[[:space:]]*$/d')
           args+=(--paths "${files[@]}")
