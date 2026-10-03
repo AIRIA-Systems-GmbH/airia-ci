@@ -36,13 +36,13 @@ compose() { # compose <action.yml> <out-name>
   mv "$RT/claude-settings-review.json" "$tmp/$2.json"
 }
 compose "$repo_root/.github/actions/claude-settings/action.yml" settings-new
-git -C "$repo_root" show origin/main:.github/actions/claude-settings/action.yml > "$tmp/old-settings-action.yml"
+git -C "$repo_root" show 666a54a:.github/actions/claude-settings/action.yml > "$tmp/old-settings-action.yml"
 compose "$tmp/old-settings-action.yml" settings-old
 check "new settings grant no directory outside the checkout" \
   jq -e '.permissions | has("additionalDirectories") | not' "$tmp/settings-new.json"
 check "new settings no longer allow 'gh pr checks'" \
   jq -e '[.permissions.allow[] | select(startswith("Bash(gh pr checks"))] | length == 0' "$tmp/settings-new.json"
-check "old settings (origin/main) DID grant \$RUNNER_TEMP/ci-results" \
+check "old settings (666a54a, before #9) DID grant \$RUNNER_TEMP/ci-results" \
   jq -e --arg d "$RT/ci-results" '.permissions.additionalDirectories == [$d]' "$tmp/settings-old.json"
 
 # ── 2. git exclude, from the shipped workflow steps ───────────────────────

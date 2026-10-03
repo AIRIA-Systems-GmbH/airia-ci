@@ -11,7 +11,7 @@ a real headless Claude Code under the composed review settings.
 
 | Check | What it proves |
 |---|---|
-| settings | the `review` profile grants no directory outside the checkout and no `gh pr checks`; `origin/main`'s did grant `$RUNNER_TEMP/ci-results` |
+| settings | the `review` profile grants no directory outside the checkout and no `gh pr checks`; `666a54a`'s (the commit before #9) did grant `$RUNNER_TEMP/ci-results` |
 | collect | the ci-results action, fed the jobs API of a real run, writes one row per completed job, the head commit, and every log |
 | git exclude | the workflows' "Keep ci-results/ out of git" step leaves `git status` empty and `git add -A` staging nothing |
 | A | `cat ci-results/jobs.md` (relative, no grant) — the figures are read: the head commit comes back verbatim |
