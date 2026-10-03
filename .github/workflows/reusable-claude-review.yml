@@ -74,6 +74,14 @@ name: Claude Code Review (shared)
 # an endless ping-pong (AIRIA-framework PR #405 ran eight rounds that way).
 # Later reviews are `@claude`.
 #
+# A RE-RUN REFRESHES, IT DOES NOT RE-REVIEW. When the earlier review was
+# written by this same run (`gh run rerun --failed` on the same commit, usually
+# for a job no runner ever started), the job stops short of Claude and instead
+# rewrites that comment's gate-results section from the new attempt's
+# ci-results (the review-refresh action). Nothing is re-judged, so this is not
+# the ping-pong above; without it the PR kept "re-run needed" after the re-run
+# passed (AIRIA-framework PR #778).
+#
 # WHAT IT READS. The calling run's job results and full logs, collected by the
 # ci-results action into ci-results/ INSIDE the checkout — Claude's working
 # directory — and kept out of git by .git/info/exclude. Those ARE the gate
@@ -154,15 +162,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ inputs.pr-number }}
+          RUN_ID: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
         run: |
+          # The third field: was the prior review written by THIS run? Its footer
+          # links the run; the closing paren keeps run 42 from matching run 4200.
           prior="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]")
-                      | select(.body | contains("_Automatic review by `claude-code-review.yml`")) | .html_url' | head -1)"
-          if [ -n "${prior}" ]; then
-            echo "PR #${PR} already has its automatic review: ${prior}" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "review=false" >> "$GITHUB_OUTPUT"
-          else
+                      | select(.body | contains("_Automatic review by `claude-code-review.yml`"))
+                      | [.id, .html_url, (.body | contains("/actions/runs/'"${RUN_ID}"')"))] | @tsv' | head -1)"
+          if [ -z "${prior}" ]; then
             echo "review=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          IFS=$'\t' read -r comment_id url same_run <<< "${prior}"
+          echo "PR #${PR} already has its automatic review: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "review=false" >> "$GITHUB_OUTPUT"
+          if [ "${ATTEMPT}" -gt 1 ] && [ "${same_run}" = "true" ]; then
+            echo "It was written by an earlier attempt of this run, so its gate table is refreshed instead." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+            echo "comment-id=${comment_id}" >> "$GITHUB_OUTPUT"
           fi
 
       # Without it the only symptom is claude-code-action's "Environment variable
@@ -204,12 +223,23 @@ jobs:
         uses: ./.github/actions/claude-toolchain
 
       - name: Collect the merge gate's results
-        if: steps.once.outputs.review == 'true'
+        if: steps.once.outputs.review == 'true' || steps.once.outputs.refresh == 'true'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
           out-dir: ${{ github.workspace }}/ci-results
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # A re-run attempt of the run that wrote the review: no new review, just
+      # this attempt's gate table in the existing comment.
+      - name: Refresh the review's gate results
+        if: steps.once.outputs.refresh == 'true'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v3
+        with:
+          comment-id: ${{ steps.once.outputs.comment-id }}
+          jobs-md: ${{ github.workspace }}/ci-results/jobs.md
+          attempt: ${{ github.run_attempt }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Claude reads nothing outside the checkout (the claude-settings action
@@ -303,7 +333,10 @@ jobs:
                inherited.
             3. VERIFY against CI. Check every gate claim in the PR against the CI logs; a CI number
                that disagrees with the author's IS a finding — quote the job and the log line. A red
-               or cancelled gate job is a finding in its own right; read its failed step first. Check
+               or cancelled gate job is a finding in its own right; read its failed step first. A job
+               jobs.md marks `cancelled (never ran)` started no step: report it as infrastructure, not as
+               a code finding or an unreadable log, and name `gh run rerun <run-id> --failed` — a re-run
+               refreshes this review's gate table without a new review. Check
                the gates actually cover the diff: a package the diff touches that no job tested, or
                a skip on a cell that matters, is a finding. Run commands only for those gaps.
             4. Report what you are confident is wrong, most serious first, each with file:line and a

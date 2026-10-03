@@ -69,7 +69,11 @@ runs:
         # never happens. So a failed lookup still writes jobs.md, saying why.
         if ! gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
                --jq '.jobs[] | select(.status == "completed")
-                     | [.id, .name, .conclusion,
+                     | [.id, .name,
+                        # No step ever started: no runner picked the job up, or it was
+                        # cancelled while queued. It has no log, and it is not a result.
+                        (if .conclusion == "cancelled" and ((.steps // []) | length) == 0
+                         then "cancelled (never ran)" else .conclusion end),
                         ([.steps[]? | select(.conclusion == "failure") | .name] | join("; "))]
                      | @tsv' > "$OUT/jobs.tsv" 2> "$OUT/jobs.err" \
            || ! head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; then
@@ -103,10 +107,13 @@ runs:
         case "$(gh api --help 2>&1)" in
           *--allow-escape-sequences*) esc=(--allow-escape-sequences) ;;
         esac
-        n=0; missing=0
+        n=0; missing=0; never=0
         while IFS=$'\t' read -r id name conclusion failed; do
           log="$OUT/logs/$id.log"
-          if ! gh api "${esc[@]}" "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$log" 2> "$log.err" || [ ! -s "$log" ]; then
+          if [ "$conclusion" = "cancelled (never ran)" ]; then
+            echo "(no log: this job was cancelled before any of its steps started, so it never ran)" > "$log"
+            never=$((never + 1))
+          elif ! gh api "${esc[@]}" "repos/$GITHUB_REPOSITORY/actions/jobs/$id/logs" > "$log" 2> "$log.err" || [ ! -s "$log" ]; then
             { echo "(log unavailable: gh api exited non-zero or wrote nothing)"; cat "$log.err"; } > "$log"
             missing=$((missing + 1))
           fi
@@ -118,6 +125,10 @@ runs:
         if [ "$missing" -gt 0 ]; then
           echo "::warning title=CI results::$missing of $n job logs could not be fetched"
           { echo; echo "**WARNING: $missing of $n job logs could not be fetched** — their files say why. Report those gates as conclusion-only, not as read."; } >> "$index"
+        fi
+        if [ "$never" -gt 0 ]; then
+          echo "::warning title=CI results::$never of $n jobs never ran (cancelled before any step started)"
+          { echo; echo "**$never of $n jobs never ran** — cancelled before any step started, so they have no log and no result. That is the runner pool, not the code: \`gh run rerun $RUN_ID --failed\` runs them."; } >> "$index"
         fi
         echo "collected=$n" >> "$GITHUB_OUTPUT"
         cat "$index" >> "$GITHUB_STEP_SUMMARY"

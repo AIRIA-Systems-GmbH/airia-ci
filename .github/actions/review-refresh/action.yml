@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Refresh the review's gate results
+description: >-
+  Edit an automatic review comment so it carries a re-run's gate table, without
+  re-running the review. Repository-agnostic.
+
+# Why: the review runs once per PR. When a gate job is re-run on the same commit
+# (`gh run rerun --failed`, typically for a job no runner ever started), the
+# review job runs again and, finding its own earlier comment, stops. Without
+# this, the PR keeps a table that says "re-run needed" after the re-run passed.
+# The rewrite itself is review_refresh.py beside this file.
+
+inputs:
+  comment-id:
+    description: The automatic review's issue-comment id.
+    required: true
+  jobs-md:
+    description: The ci-results action's jobs.md for this run.
+    required: true
+  attempt:
+    description: This run's attempt number.
+    required: true
+  github-token:
+    description: "A token with `issues: write`."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Refresh the gate table
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        COMMENT_ID: ${{ inputs.comment-id }}
+        JOBS_MD: ${{ inputs.jobs-md }}
+        ATTEMPT: ${{ inputs.attempt }}
+      run: |
+        old="$RUNNER_TEMP/review-before-refresh.md"
+        new="$RUNNER_TEMP/review-after-refresh.md"
+        gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" --jq .body > "$old"
+        python3 "$GITHUB_ACTION_PATH/review_refresh.py" "$old" "$JOBS_MD" "$ATTEMPT" > "$new"
+        # An empty body would wipe the review, footer included.
+        [ -s "$new" ] || { echo "::error title=Review refresh::the refreshed body is empty; the comment was left as it was"; exit 1; }
+        gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" -F "body=@$new" --jq .html_url \
+          | sed 's/^/Refreshed the gate results of /' | tee -a "$GITHUB_STEP_SUMMARY"
