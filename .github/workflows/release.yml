@@ -48,7 +48,12 @@ jobs:
             echo "::error title=Not tested::self-test has not succeeded for ${SHA}"
             exit 1
           fi
-          latest="$(git tag -l 'ci-v*' | sort -V | tail -n 1)"
+          # Only ci-vN is a release: a stray ci-vnext or ci-v3-rc must never be taken for the newest.
+          latest="$(git tag -l 'ci-v*' | grep -E '^ci-v[0-9]+$' | sort -V | tail -n 1)"
+          if [ -z "${latest}" ]; then
+            echo "::error title=No release tag::no ci-vN tag exists; create the first one by hand"
+            exit 1
+          fi
           case "${BUMP}" in
             move)
               tag="${latest}"

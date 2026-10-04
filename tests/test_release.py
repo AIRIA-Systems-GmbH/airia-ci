@@ -81,6 +81,20 @@ class Release(unittest.TestCase):
         self.assertEqual(call["args"][call["args"].index("--commit") + 1], self.head, "the exact commit is checked")
         self.assertIn("success", call["args"])
 
+    def test_a_tag_that_is_not_ci_vN_is_never_taken_for_the_newest(self):
+        # ci-vnext and ci-v11-rc sort after ci-v10 by version; neither is a release.
+        self.git("tag", "ci-vnext")
+        self.git("tag", "ci-v11-rc")
+        p = self.release("new")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.tag_at_origin("ci-v11"), self.head)
+
+    def test_no_ci_v_tag_is_refused_with_a_reason(self):
+        self.git("tag", "-d", "ci-v2", "ci-v10")
+        p = self.release("move")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("No release tag", p.stdout)
+
     def test_only_main_is_released(self):
         p = self.release("new", ref="refs/heads/feature")
         self.assertEqual(p.returncode, 1)
