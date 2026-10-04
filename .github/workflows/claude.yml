@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+
+name: Claude
+
+# The @claude responder, as a consumer wires it, at this repository's own
+# reusable workflow. These events run the default branch's copy of this file,
+# so a pull request cannot change what answers it. On GitHub-hosted runners:
+# see self-test.yml.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+permissions: {}
+
+jobs:
+  claude:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    uses: ./.github/workflows/reusable-claude-respond.yml
+    with:
+      runner: '["ubuntu-latest"]'
+      gate-workflow: self-test.yml
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
