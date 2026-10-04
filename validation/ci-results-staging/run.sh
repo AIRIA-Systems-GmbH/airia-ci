@@ -58,6 +58,7 @@ if [ -n "${LIVE:-}" ]; then
   head_sha="$(gh api "repos/$gh_repo/actions/runs/$run_id" --jq .head_sha)"
   echo "source: LIVE run $gh_repo#$run_id via the real gh"
 else
+  # shellcheck source=validation/ci-results-staging/fixture/SOURCE
   . "$here/fixture/SOURCE"; gh_repo="$repo"; run_id="$run"
   mkdir -p "$tmp/bin"; cp "$here/fake-gh" "$tmp/bin/gh"; chmod +x "$tmp/bin/gh"
   path_prefix="$tmp/bin:"; export FAKE_GH_FIXTURE="$here/fixture"

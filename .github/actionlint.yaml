@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# The reusable workflows run on the AIRIA self-hosted Thor pool.
+self-hosted-runner:
+  labels: [thor]

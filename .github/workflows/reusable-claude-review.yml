@@ -167,6 +167,7 @@ jobs:
         run: |
           # The third field: was the prior review written by THIS run? Its footer
           # links the run; the closing paren keeps run 42 from matching run 4200.
+          # shellcheck disable=SC2016  # the backticks are literal text in the footer
           prior="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]")
                       | select(.body | contains("_Automatic review by `claude-code-review.yml`"))

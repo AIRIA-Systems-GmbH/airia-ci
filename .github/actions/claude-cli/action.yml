@@ -76,6 +76,7 @@ runs:
               touch "$root/.checked"
               # Keep the three newest releases; a job still running an older one
               # holds its inode open, so removal cannot break it.
+              # shellcheck disable=SC2010  # ls -t is the mtime sort a glob lacks; the names are CLI versions
               ls -1t "$root/versions" | grep -v '\.new$' | tail -n +4 | sed "s|^|$root/versions/|" | xargs -r rm -f || true
             else
               echo "::warning title=Claude CLI::claude $ver failed its --version smoke test; keeping the previous build"

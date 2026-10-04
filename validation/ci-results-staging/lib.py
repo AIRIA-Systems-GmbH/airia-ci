@@ -14,7 +14,8 @@ import yaml
 
 
 def step_run(path: str, step_name: str, job: str | None = None) -> str:
-    doc = yaml.safe_load(open(path))
+    with open(path) as f:
+        doc = yaml.safe_load(f)
     if "runs" in doc:  # composite action
         steps = doc["runs"]["steps"]
     else:  # workflow

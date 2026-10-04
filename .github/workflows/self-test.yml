@@ -32,3 +32,22 @@ jobs:
           kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603
           tests/coverage.sh
 
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: >-
+          docker run --rm -v "$PWD:/repo" -w /repo
+          rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+      - name: shellcheck
+        # actionlint checks the run: blocks of workflows, not of composite
+        # actions, so the sliced blocks of every shipped file are checked here.
+        run: |
+          python3 -c 'import sys; sys.path.insert(0, "tests"); import steps; steps.materialise()'
+          mapfile -t tracked < <(git ls-files '*.sh')
+          docker run --rm -v "$PWD:/mnt" -w /mnt \
+            koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d \
+            -x -S warning "${tracked[@]}" validation/ci-results-staging/fake-gh build/coverage/src/*.sh
+      - name: ruff
+        run: pipx run ruff==0.16.10 check .

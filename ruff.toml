@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+target-version = "py311"
+line-length = 120
+# build/ holds the Python sliced out of the YAML for the coverage gate.
+extend-exclude = ["build"]
+
+[lint]
+select = ["E4", "E7", "E9", "F", "B", "SIM", "UP", "I"]
