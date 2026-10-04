@@ -20,3 +20,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m unittest discover -s tests -v
+
+  coverage:
+    # Python and bash as one figure, refused under the floor; the same pinned
+    # image and command as on a laptop (see tests/coverage.sh).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: >-
+          docker run --rm -v "$PWD:/src" -w /src --entrypoint bash
+          kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603
+          tests/coverage.sh
+
