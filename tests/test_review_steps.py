@@ -1,14 +1,12 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
-"""The SHIPPED shell of two steps, run against a fake `gh`:
+"""The shared review workflow's shipped steps, against a fake `gh`.
 
-- ci-results' "Collect the run's job results": a job that started no step is
-  labelled `cancelled (never ran)` and is not counted as an unreadable log;
-- the review's "Skip if this PR already has its automatic review": only a
-  re-run attempt of the run that wrote the review asks for a refresh.
-
-Each `run:` block is read out of the YAML consumers execute, never copied.
-Needs PyYAML and jq (both on GitHub's ubuntu runners).
+- "Skip if this PR already has its automatic review": once per PR, and only a
+  re-run attempt of the run that wrote the review asks for a refresh;
+- "Post the review": the workflow posts Claude's final message, and a run that
+  produced none fails loud instead of going green having posted nothing;
+- the credential, git-exclude and staging steps around them.
 
 Run: python3 -m unittest discover -s tests
 """
@@ -16,147 +14,30 @@ Run: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import json
-import os
 import subprocess
+import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
-import yaml
+from steps import ROOT, Runner, bare, heredoc
 
-ROOT = Path(__file__).resolve().parents[1]
-
-FAKE_GH = textwrap.dedent(
-    """\
-    #!/usr/bin/env python3
-    # Serves FAKE_GH_DIR/<name>.json for the endpoints these two steps call.
-    import os, re, subprocess, sys
-    d = os.environ["FAKE_GH_DIR"]
-    args = sys.argv[1:]
-    assert args[0] == "api", args
-    if "--help" in args:
-        print("  --allow-escape-sequences"); sys.exit(0)
-    jq, endpoint, rest = ".", None, args[1:]
-    while rest:
-        a = rest.pop(0)
-        if a == "--jq": jq = rest.pop(0)
-        elif a.startswith("-"): pass
-        else: endpoint = a
-    m = re.search(r"/actions/jobs/(\\d+)/logs$", endpoint)
-    if m:
-        p = os.path.join(d, f"log-{m.group(1)}.txt")
-        if not os.path.exists(p):
-            print("HTTP 404: Not Found", file=sys.stderr); sys.exit(1)
-        sys.stdout.write(open(p).read()); sys.exit(0)
-    name = ("jobs" if "/jobs" in endpoint else "comments" if "/comments" in endpoint else "run")
-    sys.exit(subprocess.run(["jq", "-r", jq, os.path.join(d, name + ".json")]).returncode)
-    """
-)
-
-
-def step_run(path: Path, step_name: str) -> str:
-    doc = yaml.safe_load(path.read_text())
-    steps = doc["runs"]["steps"] if "runs" in doc else next(iter(doc["jobs"].values()))["steps"]
-    (step,) = [s for s in steps if s.get("name") == step_name]
-    return step["run"]
-
-
-class FakeGitHub:
-    def __init__(self, tmp: Path, **fixtures):
-        self.dir = tmp / "gh"
-        self.dir.mkdir()
-        (tmp / "bin").mkdir()
-        gh = tmp / "bin" / "gh"
-        gh.write_text(FAKE_GH)
-        gh.chmod(0o755)
-        self.path = f"{tmp / 'bin'}:{os.environ['PATH']}"
-        for name, value in fixtures.items():
-            if name.startswith("log_"):
-                (self.dir / f"log-{name[4:]}.txt").write_text(value)
-            else:
-                (self.dir / f"{name}.json").write_text(json.dumps(value))
-
-    def run(self, script: str, tmp: Path, **env) -> dict[str, str]:
-        out, summary = tmp / "out", tmp / "summary"
-        full_env = {
-            **os.environ,
-            "PATH": self.path,
-            "FAKE_GH_DIR": str(self.dir),
-            "GH_TOKEN": "x",
-            "GITHUB_REPOSITORY": "o/r",
-            "GITHUB_SERVER_URL": "https://github.com",
-            "GITHUB_OUTPUT": str(out),
-            "GITHUB_STEP_SUMMARY": str(summary),
-            **env,
-        }
-        subprocess.run(["bash", "-euo", "pipefail", "-c", script], env=full_env, check=True, cwd=tmp)
-        lines = out.read_text().splitlines() if out.exists() else []
-        return dict(line.split("=", 1) for line in lines)
-
-
-def job(id_, name, conclusion, steps):
-    return {"id": id_, "name": name, "status": "completed", "conclusion": conclusion, "steps": steps}
-
-
-RAN = [{"name": "Run tests", "conclusion": "success"}]
-
-
-class CollectLabelsJobsThatNeverRan(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
-        jobs = [
-            job(1, "Lint", "success", RAN),
-            # GitHub's "not acquired by Runner" shape: cancelled, no step, no log.
-            job(2, "SurrealDB", "cancelled", []),
-            # Cancelled mid-run: it ran, so it has a log worth reading.
-            job(3, "Coverage", "cancelled", [{"name": "Run tests", "conclusion": "cancelled"}]),
-        ]
-        gh = FakeGitHub(
-            self.tmp, jobs={"jobs": jobs}, run={"head_sha": "abc123"}, log_1="lint ok\n", log_3="killed\n"
-        )
-        script = step_run(ROOT / ".github/actions/ci-results/action.yml", "Collect the run's job results")
-        self.out = gh.run(script, self.tmp, RUN_ID="42", OUT=str(self.tmp / "ci"))
-        self.jobs_md = (self.tmp / "ci/jobs.md").read_text()
-
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_a_job_with_no_step_is_labelled_never_ran(self):
-        self.assertIn("| SurrealDB | cancelled (never ran) | - | logs/2.log |", self.jobs_md)
-        self.assertIn("never ran", (self.tmp / "ci/logs/2.log").read_text())
-
-    def test_a_job_cancelled_mid_run_is_still_plain_cancelled_with_its_log(self):
-        self.assertIn("| Coverage | cancelled | - | logs/3.log |", self.jobs_md)
-        self.assertEqual((self.tmp / "ci/logs/3.log").read_text(), "killed\n")
-
-    def test_never_ran_is_not_an_unreadable_log(self):
-        # Before: "1 of 3 job logs could not be fetched", which the reviewer
-        # reported as a log it could not read.
-        self.assertNotIn("could not be fetched", self.jobs_md)
-        self.assertIn("**1 of 3 jobs never ran**", self.jobs_md)
-        self.assertIn("gh run rerun 42 --failed", self.jobs_md)
-        self.assertEqual(self.out["collected"], "3")
+WORKFLOW = ROOT / ".github/workflows/reusable-claude-review.yml"
+FOOTER = "_Automatic review by `claude-code-review.yml`"
 
 
 def review(run_id: int, comment_id: int = 7) -> dict:
-    body = (
-        "Nothing blocking.\n\n---\n_Automatic review by `claude-code-review.yml` — "
-        f"[run log](https://github.com/o/r/actions/runs/{run_id}), Claude Code 2.1.288._"
-    )
+    body = f"Nothing blocking.\n\n---\n{FOOTER} — [run log](https://github.com/o/r/actions/runs/{run_id}), Claude Code 2.1.288._"
     return {"id": comment_id, "html_url": f"https://github.com/o/r/pull/9#c{comment_id}",
             "user": {"login": "github-actions[bot]"}, "body": body}
 
 
 class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
-    SCRIPT = step_run(ROOT / ".github/workflows/reusable-claude-review.yml",
-                      "Skip if this PR already has its automatic review")
-
     def once(self, comments, run_id="42", attempt="2"):
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            return FakeGitHub(tmp, comments=comments).run(self.SCRIPT, tmp, PR="9", RUN_ID=run_id, ATTEMPT=attempt)
+        r = Runner(self, [[r"issues/9/comments", {"json": comments}]])
+        p = r.run(WORKFLOW, "Skip if this PR already has its automatic review", PR="9", RUN_ID=run_id, ATTEMPT=attempt)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return r.outputs()
 
     def test_no_prior_review_reviews(self):
         self.assertEqual(self.once([]), {"review": "true"})
@@ -175,6 +56,151 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     def test_someone_elses_comment_is_not_a_review(self):
         other = {**review(42), "user": {"login": "a-human"}}
         self.assertEqual(self.once([other]), {"review": "true"})
+
+
+class RequireTheCredential(unittest.TestCase):
+    def test_a_missing_token_fails_with_the_fix(self):
+        p = Runner(self).run(WORKFLOW, "Require the Claude credential", HAS_CLAUDE_TOKEN="false")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("gh secret set CLAUDE_CODE_OAUTH_TOKEN -R o/r", p.stdout)
+
+    def test_a_present_token_passes(self):
+        self.assertEqual(Runner(self).run(WORKFLOW, "Require the Claude credential", HAS_CLAUDE_TOKEN="true").returncode, 0)
+
+
+class StagingForClaude(unittest.TestCase):
+    """ci-results/ lives inside the checkout, where Claude can read it, and out of git."""
+
+    def checkout(self, r):
+        repo = r.tmp / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        return repo
+
+    def test_ci_results_never_shows_in_git_status(self):
+        r = Runner(self)
+        repo = self.checkout(r)
+        self.assertEqual(r.run(WORKFLOW, "Keep ci-results/ out of git", cwd=repo).returncode, 0)
+        (repo / "ci-results").mkdir()
+        (repo / "ci-results/jobs.md").write_text("x\n")
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo,
+                                capture_output=True, text=True, check=True).stdout
+        self.assertEqual(status, "")
+
+    def test_the_toolchain_status_is_staged_beside_the_gate_results(self):
+        r = Runner(self)
+        repo = self.checkout(r)
+        (r.tmp / "claude-toolchain-status.md").write_text("uv 0.9 provisioned\n")
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((repo / "ci-results/claude-toolchain-status.md").read_text(), "uv 0.9 provisioned\n")
+
+    def test_no_toolchain_status_still_creates_the_directory(self):
+        r = Runner(self)
+        repo = self.checkout(r)
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(list((repo / "ci-results").iterdir()), [])
+
+
+def execution(result: dict | None, *, denials=()) -> list:
+    msgs = [{"type": "system"}, {"type": "assistant"}]
+    if result is not None:
+        msgs.append({"type": "result", "subtype": "success", "num_turns": 12, "is_error": False,
+                     "permission_denials": list(denials), **result})
+    return msgs
+
+
+class PostTheReview(unittest.TestCase):
+    """The workflow posts, not the model: a run that ends without a review fails loud."""
+
+    STEP = "Post the review"
+
+    def post(self, msgs, version="2.1.300"):
+        r = Runner(self, [[r"^pr comment 9 ", {"text": "https://github.com/o/r/pull/9#c1\n"}]])
+        exe = r.tmp / "execution.json"
+        if msgs is not None:
+            exe.write_text(json.dumps(msgs))
+        p = r.run(WORKFLOW, self.STEP, PR="9", CLAUDE_VERSION=version, EXECUTION_FILE=str(exe),
+                  RUN_URL="https://github.com/o/r/actions/runs/42")
+        posted = [c["files"]["--body-file"] for c in r.calls() if c["args"][:2] == ["pr", "comment"]]
+        return p, posted
+
+    def test_the_final_message_is_posted_with_the_contract_footer(self):
+        p, posted = self.post(execution({"result": "## Review\n\nLooks right."}))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (body,) = posted
+        self.assertTrue(body.startswith("## Review\n\nLooks right.\n\n---\n"))
+        # The once-per-PR check keys on this footer: it is part of the contract.
+        self.assertIn(FOOTER + " — [run log](https://github.com/o/r/actions/runs/42), Claude Code 2.1.300._", body)
+
+    def test_no_execution_file_fails_and_posts_nothing(self):
+        p, posted = self.post(None)
+        self.assertEqual((p.returncode, posted), (1, []))
+        self.assertIn("::error title=No review posted::", p.stdout)
+        self.assertIn("Claude did not run to completion", p.stdout)
+
+    def test_an_empty_final_message_fails_and_posts_nothing(self):
+        p, posted = self.post(execution({"result": "   "}))
+        self.assertEqual((p.returncode, posted), (1, []))
+
+    def test_an_errored_run_fails_and_posts_nothing(self):
+        p, posted = self.post(execution({"result": "partial", "is_error": True}))
+        self.assertEqual((p.returncode, posted), (1, []))
+
+    def test_a_run_without_a_result_message_fails(self):
+        p, posted = self.post(execution(None))
+        self.assertEqual((p.returncode, posted), (1, []))
+
+
+class PostTheReviewParser(unittest.TestCase):
+    """The Python inside "Post the review", run as the step runs it: `python3 - <execution> <body>`."""
+
+    def parse(self, msgs, version=""):
+        with tempfile.TemporaryDirectory() as t:
+            exe, body = Path(t) / "execution.json", Path(t) / "body.md"
+            exe.write_text(json.dumps(msgs))
+            env = bare(PATH="/usr/bin:/bin", RUN_URL="https://run", CLAUDE_VERSION=version)
+            p = subprocess.run([sys.executable, str(heredoc(WORKFLOW, "Post the review")), str(exe), str(body)],
+                               env=env, capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            return p.stdout, body.read_text() if body.exists() else None
+
+    def test_denials_are_listed_first_thing_to_read_when_a_review_is_thin(self):
+        denials = [{"tool_name": "Bash", "tool_input": {"command": f"curl {i}"}} for i in range(25)]
+        out, body = self.parse(execution({"result": "ok"}, denials=denials))
+        self.assertIn("permission denials: 25", out)
+        self.assertIn('- Bash: {"command": "curl 0"}', out)
+        self.assertEqual(out.count("- Bash:"), 20, "at most twenty are listed")
+        self.assertIsNotNone(body)
+
+    def test_the_last_result_message_wins(self):
+        msgs = execution({"result": "first"}) + [{"type": "result", "result": "second", "is_error": False}]
+        _, body = self.parse(msgs)
+        self.assertTrue(body.startswith("second\n"))
+
+    def test_no_version_says_the_action_installed_its_own(self):
+        _, body = self.parse(execution({"result": "ok"}))
+        self.assertIn("Claude Code installed by the action._", body)
+
+    def test_an_errored_or_empty_result_writes_no_body_so_nothing_is_posted(self):
+        # The step posts only a non-empty body file, and otherwise fails as
+        # UNREVIEWED: an error text or a blank answer must never reach the PR
+        # as if it were a review.
+        for result in ({"result": "API Error: overloaded", "is_error": True}, {"result": "  \n"}, {}):
+            with self.subTest(result=result):
+                out, body = self.parse(execution(result))
+                self.assertIn("No review text in the final message.", out)
+                self.assertIsNone(body)
+
+    def test_a_corrupt_execution_file_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as t:
+            exe = Path(t) / "execution.json"
+            exe.write_text("{not json")
+            p = subprocess.run([sys.executable, str(heredoc(WORKFLOW, "Post the review")), str(exe), str(Path(t) / "b")],
+                               env=bare(RUN_URL="u"), capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("No execution file", p.stdout)
 
 
 if __name__ == "__main__":

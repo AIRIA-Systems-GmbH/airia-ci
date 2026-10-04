@@ -8,8 +8,12 @@ Run: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 import unittest
 from pathlib import Path
+
+from steps import ROOT, Runner
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github/actions/review-refresh/review_refresh.py"
 spec = importlib.util.spec_from_file_location("review_refresh", SCRIPT)
@@ -75,6 +79,46 @@ class Refresh(unittest.TestCase):
         # replace real results with nothing.
         with self.assertRaises(ValueError):
             rr.refresh(REVIEW, "# CI results\n\n**The run's jobs could not be listed**", attempt=2)
+
+
+
+class TheStep(unittest.TestCase):
+    """The action's shell: read the comment, rewrite it, PATCH it back; never wipe it."""
+
+    ACTION = ROOT / ".github/actions/review-refresh/action.yml"
+
+    def refresh(self, body, jobs):
+        r = Runner(self, [
+            [r"^api --method PATCH repos/o/r/issues/comments/7 ", {"json": {"html_url": "https://c/7"}}],
+            [r"^api repos/o/r/issues/comments/7 --jq .body", {"json": {"body": body}}],
+        ])
+        (r.tmp / "jobs.md").write_text(jobs)
+        p = r.run(self.ACTION, "Refresh the gate table", COMMENT_ID="7", JOBS_MD=str(r.tmp / "jobs.md"), ATTEMPT="2")
+        patches = [c["files"] for c in r.calls() if "PATCH" in c["args"]]
+        return p, patches
+
+    def test_the_refreshed_body_is_patched_into_the_same_comment(self):
+        p, patches = self.refresh(REVIEW.rstrip("\n"), jobs_md("success"))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (files,) = patches
+        (body,) = files.values()
+        self.assertIn("### Gate results after re-run (attempt 2)", body)
+        self.assertIn("Refreshed the gate results of https://c/7", p.stdout)
+
+    def test_a_refresh_that_cannot_be_built_leaves_the_comment_alone(self):
+        p, patches = self.refresh("a human's comment", jobs_md("success"))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(patches, [], "an empty body would wipe the review, footer included")
+
+    def test_the_script_runs_as_a_cli(self):
+        r = Runner(self)
+        (r.tmp / "body.md").write_text(REVIEW)
+        (r.tmp / "jobs.md").write_text(jobs_md("success"))
+
+        p = subprocess.run([sys.executable, str(SCRIPT), str(r.tmp / "body.md"), str(r.tmp / "jobs.md"), "3"],
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, rr.refresh(REVIEW, jobs_md("success"), 3))
 
 
 if __name__ == "__main__":

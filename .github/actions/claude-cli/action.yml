@@ -32,6 +32,8 @@ description: >-
 # previous `current`; with no `current` at all the `path` output is empty and
 # claude-code-action falls back to installing its own, as it did before.
 # `flock` serialises the refresh across the runners sharing the volume.
+#
+# CLAUDE_CLI_CACHE moves the cache root; only the tests set it.
 
 outputs:
   path:
@@ -48,7 +50,7 @@ runs:
       id: resolve
       shell: bash
       run: |
-        root=/var/cache/ci/claude
+        root="${CLAUDE_CLI_CACHE:-/var/cache/ci/claude}"
         if ! mkdir -p "$root/versions" 2>/dev/null || [ ! -w "$root" ]; then
           echo "::warning title=Claude CLI::$root is not writable; claude-code-action will install its own copy"
           echo "path=" >> "$GITHUB_OUTPUT"; echo "version=" >> "$GITHUB_OUTPUT"

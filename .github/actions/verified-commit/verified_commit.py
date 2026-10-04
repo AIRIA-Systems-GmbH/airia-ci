@@ -17,7 +17,7 @@ working tree must then match it for every committed path.
 
 Exit codes: 0 committed and Verified (or dry run) · 1 refused before any
 write (nothing to commit, unsupported file, bad input) · 2 the API refused the
-commit (e.g. the branch moved since HEAD) · 3 committed but NOT Verified ·
+branch or the commit (e.g. the branch moved since HEAD) · 3 committed but NOT Verified ·
 4 committed and Verified, but the checkout could not be fast-forwarded to it.
 """
 
@@ -238,7 +238,11 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     gh = GitHub(token)
     if gh.branch_head(args.repo, args.branch) is None:
-        gh.create_branch(args.repo, args.branch, head)
+        try:
+            gh.create_branch(args.repo, args.branch, head)
+        except RuntimeError as exc:
+            print(f"::error title=Branch refused::{exc}"[:900], file=sys.stderr)
+            return 2
         print(f"created {args.branch} at {head[:12]}")
     commit, errors = gh.create_commit(variables)
     if not commit:

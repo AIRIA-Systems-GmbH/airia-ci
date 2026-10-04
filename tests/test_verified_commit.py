@@ -20,6 +20,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from steps import ROOT, Runner
+
 SCRIPT = Path(__file__).resolve().parents[1] / ".github/actions/verified-commit/verified_commit.py"
 spec = importlib.util.spec_from_file_location("verified_commit", SCRIPT)
 vc = importlib.util.module_from_spec(spec)
@@ -41,7 +43,7 @@ class FakeGitHub:
         # `drop`: the commit silently loses its last file.
         self.remote, self.race, self.drop = remote, False, False
         self.mutations, self.created_refs = [], []
-        self.reject_graphql = False
+        self.reject_graphql = self.reject_ref = False
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -70,6 +72,8 @@ class FakeGitHub:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path.endswith("/git/refs"):
+                    if fake.reject_ref:
+                        return self.reply(422, {"message": "Reference update failed"})
                     fake.created_refs.append(body)
                     fake.branches[body["ref"].removeprefix("refs/heads/")] = body["sha"]
                     return self.reply(201, {})
@@ -116,9 +120,12 @@ class FakeGitHub:
 
     def close(self):
         self.server.shutdown()
+        self.server.server_close()
 
 
-class VerifiedCommitTest(unittest.TestCase):
+class Checkout(unittest.TestCase):
+    """A real git checkout with a base commit; the helpers every test here uses."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = Path(self.tmp.name)
@@ -161,6 +168,19 @@ class VerifiedCommitTest(unittest.TestCase):
         (self.repo / "gone.md").unlink()
         sh(self.repo, "git", "mv", "old.md", "renamed.md")
 
+    def with_origin(self, branch="main"):
+        remote = self.repo.parent / f"{self.repo.name}.git"
+        sh(self.repo.parent, "git", "init", "-q", "--bare", str(remote))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(remote)], check=True))
+        sh(self.repo, "git", "remote", "add", "origin", str(remote))
+        sh(self.repo, "git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        fake = FakeGitHub({branch: self.head}, remote=str(remote))
+        self.addCleanup(fake.close)
+        return fake
+
+
+
+class VerifiedCommitTest(Checkout):
     # -- the change set ---------------------------------------------------
 
     def test_auto_takes_modified_new_deleted_and_renamed_files(self):
@@ -270,16 +290,6 @@ class VerifiedCommitTest(unittest.TestCase):
 
     # -- --fast-forward ---------------------------------------------------
 
-    def with_origin(self, branch="main"):
-        remote = self.repo.parent / f"{self.repo.name}.git"
-        sh(self.repo.parent, "git", "init", "-q", "--bare", str(remote))
-        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(remote)], check=True))
-        sh(self.repo, "git", "remote", "add", "origin", str(remote))
-        sh(self.repo, "git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
-        fake = FakeGitHub({branch: self.head}, remote=str(remote))
-        self.addCleanup(fake.close)
-        return fake
-
     def test_fast_forward_moves_the_checkout_to_the_new_commit(self):
         fake = self.with_origin()
         self.edit_tree()
@@ -341,6 +351,184 @@ class VerifiedCommitTest(unittest.TestCase):
         code, _, err = self.run_main("--branch", "main", "--message", "m", "--fast-forward", fake=fake)
         self.assertEqual(code, 4)
         self.assertIn("differs from the working tree", err)
+
+
+    # -- the edges --------------------------------------------------------
+
+    def test_a_copy_entry_writes_the_copy_and_keeps_its_source(self):
+        # With status.renames=copies, -z puts a copy's source in the next entry too.
+        real = vc.git
+        self.addCleanup(setattr, vc, "git", real)
+        vc.git = lambda *_: "C  copy.md\0orig.md\0R  new.md\0old.md\0 M kept.md\0"
+        self.assertEqual(vc.changed_paths(self.repo), (["copy.md", "new.md", "kept.md"], ["old.md"]))
+
+    def test_explicit_paths_and_deletions_are_taken_as_given(self):
+        self.edit_tree()
+        code, out, _ = self.run_main("--branch", "b", "--message", "m", "--dry-run",
+                                     "--paths", "pyproject.toml", "--delete", "gone.md")
+        self.assertEqual(code, 0)
+        self.assertIn("1 written, 1 deleted", out)
+        self.assertNotIn("new.md", out, "only the named paths")
+
+    def test_a_file_that_is_not_regular_is_refused(self):
+        os.mkfifo(self.repo / "pipe")
+        code, _, err = self.run_main("--branch", "b", "--message", "m", "--dry-run", "--paths", "pipe")
+        self.assertEqual((code, "not a regular file" in err), (1, True))
+
+    def test_no_token_is_refused_before_any_request(self):
+        self.edit_tree()
+        code, _, err = self.run_main("--branch", "b", "--message", "m", token="")
+        self.assertEqual(code, 1)
+        self.assertIn("no GH_TOKEN or GITHUB_TOKEN", err)
+
+    def test_a_refused_branch_is_an_api_refusal_not_a_traceback(self):
+        self.edit_tree()
+        fake = FakeGitHub({"main": self.head})
+        self.addCleanup(fake.close)
+        fake.reject_ref = True
+        code, _, err = self.run_main("--branch", "release/new", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn("::error title=Branch refused::could not create release/new", err)
+        self.assertEqual(fake.mutations, [], "no commit without its branch")
+
+    def test_a_commit_that_does_not_descend_from_head_is_not_fast_forwarded(self):
+        self.with_origin()
+        tree = sh(self.repo, "git", "rev-parse", "HEAD^{tree}")
+        orphan = sh(self.repo, "git", "commit-tree", tree, "-m", "unrelated history")
+        sh(self.repo, "git", "push", "-q", "-f", "origin", f"{orphan}:refs/heads/main")
+        problem = vc.fast_forward(self.repo, "main", self.head, orphan, [])
+        self.assertIn("does not descend from", problem)
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), self.head)
+
+    def test_the_script_runs_as_a_cli(self):
+        p = subprocess.run(["python3", str(SCRIPT), "--repo", "o/r", "--cwd", str(self.repo), "--branch", "b",
+                            "--message", "m", "--dry-run"], capture_output=True, text=True)
+        self.assertEqual((p.returncode, "nothing to commit" in p.stderr), (1, True))
+
+
+ACTION = ROOT / ".github/actions/verified-commit/action.yml"
+
+
+class ActionSteps(Checkout):
+    """The action's own shell: how its inputs become verified_commit.py's arguments."""
+
+    def test_the_repository_input_is_split_into_owner_and_name(self):
+        r = Runner(self)
+        self.assertEqual(r.run(ACTION, "Split the repository name", REPOSITORY="AIRIA-Systems-GmbH/airia-ci").returncode, 0)
+        self.assertEqual(r.outputs(), {"owner": "AIRIA-Systems-GmbH", "name": "airia-ci"})
+
+    def commit_step(self, fake, **env):
+        r = Runner(self)
+        base = {"REPOSITORY": "o/r", "BRANCH": "b", "MESSAGE": "chore: bump\n\nwhy", "PATHS": "",
+                "EXPECTED_HEAD": "", "FAST_FORWARD": "false", "GH_TOKEN": "t0ken",
+                "GITHUB_API_URL": fake.url,
+                "GITHUB_GRAPHQL_URL": fake.url + "/graphql"}
+        p = r.run(ACTION, "Commit through the API", cwd=self.repo, **{**base, **env})
+        return p, r.outputs()
+
+    def test_paths_one_per_line_blank_lines_dropped(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        p, out = self.commit_step(fake, PATHS="\npyproject.toml\n\n  \nnew.md\n")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        sent = fake.mutations[0]
+        self.assertEqual([a["path"] for a in sent["fileChanges"]["additions"]], ["pyproject.toml", "new.md"])
+        self.assertEqual(sent["message"]["headline"], "chore: bump")
+        self.assertEqual(out["verified"], "true")
+
+    def test_no_paths_commits_everything_git_status_reports(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        p, _ = self.commit_step(fake)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(sorted(d["path"] for d in fake.mutations[0]["fileChanges"]["deletions"]), ["gone.md", "old.md"])
+
+    def test_expected_head_is_passed_through(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": "f" * 40})
+        self.addCleanup(fake.close)
+        p, _ = self.commit_step(fake, EXPECTED_HEAD="f" * 40)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(fake.mutations[0]["expectedHeadOid"], "f" * 40)
+
+    def test_fast_forward_true_moves_the_checkout(self):
+        fake = self.with_origin("b")
+        sh(self.repo, "git", "checkout", "-q", "-b", "b")
+        self.edit_tree()
+        p, _ = self.commit_step(fake, FAST_FORWARD="true")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(sh(self.repo, "git", "rev-parse", "HEAD"), fake.branches["b"])
+
+
+SMOKE = ROOT / ".github/actions/verified-commit/smoke.sh"
+
+# Answers the two App endpoints smoke.sh calls with curl, and logs every call.
+FAKE_CURL = """\
+#!/bin/sh
+echo "$@" >> "$FAKE_CURL_LOG"
+case "$*" in
+  */repos/o/r/installation*) echo '{"id": 99}' ;;
+  *-X\ POST*/app/installations/99/access_tokens*) echo '{"token": "ghs_fake"}' ;;
+  *-X\ DELETE*/installation/token*) ;;
+  *) echo "fake curl: unexpected $*" >&2; exit 22 ;;
+esac
+"""
+
+
+class Smoke(unittest.TestCase):
+    """smoke.sh: the post-setup proof, run against fakes of curl, gh and GitHub."""
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.key = self.r.tmp / "app.pem"
+        subprocess.run(["openssl", "genrsa", "-out", str(self.key), "2048"], check=True, capture_output=True)
+
+    def test_the_jwt_is_an_rs256_app_token_the_key_verifies(self):
+        p = self.r.script(SMOKE, "Iv1.client", str(self.key), SMOKE_JWT_ONLY="1")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        header, payload, signature = p.stdout.strip().split(".")
+
+        def unb64(part):
+            return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+        self.assertEqual(json.loads(unb64(header)), {"alg": "RS256", "typ": "JWT"})
+        claims = json.loads(unb64(payload))
+        self.assertEqual(claims["iss"], "Iv1.client")
+        self.assertEqual(claims["exp"] - claims["iat"], 600, "GitHub refuses an App JWT living over ten minutes")
+        pub, sig = self.r.tmp / "pub.pem", self.r.tmp / "sig"
+        subprocess.run(["openssl", "rsa", "-in", str(self.key), "-pubout", "-out", str(pub)], check=True, capture_output=True)
+        sig.write_bytes(unb64(signature))
+        verify = subprocess.run(["openssl", "dgst", "-sha256", "-verify", str(pub), "-signature", str(sig)],
+                                input=f"{header}.{payload}".encode(), capture_output=True)
+        self.assertEqual(verify.returncode, 0, verify.stdout)
+
+    def test_a_full_run_commits_verified_and_revokes_the_token(self):
+        origin = self.r.tmp / "origin"
+        origin.mkdir()
+        for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@example.com"], ["config", "user.name", "t"],
+                     ["commit", "-q", "--allow-empty", "-m", "base"]):
+            sh(origin, "git", *args)
+        head = sh(origin, "git", "rev-parse", "HEAD")
+        self.r.rules([[r"^repo clone o/r ", {"text": ""}]])
+        # The fake gh's clone: copy the origin to the requested directory.
+        self.r.tool("gh", f"#!/bin/sh\n[ \"$1 $2\" = 'repo clone' ] || exit 97\ngit clone -q {origin} \"$4\"\n")
+        self.r.tool("curl", FAKE_CURL)
+        fake = FakeGitHub({"main": head})
+        self.addCleanup(fake.close)
+        log = self.r.tmp / "curl.log"
+        p = self.r.script(SMOKE, "Iv1.client", str(self.key), "o/r", FAKE_CURL_LOG=str(log),
+                          GITHUB_API_URL=fake.url, GITHUB_GRAPHQL_URL=fake.url + "/graphql", GITHUB_OUTPUT="")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("verified: True", p.stdout)
+        self.assertIn("PASS. Clean up with: gh api -X DELETE repos/o/r/git/refs/heads/verified-commit-smoke/", p.stdout)
+        (sent,) = fake.mutations
+        self.assertEqual([a["path"] for a in sent["fileChanges"]["additions"]], [".verified-commit-smoke"])
+        self.assertTrue(sent["branch"]["branchName"].startswith("verified-commit-smoke/"))
+        calls = log.read_text()
+        self.assertIn('"permissions":{"contents":"write"}', calls, "the token is minted contents-only")
+        self.assertIn("-X DELETE", calls.splitlines()[-1], "the token is revoked on exit")
 
 
 if __name__ == "__main__":
