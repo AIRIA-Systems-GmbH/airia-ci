@@ -3,11 +3,14 @@
 
 name: self-test
 
-# This repository's own tests. GitHub-hosted on purpose: the repository is
-# public, so a fork's pull request must never reach the self-hosted Thor pool.
+# This repository's own tests, and its own automatic review. GitHub-hosted on
+# purpose: the repository is public, so a fork's pull request must never reach
+# the self-hosted Thor pool (whose runner group refuses public repositories).
 
 on:
   pull_request:
+    # ready_for_review: a PR opened as a draft is reviewed when it is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -51,3 +54,90 @@ jobs:
             -x -S warning "${tracked[@]}" validation/ci-results-staging/fake-gh build/coverage/src/*.sh
       - name: ruff
         run: pipx run ruff==0.16.10 check .
+
+  actions:
+    # The composite actions at THIS commit. The reusable workflows call them
+    # @ci-v3, so the review below runs the released ones: this job is the only
+    # one that runs a change to an action before the tag moves.
+    needs: unittest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # ci-results reads this run's jobs and logs
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: review
+        uses: ./.github/actions/claude-settings
+        with:
+          profile: review
+      - id: respond
+        uses: ./.github/actions/claude-settings
+        with:
+          profile: respond
+      - name: Both profiles are allowlists with no extra directory and no checks API
+        env:
+          REVIEW: ${{ steps.review.outputs.path }}
+          RESPOND: ${{ steps.respond.outputs.path }}
+        run: |
+          for f in "$REVIEW" "$RESPOND"; do
+            jq -e '[.. | objects | has("additionalDirectories")] | any | not' "$f"
+            jq -e '.permissions.allow | all(. != "Bash" and (startswith("Bash(gh pr checks") | not))' "$f"
+          done
+          jq -e '.permissions.allow | index("Edit") == null' "$REVIEW"
+          jq -e '.permissions.allow | index("Edit") != null' "$RESPOND"
+          jq -e '.permissions.deny | index("Bash(git push --force:*)") != null' "$RESPOND"
+      - id: bare
+        continue-on-error: true
+        uses: ./.github/actions/claude-settings
+        with:
+          profile: review
+          extra-allow: Bash
+      - name: A bare Bash in extra-allow is refused
+        env:
+          OUTCOME: ${{ steps.bare.outcome }}
+        run: '[ "$OUTCOME" = failure ]'
+
+      - id: results
+        uses: ./.github/actions/ci-results
+        with:
+          run-id: ${{ github.run_id }}
+          out-dir: ${{ runner.temp }}/ci-results
+          github-token: ${{ github.token }}
+      - name: The finished unittest job is collected with its log
+        env:
+          COLLECTED: ${{ steps.results.outputs.collected }}
+          OUT: ${{ runner.temp }}/ci-results
+        run: |
+          cat "$OUT/jobs.md"
+          [ "$COLLECTED" -ge 1 ]
+          grep -E '^\| unittest \| success \|' "$OUT/jobs.md"
+          grep -q 'Ran [0-9]* tests' "$OUT"/logs/*.log
+
+      - id: cli
+        uses: ./.github/actions/claude-cli
+      - name: Without the runner's cache volume, the CLI is left to claude-code-action
+        env:
+          CLI_PATH: ${{ steps.cli.outputs.path }}
+        run: '[ -z "$CLI_PATH" ]'
+
+  claude-review:
+    # The automatic review, as a consumer wires it: last, after every gate,
+    # and also when one is red, because a red gate is review input. Never on a
+    # fork's PR: it would have no secret, and must not get one.
+    needs: [unittest, coverage, lint, actions]
+    if: >-
+      always() && github.event_name == 'pull_request'
+      && github.event.pull_request.draft == false
+      && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+    uses: ./.github/workflows/reusable-claude-review.yml
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      runner: '["ubuntu-latest"]'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

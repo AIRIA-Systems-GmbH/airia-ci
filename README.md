@@ -22,8 +22,8 @@ The shared CI harness for AIRIA repositories. It has two reusable workflows and 
 The call contract is the header of `reusable-claude-review.yml`. Read it before wiring a repository. In short, the caller:
 
 - adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v3`;
-- has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository holds no secrets);
-- has self-hosted runners labelled `[self-hosted, linux, x64, thor]`;
+- has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
+- runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-latest"]'`);
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
 
 ## Tests
@@ -40,11 +40,13 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
     kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603 tests/coverage.sh
   ```
 
-- `lint`: actionlint, shellcheck (also over the sliced composite-action blocks, which actionlint does not read) and ruff.
+- `lint`: actionlint, shellcheck (also over the sliced composite-action blocks, which actionlint does not read) and ruff;
+- `actions`: the composite actions at the PR's own commit (the reusable workflows call them `@ci-v3`, so this is the only job that runs a change to an action before release);
+- `claude-review`: this repository reviews itself with its own reusable workflow, on `ubuntu-latest` (a public repository cannot use the Thor pool). `claude.yml` is its `@claude` responder.
 
 ## Versioning
 
-`ci-v3` moves on every compatible change. A change to the call contract is `ci-v4`. `ci-v3` removed the optional `FRAMEWORK_READ_TOKEN` secret from both workflows (`airia-*` packages install from the internal index, so no job reads another repository); a caller still passing it must drop it. Both workflows stage the gate results in `ci-results/` inside the checkout (git-excluded) and point Claude at that relative path; no directory outside the checkout is granted and `gh pr checks` is not used — `validation/ci-results-staging/` proves the reviewer reads them. `ci-v2` is frozen at `9ed10a6`: its review prompt tells the reviewer to `cat "$RUNNER_TEMP/…"`, which Bash refuses, so a `ci-v2` review never sees the gate results — move off it. `ci-v2` replaced the reviewer's bare `Bash` permission with an explicit allowlist (read-only commands and the common Python gate runners); a repository whose gates fall outside it passes them in `extra-allow`. `ci-v1` is frozen at its last commit and still grants a bare `Bash` — move off it. The review footer string `_Automatic review by \`claude-code-review.yml\`` is part of the contract, because the once-per-PR check keys on it. A re-run attempt of the run that wrote the review (`gh run rerun --failed`) refreshes that review's gate-results section; it does not post a second review. `verified-commit` exits 2 when the API refuses to create the branch, as it does for a refused commit; it used to fail with a traceback.
+`ci-v3` moves on every compatible change. A change to the call contract is `ci-v4`. A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `ci-v3` removed the optional `FRAMEWORK_READ_TOKEN` secret from both workflows (`airia-*` packages install from the internal index, so no job reads another repository); a caller still passing it must drop it. Both workflows stage the gate results in `ci-results/` inside the checkout (git-excluded) and point Claude at that relative path; no directory outside the checkout is granted and `gh pr checks` is not used — `validation/ci-results-staging/` proves the reviewer reads them. `ci-v2` is frozen at `9ed10a6`: its review prompt tells the reviewer to `cat "$RUNNER_TEMP/…"`, which Bash refuses, so a `ci-v2` review never sees the gate results — move off it. `ci-v2` replaced the reviewer's bare `Bash` permission with an explicit allowlist (read-only commands and the common Python gate runners); a repository whose gates fall outside it passes them in `extra-allow`. `ci-v1` is frozen at its last commit and still grants a bare `Bash` — move off it. The review footer string `_Automatic review by \`claude-code-review.yml\`` is part of the contract, because the once-per-PR check keys on it. A re-run attempt of the run that wrote the review (`gh run rerun --failed`) refreshes that review's gate-results section; it does not post a second review. `verified-commit` exits 2 when the API refuses to create the branch, as it does for a refused commit; it used to fail with a traceback.
 
 ## Licence
 

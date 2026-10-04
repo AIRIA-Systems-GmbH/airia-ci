@@ -64,6 +64,14 @@ name: Claude (shared @claude responder)
 on:
   workflow_call:
     inputs:
+      runner:
+        description: >-
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool;
+          a repository that cannot use it (a public one: the pool's runner group
+          refuses public repositories) passes '["ubuntu-latest"]'.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","thor"]'
       gate-workflow:
         description: >-
           The workflow file that gates PRs (e.g. `ci.yml`). On a PR, its run for
@@ -148,7 +156,7 @@ jobs:
       || (github.event_name == 'issues'
         && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude'))
         && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
-    runs-on: [self-hosted, linux, x64, thor]
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
@@ -319,7 +327,7 @@ jobs:
           if "'" in extra:
               raise SystemExit("extra-prompt may not contain a single quote")
           parts = [
-              "You are running inside a one-shot GitHub Action on the self-hosted Thor runner pool, with the same toolchain as the CI of this repository.",
+              "You are running inside a one-shot GitHub Action on the runners and with the toolchain of the CI of this repository.",
               "Run `cat ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP/ci-results means ci-results here. ci-results/ is in your working directory and ignored by git: use relative paths, because Bash refuses a command that expands a variable and nothing outside the checkout is readable. Never commit ci-results/.",
           ]
           if os.environ["HAS_GATE"] == "true":

@@ -125,6 +125,14 @@ on:
         description: The pull request to review.
         required: true
         type: number
+      runner:
+        description: >-
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool;
+          a repository that cannot use it (a public one: the pool's runner group
+          refuses public repositories) passes '["ubuntu-latest"]'.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","thor"]'
       extra-deny:
         description: >-
           Extra permission-deny rules for this repository, one per line, in
@@ -147,7 +155,7 @@ on:
 
 jobs:
   claude-review:
-    runs-on: [self-hosted, linux, x64, thor]
+    runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 45
     permissions:
       contents: read # the push boundary: `github_token` below is this token
@@ -290,7 +298,7 @@ jobs:
             HOW THIS JOB IS SET UP — read this before you start
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
               rules for the review, and following them is not optional.
-            - You are on the same self-hosted Thor runner pool as this repository's CI. If
+            - You are on the same runner pool as this repository's CI. If
               `ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
               step provisioned and anything it could NOT provision. If it does not, no toolchain
               was provisioned beyond what the runner has.

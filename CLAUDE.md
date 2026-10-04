@@ -26,8 +26,12 @@ Consumers run this repository's YAML at the moving tag `@ci-v3`. Every `run:` bl
 ## Tags and versioning
 
 - `ci-v3` moves on every compatible change; a change to a call contract (inputs, secrets, outputs, the review footer string) is `ci-vN+1`. Older tags are frozen.
-- Moving a tag is a force-push of a ref other repositories consume: never do it without the maintainer's explicit go-ahead, and only on a SHA whose `self-test` run succeeded.
+- Moving a tag is a force-push of a ref other repositories consume. It is done only by dispatching `release.yml` (which checks the SHA's `self-test` and that a move is forward), and only on the maintainer's explicit go-ahead: never dispatch it yourself.
 - `main` can be ahead of `ci-v3`; a merged fix reaches consumers only when the tag moves.
+
+## Dogfooding
+
+`self-test.yml` ends with `claude-review`, which calls `./.github/workflows/reusable-claude-review.yml` at the PR's commit; `claude.yml` answers `@claude` with the respond workflow from the default branch. Both run on `ubuntu-latest` via the `runner` input, so `claude-cli` falls back to claude-code-action's own install. The reusable workflows still call the actions `@ci-v3`; the `actions` job is what tests a change to an action.
 
 ## Before you finish
 

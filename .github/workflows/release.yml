@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+
+name: release
+
+# Points a consumer tag at main's head: `move` moves the newest ci-vN (a
+# compatible change), `new` creates ci-v(N+1) (a change to a call contract).
+# Only from main, only for a commit whose self-test run succeeded, and a move
+# only forward: consumers must never lose a commit they already run. Every
+# consumer runs the tag the moment it moves, so this is dispatched by a
+# maintainer, by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: move the newest ci-vN, or create the next one
+        required: true
+        type: choice
+        options: [move, new]
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the tag
+      actions: read # find this commit's self-test run
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Point the tag at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error title=Not main::a consumer tag only ever points at main; this run is on ${GITHUB_REF}"
+            exit 1
+          fi
+          passed="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow self-test.yml --commit "${SHA}" \
+            --status success --json databaseId --jq 'length')"
+          if [ "${passed}" = "0" ]; then
+            echo "::error title=Not tested::self-test has not succeeded for ${SHA}"
+            exit 1
+          fi
+          # Only ci-vN is a release: a stray ci-vnext or ci-v3-rc must never be taken for the newest.
+          latest="$(git tag -l 'ci-v*' | grep -E '^ci-v[0-9]+$' | sort -V | tail -n 1)"
+          if [ -z "${latest}" ]; then
+            echo "::error title=No release tag::no ci-vN tag exists; create the first one by hand"
+            exit 1
+          fi
+          case "${BUMP}" in
+            move)
+              tag="${latest}"
+              if ! git merge-base --is-ancestor "${latest}" "${SHA}"; then
+                echo "::error title=Not forward::${latest} is not an ancestor of ${SHA}; moving it would drop commits its consumers run"
+                exit 1
+              fi
+              ;;
+            new) tag="ci-v$(( ${latest#ci-v} + 1 ))" ;;
+            *) echo "::error::bump must be move or new, not ${BUMP}"; exit 1 ;;
+          esac
+          git tag -f "${tag}" "${SHA}"
+          git push -f origin "refs/tags/${tag}"
+          echo "${tag} now points at ${SHA}" | tee -a "${GITHUB_STEP_SUMMARY}"
