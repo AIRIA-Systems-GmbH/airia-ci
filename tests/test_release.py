@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+"""release.yml: the one step that moves a tag every consumer runs.
+
+What these tests hold: a tag only ever points at a tested commit of main; a
+move only goes forward, so no consumer loses a commit it already runs; the
+newest tag is found by version, not by spelling (ci-v10 is after ci-v2).
+
+Run: python3 -m unittest discover -s tests
+"""
+
+import subprocess
+import unittest
+
+from steps import ROOT, Runner
+
+WORKFLOW = ROOT / ".github/workflows/release.yml"
+STEP = "Point the tag at this commit"
+TESTED = [["run list", {"json": [{"databaseId": 1}]}]]
+UNTESTED = [["run list", {"json": []}]]
+GIT_ID = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+
+class Release(unittest.TestCase):
+    def setUp(self):
+        self.r = Runner(self)
+        self.origin, self.work = self.r.tmp / "origin.git", self.r.tmp / "work"
+        self.git("init", "-q", "--bare", str(self.origin), cwd=self.r.tmp)
+        self.git("init", "-q", "-b", "main", str(self.work), cwd=self.r.tmp)
+        self.git("remote", "add", "origin", str(self.origin))
+        self.a = self.commit("a")
+        self.git("tag", "ci-v2")
+        self.b = self.commit("b")
+        self.git("tag", "ci-v10")
+        self.head = self.commit("c")
+        self.git("push", "-q", "origin", "main", "--tags")
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(["git", *args], cwd=cwd or self.work, env={**self.r.env(), **GIT_ID},
+                              check=True, capture_output=True, text=True).stdout.strip()
+
+    def commit(self, msg):
+        self.git("commit", "-q", "--allow-empty", "-m", msg)
+        return self.git("rev-parse", "HEAD")
+
+    def tag_at_origin(self, tag):
+        return self.git("rev-parse", "-q", "--verify", f"{tag}^{{commit}}", cwd=self.origin)
+
+    def release(self, bump, sha=None, ref="refs/heads/main", rules=TESTED):
+        self.r.rules(rules)
+        return self.r.run(WORKFLOW, STEP, cwd=self.work, BUMP=bump, SHA=sha or self.head, GITHUB_REF=ref)
+
+    def test_move_points_the_newest_tag_by_version_at_main(self):
+        p = self.release("move")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.head)
+        self.assertEqual(self.tag_at_origin("ci-v2"), self.a, "an older tag never moves")
+        self.assertIn(f"ci-v10 now points at {self.head}", self.r.summary.read_text())
+
+    def test_new_creates_the_next_major_and_leaves_the_current_one(self):
+        p = self.release("new")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.tag_at_origin("ci-v11"), self.head)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
+
+    def test_a_move_that_is_not_forward_is_refused(self):
+        # A commit beside ci-v10, not after it: consumers of ci-v10 would lose b.
+        self.git("checkout", "-q", self.a)
+        beside = self.commit("beside")
+        p = self.release("move", sha=beside)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Not forward", p.stdout)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
+
+    def test_a_commit_self_test_did_not_pass_is_refused(self):
+        p = self.release("move", rules=UNTESTED)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Not tested", p.stdout)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
+        (call,) = self.r.calls()
+        self.assertEqual(call["args"][call["args"].index("--commit") + 1], self.head, "the exact commit is checked")
+        self.assertIn("success", call["args"])
+
+    def test_only_main_is_released(self):
+        p = self.release("new", ref="refs/heads/feature")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Not main", p.stdout)
+        self.assertEqual(self.r.calls(), [])
+        self.assertEqual(self.git("ls-remote", "--tags", str(self.origin), "ci-v11"), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
