@@ -559,8 +559,7 @@ class ActionSteps(Checkout):
 SMOKE = ROOT / ".github/actions/verified-commit/smoke.sh"
 
 # Answers the two App endpoints smoke.sh calls with curl, and logs every call.
-FAKE_CURL = """\
-#!/bin/sh
+FAKE_CURL = r"""#!/bin/sh
 echo "$@" >> "$FAKE_CURL_LOG"
 case "$*" in
   */repos/o/r/installation*) echo '{"id": 99}' ;;
