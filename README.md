@@ -19,20 +19,17 @@ The shared CI harness for AIRIA repositories. It has two reusable workflows and 
 
 ## Using it
 
+**[HOWTO.md](HOWTO.md)** is the guide for a calling repository: wiring it, review rules, toolchain, `extra-allow`, `@claude`, staying current, upgrading a major, and what to do when a review does not appear.
+
 To wire a repository, run `scripts/init.py` from the root of its checkout, logged in with `gh`:
 
 ```
 python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw')
 ```
 
-It writes whichever of these files are missing and never overwrites one:
-- the `@claude` caller;
-- the review job at the end of the repository's pull-request workflow, or a `merge-gate.yml` whose placeholder gate fails until it is replaced;
-- `.github/claude-review.md`.
+It writes the `@claude` caller, the review job (or a placeholder `merge-gate.yml`) and `.github/claude-review.md`, whichever are missing, sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, and offers a ruleset on the default branch. It commits nothing.
 
-It then sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, from that environment variable or by running `claude setup-token`. Finally it offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, and no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for that. It commits nothing. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool.
-
-The call contract is the header of `reusable-claude-review.yml`. Read it before wiring a repository by hand. In short, the caller:
+The call contract is the header of `reusable-claude-review.yml`; read it before wiring a repository by hand. In short, the caller:
 
 - adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v3`;
 - has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
@@ -43,7 +40,7 @@ Both workflows also write `ci-results/harness.md`, which names the airia-ci work
 
 ## Tests
 
-`python3 -m unittest discover -s tests` needs Python 3.11+ and PyYAML. The tests run the shipped code itself: `tests/steps.py` slices every `run:` block out of the action and workflow YAML (and each Python heredoc into its own file) and runs it with the shell flags GitHub uses, against a fake `gh`. The `claude-cli` tests need GNU tools and skip on macOS.
+`python3 -m unittest discover -s tests` needs Python 3.11+ and PyYAML. The tests run the shipped code itself: `tests/steps.py` slices every `run:` block out of the action and workflow YAML (and each Python heredoc into its own file) and runs it with the shell flags GitHub uses, against a fake `gh`. The `claude-cli` tests need GNU tools and skip on macOS. `validation/ci-results-staging/` is the live proof that the reviewer reads the staged gate results.
 
 The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 
@@ -61,7 +58,13 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 
 ## Versioning
 
-`ci-v3` moves on every compatible change. A change to the call contract is `ci-v4`. A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `ci-v3` removed the optional `FRAMEWORK_READ_TOKEN` secret from both workflows (`airia-*` packages install from the internal index, so no job reads another repository); a caller still passing it must drop it. Both workflows stage the gate results in `ci-results/` inside the checkout (git-excluded) and point Claude at that relative path; no directory outside the checkout is granted and `gh pr checks` is not used — `validation/ci-results-staging/` proves the reviewer reads them. `ci-v2` is frozen at `9ed10a6`: its review prompt tells the reviewer to `cat "$RUNNER_TEMP/…"`, which Bash refuses, so a `ci-v2` review never sees the gate results — move off it. `ci-v2` replaced the reviewer's bare `Bash` permission with an explicit allowlist (read-only commands and the common Python gate runners); a repository whose gates fall outside it passes them in `extra-allow`. `ci-v1` is frozen at its last commit and still grants a bare `Bash` — move off it. The review footer string `_Automatic review by \`claude-code-review.yml\`` is part of the contract, because the once-per-PR check keys on it. A re-run attempt of the run that wrote the review (`gh run rerun --failed`) refreshes that review's gate-results section; it does not post a second review. `verified-commit` exits 2 when the API refuses to create the branch, as it does for a refused commit; it used to fail with a traceback.
+Callers pin `@ci-v3`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v4`, and the older tag is frozen.
+
+- **Every move is a GitHub Release** (`ci-v3.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
+- **A frozen pin hears of a newer major from its own run.** Both workflows look up this repository's `ci-vN` tags; when one is newer than the major they belong to (`HARNESS_MAJOR` in the step *Look for a newer airia-ci major*), the job warns and the automatic review ends with a note. A lookup that fails only leaves a notice. This began in `ci-v3`; `ci-v1` and `ci-v2` callers do not get it.
+- **What each major asks of a caller** is in [HOWTO.md](HOWTO.md#upgrade-to-a-new-major).
+
+A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `main` can be ahead of `ci-v3`. After a release, `scripts/consumers.py` lists every caller and flags one on an older major, and `scripts/canary.py` proves `@claude` answers on a consumer PR; [CLAUDE.md](CLAUDE.md) has the commands. A new major also bumps `HARNESS_MAJOR` in both workflows and `TAG` in `init.py`; a test refuses them out of step with the workflows' own pins, and `release.yml` refuses a release whose `HARNESS_MAJOR` is not the major it tags.
 
 ## Licence
 

@@ -6,6 +6,7 @@
   re-run attempt of the run that wrote the review asks for a refresh;
 - "Post the review": the workflow posts Claude's final message, and a run that
   produced none fails loud instead of going green having posted nothing;
+- "Look for a newer airia-ci major": a frozen pin says so on every review;
 - the credential, git-exclude and staging steps around them.
 
 Run: python3 -m unittest discover -s tests
@@ -14,13 +15,14 @@ Run: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from steps import ROOT, Runner, bare, heredoc
+from steps import ROOT, Runner, bare, heredoc, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-review.yml"
 FOOTER = "_Automatic review by `claude-code-review.yml`"
@@ -125,6 +127,56 @@ class StagingForClaude(unittest.TestCase):
         self.assertIn("- Commit: unknown", (repo / "ci-results/harness.md").read_text())
 
 
+def tags(*names: str) -> list:
+    return [{"ref": f"refs/tags/{n}"} for n in names]
+
+
+class NewerMajor(unittest.TestCase):
+    """A repository on a frozen major hears of the next one from the frozen code itself.
+
+    AIRIA-DevTools and AIRIA-process sat on ci-v2 unnoticed: moving ci-v3 never
+    reached them, and nothing they ran said ci-v3 existed.
+    """
+
+    STEP = "Look for a newer airia-ci major"
+    MAJOR = step(WORKFLOW, STEP)["env"]["HARNESS_MAJOR"]
+
+    def look(self, reply):
+        r = Runner(self, [[r"airia-ci/git/matching-refs/tags/ci-v", reply]])
+        p = r.run(WORKFLOW, self.STEP, HARNESS_MAJOR=self.MAJOR)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p, r
+
+    def test_the_newest_major_says_nothing(self):
+        # A ci-v3.4 release tag or a stray ci-vnext is not a major.
+        p, r = self.look({"json": tags("ci-v1", "ci-v2", f"ci-v{self.MAJOR}", f"ci-v{self.MAJOR}.4", "ci-vnext")})
+        self.assertNotIn("::warning", p.stdout)
+        self.assertEqual(r.outputs(), {})
+
+    def test_a_newer_major_warns_and_hands_the_post_a_notice(self):
+        newer = int(self.MAJOR) + 7  # past 9, so a string sort would get it wrong
+        p, r = self.look({"json": tags("ci-v9", f"ci-v{self.MAJOR}", f"ci-v{newer}")})
+        self.assertIn(f"::warning title=Newer airia-ci major::airia-ci ci-v{newer} exists; this repository calls ci-v{self.MAJOR}",
+                      p.stdout)
+        self.assertIn("HOWTO.md#upgrade-to-a-new-major", r.outputs()["notice"])
+        self.assertIn(f"ci-v{newer} exists", r.summary.read_text())
+
+    def test_an_unreadable_tag_list_never_fails_the_review(self):
+        p, r = self.look({"exit": 1, "stderr": "HTTP 403"})
+        self.assertIn("::notice title=airia-ci version not checked::", p.stdout)
+        self.assertEqual(r.outputs(), {})
+
+    def test_every_pin_this_major_ships_names_the_same_major(self):
+        # HARNESS_MAJOR is bumped by hand with every ci-vN+1; a stale one would
+        # tell ci-v4's own callers to upgrade, or never tell ci-v3's.
+        respond = ROOT / ".github/workflows/reusable-claude-respond.yml"
+        self.assertEqual(step(respond, self.STEP)["env"]["HARNESS_MAJOR"], self.MAJOR)
+        pins = set(re.findall(r"airia-ci/\S+@(ci-v\d+)", WORKFLOW.read_text() + respond.read_text()))
+        self.assertEqual(pins, {f"ci-v{self.MAJOR}"})
+        (tag,) = re.findall(r'^TAG = "(ci-v\d+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
+        self.assertEqual(tag, f"ci-v{self.MAJOR}")
+
+
 def execution(result: dict | None, *, denials=()) -> list:
     msgs = [{"type": "system"}, {"type": "assistant"}]
     if result is not None:
@@ -178,11 +230,11 @@ class PostTheReview(unittest.TestCase):
 class PostTheReviewParser(unittest.TestCase):
     """The Python inside "Post the review", run as the step runs it: `python3 - <execution> <body>`."""
 
-    def parse(self, msgs, version=""):
+    def parse(self, msgs, version="", **env):
         with tempfile.TemporaryDirectory() as t:
             exe, body = Path(t) / "execution.json", Path(t) / "body.md"
             exe.write_text(json.dumps(msgs))
-            env = bare(PATH="/usr/bin:/bin", RUN_URL="https://run", CLAUDE_VERSION=version)
+            env = bare(PATH="/usr/bin:/bin", RUN_URL="https://run", CLAUDE_VERSION=version, **env)
             p = subprocess.run([sys.executable, str(heredoc(WORKFLOW, "Post the review")), str(exe), str(body)],
                                env=env, capture_output=True, text=True)
             self.assertEqual(p.returncode, 0, p.stderr)
@@ -195,6 +247,12 @@ class PostTheReviewParser(unittest.TestCase):
         self.assertIn('- Bash: {"command": "curl 0"}', out)
         self.assertEqual(out.count("- Bash:"), 20, "at most twenty are listed")
         self.assertIsNotNone(body)
+
+    def test_a_newer_major_is_noted_above_the_untouched_footer(self):
+        # The note is what a frozen caller actually reads; the footer after it
+        # is the once-per-PR key and must stay byte-for-byte.
+        _, body = self.parse(execution({"result": "Looks right."}), NEWER_MAJOR="airia-ci ci-v4 exists; upgrade.")
+        self.assertTrue(body.startswith("Looks right.\n\n> [!NOTE]\n> airia-ci ci-v4 exists; upgrade.\n\n---\n" + FOOTER + " — "))
 
     def test_the_last_result_message_wins(self):
         msgs = execution({"result": "first"}) + [{"type": "result", "result": "second", "is_error": False}]
