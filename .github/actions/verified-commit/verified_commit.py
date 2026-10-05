@@ -103,11 +103,14 @@ def split_message(text: str) -> dict:
 
 
 def _json(raw: bytes) -> dict:
-    """A response body as JSON, or its text as the message when it is not JSON."""
+    """A response body as a JSON object, or its text as the message when it is not one."""
     try:
-        return json.loads(raw or b"{}")
+        data = json.loads(raw or b"{}")
     except ValueError:
-        return {"message": raw.decode(errors="replace").strip()[:300]}
+        data = None
+    if isinstance(data, dict):
+        return data
+    return {"message": raw.decode(errors="replace").strip()[:300]}
 
 
 class GitHub:
