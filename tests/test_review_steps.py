@@ -100,7 +100,29 @@ class StagingForClaude(unittest.TestCase):
         repo = self.checkout(r)
         p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo))
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertEqual(list((repo / "ci-results").iterdir()), [])
+        self.assertEqual([f.name for f in (repo / "ci-results").iterdir()], ["harness.md"])
+
+    def test_the_harness_names_its_commit_and_the_callers_inputs(self):
+        # Without it the reviewer of a PR that moves the airia-ci pin cannot
+        # tell which harness ran or what the call passed (DevTools PR #20).
+        r = Runner(self)
+        repo = self.checkout(r)
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
+                  HARNESS_REF="o/airia-ci/.github/workflows/reusable-claude-review.yml@refs/tags/ci-v3",
+                  HARNESS_SHA="ab7b0e6", CALLER_INPUTS='{"pr-number": 20}')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        harness = (repo / "ci-results/harness.md").read_text()
+        self.assertIn("reusable-claude-review.yml@refs/tags/ci-v3", harness)
+        self.assertIn("- Commit: ab7b0e6", harness)
+        self.assertIn('{"pr-number": 20}', harness)
+
+    def test_a_runner_without_the_job_workflow_context_says_unknown(self):
+        r = Runner(self)
+        repo = self.checkout(r)
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
+                  HARNESS_REF="", HARNESS_SHA="", CALLER_INPUTS="{}")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("- Commit: unknown", (repo / "ci-results/harness.md").read_text())
 
 
 def execution(result: dict | None, *, denials=()) -> list:

@@ -19,12 +19,27 @@ The shared CI harness for AIRIA repositories. It has two reusable workflows and 
 
 ## Using it
 
-The call contract is the header of `reusable-claude-review.yml`. Read it before wiring a repository. In short, the caller:
+To wire a repository, run `scripts/init.py` from the root of its checkout, logged in with `gh`:
+
+```
+python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw')
+```
+
+It writes whichever of these files are missing and never overwrites one:
+- the `@claude` caller;
+- the review job at the end of the repository's pull-request workflow, or a `merge-gate.yml` whose placeholder gate fails until it is replaced;
+- `.github/claude-review.md`.
+
+It then sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, from that environment variable or by running `claude setup-token`. Finally it offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, and no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for that. It commits nothing. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool.
+
+The call contract is the header of `reusable-claude-review.yml`. Read it before wiring a repository by hand. In short, the caller:
 
 - adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v3`;
 - has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
 - runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-latest"]'`);
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
+
+Both workflows also write `ci-results/harness.md`, which names the airia-ci workflow and commit the job runs. The review's copy also records the inputs the caller passed.
 
 ## Tests
 

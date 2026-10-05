@@ -297,11 +297,20 @@ jobs:
       # says why), so the toolchain's status goes into ci-results/ beside the
       # gate results.
       - name: Stage the toolchain status for Claude
+        env:
+          HARNESS_REF: ${{ job.workflow_ref }}
+          HARNESS_SHA: ${{ job.workflow_sha }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ci-results"
           if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
             cp "$RUNNER_TEMP/claude-toolchain-status.md" "$GITHUB_WORKSPACE/ci-results/"
           fi
+          {
+            echo "# The airia-ci harness running this job"
+            echo
+            echo "- Workflow: ${HARNESS_REF:-unknown}"
+            echo "- Commit: ${HARNESS_SHA:-unknown}"
+          } > "$GITHUB_WORKSPACE/ci-results/harness.md"
 
       - name: Resolve the cached Claude Code
         id: claude-cli
@@ -328,7 +337,7 @@ jobs:
               raise SystemExit("extra-prompt may not contain a single quote")
           parts = [
               "You are running inside a one-shot GitHub Action on the runners and with the toolchain of the CI of this repository.",
-              "Run `cat ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change; its $RUNNER_TEMP/ci-results means ci-results here. ci-results/ is in your working directory and ignored by git: use relative paths, because Bash refuses a command that expands a variable and nothing outside the checkout is readable. Never commit ci-results/.",
+              "Run `cat ci-results/claude-toolchain-status.md` first: it says what the setup step provisioned and what it could not. Then read .github/claude-review.md, the repository rules for verifying a change. `ci-results/harness.md` names the airia-ci workflow and commit running this job. ci-results/ is in your working directory and ignored by git: use relative paths, because Bash refuses a command that expands a variable and nothing outside the checkout is readable. Never commit ci-results/.",
           ]
           if os.environ["HAS_GATE"] == "true":
               parts.append("On a pull request, `cat ci-results/jobs.md` next: it lists the gate jobs that have finished on the head commit, each with its conclusion and a full log in ci-results/logs/ - read those instead of re-running a gate CI already ran on that commit. It is your only source of CI results: do not use `gh pr checks` or the check-runs API, which this job cannot read. If the file is missing, the lookup failed: run the gates yourself.")

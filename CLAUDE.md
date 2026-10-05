@@ -28,6 +28,9 @@ Consumers run this repository's YAML at the moving tag `@ci-v3`. Every `run:` bl
 - `ci-v3` moves on every compatible change; a change to a call contract (inputs, secrets, outputs, the review footer string) is `ci-vN+1`. Older tags are frozen.
 - Moving a tag is a force-push of a ref other repositories consume. It is done only by dispatching `release.yml` (which checks the SHA's `self-test` and that a move is forward), and only on the maintainer's explicit go-ahead: never dispatch it yourself.
 - `main` can be ahead of `ci-v3`; a merged fix reaches consumers only when the tag moves.
+- After every release, with the maintainer's `gh` login (no token in this repository can read the consumers' private repositories or speak for a person):
+  - `python3 scripts/consumers.py AIRIA-Systems-GmbH tumma72` lists every caller and exits 1 if one still pins an older major. Moving the tag never reaches that caller, so open the upgrade PR there.
+  - `python3 scripts/canary.py --repo <consumer> --pr <open PR>` posts `@claude` and waits for the reply. No PR runs the responder, so this is its only test before real use.
 
 ## Dogfooding
 

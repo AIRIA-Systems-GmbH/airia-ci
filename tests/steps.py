@@ -120,10 +120,12 @@ FAKE_GH = textwrap.dedent(
     joined = " ".join(args)
     files = {}
     for i, a in enumerate(args):
-        if a == "--body-file":
+        if a in ("--body-file", "--notes-file"):
             files[a] = open(args[i + 1]).read()
         elif "=@" in a:
             files[a] = open(a.split("=@", 1)[1]).read()
+    if args[:2] == ["secret", "set"] or "--input" in args and args[args.index("--input") + 1] == "-":
+        files["stdin"] = sys.stdin.read()
     with open(os.environ["FAKE_GH_LOG"], "a") as log:
         log.write(json.dumps({"args": args, "files": files}) + "\\n")
     for pattern, reply in json.load(open(os.environ["FAKE_GH_RULES"])):

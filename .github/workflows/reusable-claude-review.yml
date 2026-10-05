@@ -256,11 +256,27 @@ jobs:
       # gate results.
       - name: Stage the toolchain status for Claude
         if: steps.once.outputs.review == 'true'
+        env:
+          HARNESS_REF: ${{ job.workflow_ref }}
+          HARNESS_SHA: ${{ job.workflow_sha }}
+          CALLER_INPUTS: ${{ toJSON(inputs) }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ci-results"
           if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
             cp "$RUNNER_TEMP/claude-toolchain-status.md" "$GITHUB_WORKSPACE/ci-results/"
           fi
+          {
+            echo "# The airia-ci harness running this job"
+            echo
+            echo "- Workflow: ${HARNESS_REF:-unknown}"
+            echo "- Commit: ${HARNESS_SHA:-unknown}"
+            echo
+            echo "The caller passed these inputs (an input it may not pass fails the call before any job runs):"
+            echo
+            echo '```json'
+            echo "$CALLER_INPUTS"
+            echo '```'
+          } > "$GITHUB_WORKSPACE/ci-results/harness.md"
 
       - name: Resolve the cached Claude Code
         id: claude-cli
@@ -312,8 +328,9 @@ jobs:
               results". If `ci-results/jobs.md` is missing or says the lookup failed, say so.
             - ci-results/ is in your working directory (the checkout) and ignored by git. Use
               relative paths: Bash refuses a command that expands a variable, and nothing outside
-              the checkout is readable, so `$RUNNER_TEMP/ci-results` in `.github/claude-review.md`
-              means `ci-results` here.
+              the checkout is readable.
+            - `ci-results/harness.md` names the airia-ci workflow and commit running this job and
+              the inputs the caller passed. Check a PR that changes the airia-ci call against it.
             - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
               runners. A command outside it is refused, and nobody can approve it here — report
               that gate as NOT RUN, with the command, rather than working around the refusal.

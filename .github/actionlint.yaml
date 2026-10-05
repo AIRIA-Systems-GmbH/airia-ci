@@ -4,3 +4,11 @@
 # The reusable workflows run on the AIRIA self-hosted Thor pool.
 self-hosted-runner:
   labels: [thor]
+
+# job.workflow_ref / job.workflow_sha name the reusable workflow a job runs
+# from (GitHub's contexts reference, "job context"); actionlint 1.7.12 does not
+# know them yet. Only those two properties, only in the two shared workflows.
+paths:
+  .github/workflows/**/reusable-claude-*.yml:
+    ignore:
+      - 'property "workflow_(ref|sha)" is not defined in object type'
