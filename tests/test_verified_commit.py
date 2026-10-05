@@ -47,6 +47,7 @@ class FakeGitHub:
         # Endpoints ("ref", "graphql", "commits") that answer with GitHub's
         # HTML 502 page instead of JSON, as its front end does in an outage.
         self.outage = set()
+        self.outage_page = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -64,7 +65,7 @@ class FakeGitHub:
             def down(self, endpoint):
                 if endpoint not in fake.outage:
                     return False
-                page = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
+                page = fake.outage_page
                 self.send_response(502)
                 self.send_header("Content-Type", "text/html")
                 self.send_header("Content-Length", str(len(page)))
@@ -434,6 +435,18 @@ class VerifiedCommitTest(Checkout):
         self.assertEqual(code, 2)
         self.assertIn('"status": 502', err)
         self.assertIn("502 Bad Gateway", err)
+
+    def test_a_json_body_that_is_not_an_object_is_reported_not_raised(self):
+        # A proxy can answer `null` or `[]`: valid JSON the callers cannot
+        # `.get` from. It must still end in exit 2 and an ::error.
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        fake.outage = {"graphql"}
+        fake.outage_page = b"null"
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn('"status": 502', err)
 
     def test_an_outage_reading_the_verification_says_so(self):
         self.edit_tree()
