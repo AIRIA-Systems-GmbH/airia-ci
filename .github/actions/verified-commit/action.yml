@@ -70,7 +70,7 @@ inputs:
     description: >-
       Files to commit, one per line, relative to the repository root. Empty
       (the default) commits every change `git status` reports, deletions and
-      renames included.
+      renames included. Spaces around a path are trimmed.
     required: false
     default: ""
   expected-head:
@@ -142,7 +142,7 @@ runs:
         [ -n "$EXPECTED_HEAD" ] && args+=(--expected-head "$EXPECTED_HEAD")
         [ "$FAST_FORWARD" = true ] && args+=(--fast-forward)
         if [ -n "$PATHS" ]; then
-          mapfile -t files < <(printf '%s\n' "$PATHS" | sed '/^[[:space:]]*$/d')
+          mapfile -t files < <(printf '%s\n' "$PATHS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d')
           args+=(--paths "${files[@]}")
         fi
         python3 "$GITHUB_ACTION_PATH/verified_commit.py" "${args[@]}"

@@ -16,8 +16,9 @@ origin's branch is exactly that commit and it descends from the old HEAD. The
 working tree must then match it for every committed path.
 
 Exit codes: 0 committed and Verified (or dry run) · 1 refused before any
-write (nothing to commit, unsupported file, bad input) · 2 the API refused the
-branch or the commit (e.g. the branch moved since HEAD) · 3 committed but NOT Verified ·
+write (nothing to commit, unsupported file, bad input) · 2 the API refused or
+failed the branch or the commit (e.g. the branch moved since HEAD, an outage) ·
+3 committed but NOT confirmed Verified ·
 4 committed and Verified, but the checkout could not be fast-forwarded to it.
 """
 
@@ -101,6 +102,14 @@ def split_message(text: str) -> dict:
     return {"headline": headline.strip(), "body": body.strip()}
 
 
+def _json(raw: bytes) -> dict:
+    """A response body as JSON, or its text as the message when it is not JSON."""
+    try:
+        return json.loads(raw or b"{}")
+    except ValueError:
+        return {"message": raw.decode(errors="replace").strip()[:300]}
+
+
 class GitHub:
     def __init__(self, token: str) -> None:
         self.token = token
@@ -118,15 +127,23 @@ class GitHub:
                 "Content-Type": "application/json",
             },
         )
+        # Never raises: an outage answers with an HTML page or nothing at all,
+        # and the caller reports the status like any other refusal.
         try:
             with urllib.request.urlopen(req) as resp:
-                return resp.status, json.load(resp)
+                return resp.status, _json(resp.read())
         except urllib.error.HTTPError as exc:
-            return exc.code, json.loads(exc.read() or b"{}")
+            return exc.code, _json(exc.read())
+        except urllib.error.URLError as exc:
+            return 0, {"message": f"GitHub unreachable: {exc.reason}"}
 
     def branch_head(self, repo: str, branch: str) -> str | None:
         status, data = self.request("GET", f"{self.api}/repos/{repo}/git/ref/heads/{branch}")
-        return data["object"]["sha"] if status == 200 else None
+        if status == 404:
+            return None
+        if status != 200:
+            raise RuntimeError(f"could not read {branch}: {status} {data}")
+        return data["object"]["sha"]
 
     def create_branch(self, repo: str, branch: str, sha: str) -> None:
         status, data = self.request(
@@ -142,7 +159,9 @@ class GitHub:
         return commit, data.get("errors") or [{"status": status, "message": data.get("message")}]
 
     def verification(self, repo: str, sha: str) -> dict:
-        _, data = self.request("GET", f"{self.api}/repos/{repo}/commits/{sha}")
+        status, data = self.request("GET", f"{self.api}/repos/{repo}/commits/{sha}")
+        if status != 200:
+            return {"verified": False, "reason": f"could not read the commit: {status} {data.get('message')}"}
         return (data.get("commit") or {}).get("verification") or {}
 
 
@@ -237,13 +256,13 @@ def main(argv: list[str] | None = None) -> int:
         print("refused: no GH_TOKEN or GITHUB_TOKEN in the environment", file=sys.stderr)
         return 1
     gh = GitHub(token)
-    if gh.branch_head(args.repo, args.branch) is None:
-        try:
+    try:
+        if gh.branch_head(args.repo, args.branch) is None:
             gh.create_branch(args.repo, args.branch, head)
-        except RuntimeError as exc:
-            print(f"::error title=Branch refused::{exc}"[:900], file=sys.stderr)
-            return 2
-        print(f"created {args.branch} at {head[:12]}")
+            print(f"created {args.branch} at {head[:12]}")
+    except RuntimeError as exc:
+        print(f"::error title=Branch refused::{exc}"[:900], file=sys.stderr)
+        return 2
     commit, errors = gh.create_commit(variables)
     if not commit:
         print(f"::error title=Commit refused::{json.dumps(errors)[:900]}", file=sys.stderr)
