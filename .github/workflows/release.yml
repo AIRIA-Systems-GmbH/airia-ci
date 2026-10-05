@@ -66,6 +66,16 @@ jobs:
             new) tag="ci-v$(( ${latest#ci-v} + 1 ))" ;;
             *) echo "::error::bump must be move or new, not ${BUMP}"; exit 1 ;;
           esac
+          # Each reusable workflow names its own major, to tell a frozen caller a
+          # newer one exists. Under the wrong tag it would tell ci-vN's own callers
+          # to upgrade to ci-vN, on every review.
+          for f in .github/workflows/reusable-claude-review.yml .github/workflows/reusable-claude-respond.yml; do
+            have="$(git show "${SHA}:${f}" | sed -n 's/^ *HARNESS_MAJOR: "\([0-9]*\)"$/\1/p')"
+            if [ "${have}" != "${tag#ci-v}" ]; then
+              echo "::error title=Wrong HARNESS_MAJOR::${f} says HARNESS_MAJOR '${have}' but this release is ${tag}; set it (and TAG in scripts/init.py, and the @ci-vN pins) to ${tag#ci-v} first"
+              exit 1
+            fi
+          done
           git tag -f "${tag}" "${SHA}"
           git push -f origin "refs/tags/${tag}"
           echo "${tag} now points at ${SHA}" | tee -a "${GITHUB_STEP_SUMMARY}"

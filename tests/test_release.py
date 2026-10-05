@@ -4,7 +4,8 @@
 
 What these tests hold: a tag only ever points at a tested commit of main; a
 move only goes forward, so no consumer loses a commit it already runs; the
-newest tag is found by version, not by spelling (ci-v10 is after ci-v2).
+newest tag is found by version, not by spelling (ci-v10 is after ci-v2); the
+reusable workflows' HARNESS_MAJOR is the major being released.
 
 Run: python3 -m unittest discover -s tests
 """
@@ -18,6 +19,7 @@ WORKFLOW = ROOT / ".github/workflows/release.yml"
 STEP = "Point the tag at this commit"
 TESTED = [["run list", {"json": [{"databaseId": 1}]}], ["release create", {}]]
 UNTESTED = [["run list", {"json": []}]]
+HARNESS = (".github/workflows/reusable-claude-review.yml", ".github/workflows/reusable-claude-respond.yml")
 GIT_ID = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 
 
@@ -46,7 +48,18 @@ class Release(unittest.TestCase):
     def tag_at_origin(self, tag):
         return self.git("rev-parse", "-q", "--verify", f"{tag}^{{commit}}", cwd=self.origin)
 
-    def release(self, bump, sha=None, ref="refs/heads/main", rules=TESTED):
+    def harness(self, review, respond=None):
+        """Commit the two reusable workflows, each naming its major, as main's head."""
+        for f, major in zip(HARNESS, (review, review if respond is None else respond), strict=True):
+            path = self.work / f
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f'jobs:\n  j:\n    steps:\n      - env:\n          HARNESS_MAJOR: "{major}"\n')
+        self.git("add", "-A")
+        self.head = self.commit(f"harness {review}")
+
+    def release(self, bump, sha=None, ref="refs/heads/main", rules=TESTED, major=None):
+        if sha is None and major is None:
+            self.harness(10 if bump == "move" else 11)
         self.r.rules(rules)
         return self.r.run(WORKFLOW, STEP, cwd=self.work, BUMP=bump, SHA=sha or self.head, GITHUB_REF=ref)
 
@@ -126,6 +139,37 @@ class Release(unittest.TestCase):
         p = self.release("move")
         self.assertEqual(p.returncode, 1)
         self.assertIn("No release tag", p.stdout)
+
+    def test_a_new_major_whose_workflows_still_name_the_old_one_is_refused(self):
+        # ci-v11's own callers would be told on every review to upgrade to ci-v11.
+        self.harness(10)
+        p = self.release("new", major=10)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Wrong HARNESS_MAJOR::.github/workflows/reusable-claude-review.yml says HARNESS_MAJOR '10' but this release is ci-v11",
+                      p.stdout)
+        self.assertEqual(self.git("ls-remote", "--tags", str(self.origin), "ci-v11"), "")
+        self.assertNotIn("release", [a for c in self.r.calls() for a in c["args"]])
+
+    def test_a_move_whose_workflows_name_the_next_major_is_refused(self):
+        # ci-v10's callers would be told ci-v11 is theirs before it exists.
+        self.harness(11)
+        p = self.release("move", major=11)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Wrong HARNESS_MAJOR", p.stdout)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
+
+    def test_each_workflow_is_checked_not_just_the_first(self):
+        self.harness(11, respond=10)
+        p = self.release("new", major=11)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("reusable-claude-respond.yml says HARNESS_MAJOR '10'", p.stdout)
+
+    def test_a_bump_that_is_neither_move_nor_new_moves_nothing(self):
+        # The dispatch form offers only the two, but the API takes any string.
+        p = self.release("major")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error::bump must be move or new, not major", p.stdout)
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
 
     def test_only_main_is_released(self):
         p = self.release("new", ref="refs/heads/feature")

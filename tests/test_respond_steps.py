@@ -14,7 +14,7 @@ import subprocess
 import sys
 import unittest
 
-from steps import ROOT, Runner, bare, heredoc
+from steps import ROOT, Runner, bare, heredoc, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-respond.yml"
 
@@ -153,6 +153,30 @@ class StagingForClaude(unittest.TestCase):
         harness = (repo / "ci-results/harness.md").read_text()
         self.assertIn("- Commit: ab7b0e6", harness)
         self.assertNotIn("s3cret", harness)
+
+
+class NewerMajor(unittest.TestCase):
+    """The responder warns too: a repository may run @claude more often than reviews."""
+
+    STEP = "Look for a newer airia-ci major"
+    MAJOR = step(WORKFLOW, STEP)["env"]["HARNESS_MAJOR"]
+
+    def look(self, reply):
+        r = Runner(self, [[r"airia-ci/git/matching-refs/tags/ci-v", reply]])
+        p = r.run(WORKFLOW, self.STEP, HARNESS_MAJOR=self.MAJOR)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p
+
+    def test_a_newer_major_warns(self):
+        refs = [{"ref": f"refs/tags/ci-v{n}"} for n in (self.MAJOR, int(self.MAJOR) + 1)]
+        self.assertIn(f"::warning title=Newer airia-ci major::airia-ci ci-v{int(self.MAJOR) + 1} exists",
+                      self.look({"json": refs}).stdout)
+
+    def test_the_newest_major_says_nothing(self):
+        self.assertNotIn("::warning", self.look({"json": [{"ref": f"refs/tags/ci-v{self.MAJOR}"}]}).stdout)
+
+    def test_an_unreadable_tag_list_never_fails_the_job(self):
+        self.assertIn("::notice title=airia-ci version not checked::", self.look({"exit": 1}).stdout)
 
 
 class SystemPrompt(unittest.TestCase):

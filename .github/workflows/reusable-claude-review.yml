@@ -57,7 +57,9 @@ name: Claude Code Review (shared)
 # `ci-v2` began when the bare `Bash` allow became an explicit allowlist: a
 # caller whose gates fall outside it must pass `extra-allow`. `ci-v2` is frozen
 # at 9ed10a6, whose prompt names `$RUNNER_TEMP` in a command Bash refuses, so
-# its reviewer never reads the gate results; `ci-v1` is frozen. The actions this workflow uses
+# its reviewer never reads the gate results; `ci-v1` is frozen. From `ci-v3` on,
+# a run warns, and the review notes, when a newer major exists (HARNESS_MAJOR,
+# bumped with each new major). The actions this workflow uses
 # are pinned to the same tag, because `./` inside a called workflow is the
 # CALLER's checkout, not this repository.
 #
@@ -254,6 +256,29 @@ jobs:
       # Claude reads nothing outside the checkout (the claude-settings action
       # says why), so the toolchain's status goes into ci-results/ beside the
       # gate results.
+      # A pin on an older major is frozen: moving the tag never reaches it, so
+      # the frozen code itself must say a newer one exists. HARNESS_MAJOR is
+      # this file's own major; bump it with every ci-vN+1. A failed lookup
+      # never fails the review.
+      - name: Look for a newer airia-ci major
+        id: newer
+        if: steps.once.outputs.review == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HARNESS_MAJOR: "3"
+        run: |
+          if ! refs="$(gh api "repos/AIRIA-Systems-GmbH/airia-ci/git/matching-refs/tags/ci-v" --jq '.[].ref')"; then
+            echo "::notice title=airia-ci version not checked::the harness's tags could not be read"
+            exit 0
+          fi
+          newest="$(grep -E '^refs/tags/ci-v[0-9]+$' <<< "${refs}" | sed 's|^refs/tags/ci-v||' | sort -n | tail -n 1 || true)"
+          if [ -n "${newest}" ] && [ "${newest}" -gt "${HARNESS_MAJOR}" ]; then
+            notice="airia-ci ci-v${newest} exists; this repository calls ci-v${HARNESS_MAJOR}, which no longer changes. Upgrade: https://github.com/AIRIA-Systems-GmbH/airia-ci/blob/main/HOWTO.md#upgrade-to-a-new-major"
+            echo "::warning title=Newer airia-ci major::${notice}"
+            echo "${notice}" >> "$GITHUB_STEP_SUMMARY"
+            echo "notice=${notice}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Stage the toolchain status for Claude
         if: steps.once.outputs.review == 'true'
         env:
@@ -403,6 +428,7 @@ jobs:
           CLAUDE_VERSION: ${{ steps.claude-cli.outputs.version }}
           EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NEWER_MAJOR: ${{ steps.newer.outputs.notice }}
         run: |
           body="${RUNNER_TEMP}/claude-review-body.md"
           rm -f "${body}"
@@ -426,6 +452,8 @@ jobs:
           if result.get("is_error") or not text:
               print("No review text in the final message.")
               sys.exit(0)
+          if os.environ.get("NEWER_MAJOR"):
+              text += "\n\n> [!NOTE]\n> " + os.environ["NEWER_MAJOR"]
           with open(out, "w") as fh:
               fh.write(text + "\n\n---\n_Automatic review by `claude-code-review.yml` — [run log](" + os.environ["RUN_URL"] + "), Claude Code " + (os.environ.get("CLAUDE_VERSION") or "installed by the action") + "._\n")
           PY
