@@ -54,6 +54,7 @@ jobs:
             echo "::error title=No release tag::no ci-vN tag exists; create the first one by hand"
             exit 1
           fi
+          old="$(git rev-parse "${latest}^{commit}")"
           case "${BUMP}" in
             move)
               tag="${latest}"
@@ -68,3 +69,16 @@ jobs:
           git tag -f "${tag}" "${SHA}"
           git push -f origin "refs/tags/${tag}"
           echo "${tag} now points at ${SHA}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          # Each release is a GitHub Release under its own fixed tag (ci-v3.4):
+          # whoever watches this repository's Releases is notified, and the notes
+          # list what consumers now run. ci-vN.M is never taken for the newest above.
+          n="$(git tag -l "${tag}.*" | grep -cE "^${tag}\.[0-9]+$" || true)"
+          release="${tag}.$(( n + 1 ))"
+          {
+            echo "\`${tag}\` now points at ${SHA}. Since ${latest} was at ${old:0:7}:"
+            echo
+            git log --no-merges --format='- %s' "${old}..${SHA}"
+          } > "${RUNNER_TEMP}/release-notes.md"
+          gh release create "${release}" --repo "${GITHUB_REPOSITORY}" --target "${SHA}" \
+            --title "${release}" --notes-file "${RUNNER_TEMP}/release-notes.md"
+          echo "Release ${release} published" | tee -a "${GITHUB_STEP_SUMMARY}"

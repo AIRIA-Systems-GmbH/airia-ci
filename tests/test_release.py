@@ -16,7 +16,7 @@ from steps import ROOT, Runner
 
 WORKFLOW = ROOT / ".github/workflows/release.yml"
 STEP = "Point the tag at this commit"
-TESTED = [["run list", {"json": [{"databaseId": 1}]}]]
+TESTED = [["run list", {"json": [{"databaseId": 1}]}], ["release create", {}]]
 UNTESTED = [["run list", {"json": []}]]
 GIT_ID = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
 
@@ -57,6 +57,37 @@ class Release(unittest.TestCase):
         self.assertEqual(self.tag_at_origin("ci-v2"), self.a, "an older tag never moves")
         self.assertIn(f"ci-v10 now points at {self.head}", self.r.summary.read_text())
 
+    def release_call(self):
+        (call,) = [c for c in self.r.calls() if c["args"][:2] == ["release", "create"]]
+        return call
+
+    def test_a_move_publishes_a_release_listing_what_consumers_now_run(self):
+        # Watchers of Releases are told; the notes are the commits since the tag's last position.
+        p = self.release("move")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        call = self.release_call()
+        self.assertEqual(call["args"][2], "ci-v10.1")
+        self.assertEqual(call["args"][call["args"].index("--target") + 1], self.head)
+        notes = call["files"]["--notes-file"]
+        self.assertIn(f"`ci-v10` now points at {self.head}. Since ci-v10 was at {self.b[:7]}:", notes)
+        self.assertIn("- c", notes.splitlines())
+        self.assertNotIn("- b", notes.splitlines(), "only what is new to ci-v10's consumers")
+
+    def test_the_next_release_of_the_same_major_counts_up(self):
+        self.git("tag", "ci-v10.1", self.b)
+        self.git("tag", "ci-v10.x", self.b)
+        p = self.release("move")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.release_call()["args"][2], "ci-v10.2")
+        self.assertEqual(self.tag_at_origin("ci-v10"), self.head, "ci-v10.1 is never taken for the newest")
+
+    def test_a_new_major_starts_its_own_releases(self):
+        p = self.release("new")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        call = self.release_call()
+        self.assertEqual(call["args"][2], "ci-v11.1")
+        self.assertIn("Since ci-v10 was at", call["files"]["--notes-file"])
+
     def test_new_creates_the_next_major_and_leaves_the_current_one(self):
         p = self.release("new")
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -79,6 +110,7 @@ class Release(unittest.TestCase):
         self.assertEqual(self.tag_at_origin("ci-v10"), self.b)
         (call,) = self.r.calls()
         self.assertEqual(call["args"][call["args"].index("--commit") + 1], self.head, "the exact commit is checked")
+        self.assertNotIn("release", call["args"], "no release for an untested commit")
         self.assertIn("success", call["args"])
 
     def test_a_tag_that_is_not_ci_vN_is_never_taken_for_the_newest(self):
