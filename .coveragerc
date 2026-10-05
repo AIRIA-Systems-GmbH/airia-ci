@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Python half of the coverage gate (tests/coverage.sh). The shipped scripts,
-# and the Python heredocs tests/steps.py extracts from the YAML.
+# the maintainer and onboarding scripts in scripts/, and the Python heredocs
+# tests/steps.py extracts from the YAML.
 [run]
 branch = true
 parallel = true
@@ -10,4 +11,5 @@ patch = subprocess
 data_file = build/coverage/.coverage
 source =
     .github
+    scripts
     build/coverage/src

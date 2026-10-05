@@ -140,6 +140,20 @@ class StagingForClaude(unittest.TestCase):
         self.assertEqual(status, "", "@claude must never commit ci-results/")
         self.assertEqual((repo / "ci-results/claude-toolchain-status.md").read_text(), "ok\n")
 
+    def test_the_harness_note_carries_no_inputs(self):
+        # The respond inputs include postgres-password and qdrant-api-key:
+        # nothing Claude reads, and could quote in a comment, may hold them.
+        r = Runner(self)
+        repo = r.tmp / "repo"
+        repo.mkdir()
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
+                  HARNESS_REF="o/airia-ci/.github/workflows/reusable-claude-respond.yml@refs/tags/ci-v3",
+                  HARNESS_SHA="ab7b0e6", CALLER_INPUTS='{"postgres-password": "s3cret"}')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        harness = (repo / "ci-results/harness.md").read_text()
+        self.assertIn("- Commit: ab7b0e6", harness)
+        self.assertNotIn("s3cret", harness)
+
 
 class SystemPrompt(unittest.TestCase):
     STEP = "Compose the system prompt"
@@ -161,7 +175,7 @@ class SystemPrompt(unittest.TestCase):
         _, args = self.compose("true")
         self.assertIn("`cat ci-results/jobs.md` next", args)
         self.assertIn("do not use `gh pr checks`", args)
-        self.assertNotIn("RUNNER_TEMP/", args.replace("$RUNNER_TEMP/ci-results means", ""))
+        self.assertNotIn("RUNNER_TEMP", args)
 
     def test_without_a_gate_it_runs_the_gates_itself(self):
         _, args = self.compose("false")
