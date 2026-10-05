@@ -150,24 +150,31 @@ def pr_workflows(root: Path) -> list[Path]:
     wf = root / ".github/workflows"
     found = sorted(list(wf.glob("*.yml")) + list(wf.glob("*.yaml"))) if wf.is_dir() else []
     # Block style (`  pull_request:`) and flow style (`on: pull_request`, `on: [push, pull_request]`).
-    return [p for p in found if re.search(r"^  pull_request:|^on:.*\bpull_request\b", p.read_text(), re.M)]
+    return [p for p in found if re.search(r"^ +pull_request:|^on:.*\bpull_request\b", p.read_text(), re.M)]
 
 
-def jobs(text: str) -> list[tuple[str, str]]:
-    """(id, check name) of each job: the name GitHub reports is `name:` if set, else the id."""
-    found, current = [], None
-    in_jobs = False
+def jobs(text: str) -> list[tuple[str, str, bool]]:
+    """(id, check name, is a matrix) of each job.
+
+    GitHub reports a job's `name:` if it has one, else its id; a matrix job
+    reports one check per combination, `name (value, ...)`, never the bare name.
+    """
+    found, indent, in_jobs = [], None, False
     for line in text.splitlines():
-        if re.match(r"^\S", line):
+        if re.match(r"^[A-Za-z]", line):  # a top-level key; a column-0 comment is not one
             in_jobs = line.startswith("jobs:")
             continue
-        if not in_jobs:
+        m = re.match(r"^( +)([A-Za-z0-9_-]+):\s*$", line)
+        if not in_jobs or not m and not found:
             continue
-        if m := re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line):
-            current = m.group(1)
-            found.append([current, current])
-        elif current and (m := re.match(r"^    name:\s*(.+?)\s*$", line)):
+        if m and indent is None:
+            indent = m.group(1)
+        if m and m.group(1) == indent:
+            found.append([m.group(2), m.group(2), False])
+        elif m := re.match(rf"^{indent}  name:\s*(.+?)\s*$", line):
             found[-1][1] = m.group(1).strip("'\"")
+        elif re.match(rf"^{indent}  strategy:", line):
+            found[-1][2] = True
     return [tuple(j) for j in found]
 
 
@@ -203,15 +210,19 @@ def wire_review(root: Path, branch: str, runner: str) -> tuple[str, list[str]]:
     path = gates[0]
     text = path.read_text()
     found = [j for j in jobs(text) if j[0] != "claude-review"]
-    checks = [name for _, name in found]
+    checks = [name for _, name, matrix in found if not matrix]
+    for job, _, matrix in found:
+        if matrix:
+            print(f"warning: {job} is a matrix job: its checks are named per combination, so it is not "
+                  "required; add them to the ruleset by name after the first run")
     if "reusable-claude-review.yml@" in text:
         print(f"kept      {path} (already calls the review)")
     elif not jobs_is_last(text):
         print(f"{path}: `jobs:` is not its last top-level key; add this job by hand:")
-        print(REVIEW_JOB.format(needs=", ".join(j for j, _ in found), harness=HARNESS, tag=TAG, runner=runner))
+        print(REVIEW_JOB.format(needs=", ".join(j[0] for j in found), harness=HARNESS, tag=TAG, runner=runner))
     else:
         path.write_text(text.rstrip("\n") + "\n" + REVIEW_JOB.format(
-            needs=", ".join(j for j, _ in found), harness=HARNESS, tag=TAG, runner=runner))
+            needs=", ".join(j[0] for j in found), harness=HARNESS, tag=TAG, runner=runner))
         print(f"appended  the review job to {path}")
     if "ready_for_review" not in text:
         print(f"warning: {path.name} does not run on ready_for_review, so a PR opened as a draft is never reviewed")

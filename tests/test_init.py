@@ -129,6 +129,37 @@ class Init(unittest.TestCase):
         self.assertFalse((self.repo / ".github/workflows/merge-gate.yml").exists())
         self.assertIn("needs: [lint, tests]", self.file(".github/workflows/ci.yml"))
 
+    def test_a_column_0_comment_between_jobs_hides_none_of_them(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(CI.replace("  tests:\n", "# ---- slow gates ----\n  tests:\n"))
+        code, _, _ = self.run_main([VIEW, HAS_SECRET, NO_RULESET, CREATE], "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("needs: [lint, tests]", self.file(".github/workflows/ci.yml"))
+        body = json.loads(self.call("-X POST")[0]["files"]["stdin"])
+        self.assertIn({"context": "tests"}, [c for r in body["rules"] if r["type"] == "required_status_checks"
+                                              for c in r["parameters"]["required_status_checks"]])
+
+    def test_a_four_space_workflow_is_found_and_read(self):
+        four = "\n".join(("  " + line if line.startswith(" ") else line) for line in CI.splitlines()) + "\n"
+        (self.repo / ".github/workflows/ci.yml").write_text(four)
+        code, _, _ = self.run_main([VIEW, HAS_SECRET, HAS_RULESET], "--yes")
+        self.assertEqual(code, 0)
+        self.assertFalse((self.repo / ".github/workflows/merge-gate.yml").exists())
+        self.assertIn("needs: [lint, tests]", self.file(".github/workflows/ci.yml"))
+
+    def test_a_matrix_job_is_waited_for_but_not_required(self):
+        # Its checks are `tests (3.12)`, never `tests`: requiring `tests` would block every PR.
+        (self.repo / ".github/workflows/ci.yml").write_text(CI.replace(
+            "  tests:\n    runs-on: ubuntu-latest\n",
+            "  tests:\n    strategy:\n      matrix:\n        py: ['3.12']\n    runs-on: ubuntu-latest\n"))
+        code, out, _ = self.run_main([VIEW, HAS_SECRET, NO_RULESET, CREATE], "--yes")
+        self.assertEqual(code, 0)
+        self.assertIn("needs: [lint, tests]", self.file(".github/workflows/ci.yml"))
+        self.assertIn("tests is a matrix job", out)
+        body = json.loads(self.call("-X POST")[0]["files"]["stdin"])
+        contexts = [c["context"] for r in body["rules"] if r["type"] == "required_status_checks"
+                    for c in r["parameters"]["required_status_checks"]]
+        self.assertEqual(contexts, ["Code quality"])
+
     def test_a_second_run_changes_nothing(self):
         (self.repo / ".github/workflows/ci.yml").write_text(CI)
         self.run_main([VIEW, HAS_SECRET, NO_RULESET, CREATE], "--yes")
