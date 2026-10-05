@@ -44,6 +44,9 @@ class FakeGitHub:
         self.remote, self.race, self.drop = remote, False, False
         self.mutations, self.created_refs = [], []
         self.reject_graphql = self.reject_ref = False
+        # Endpoints ("ref", "graphql", "commits") that answer with GitHub's
+        # HTML 502 page instead of JSON, as its front end does in an outage.
+        self.outage = set()
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -58,7 +61,22 @@ class FakeGitHub:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def down(self, endpoint):
+                if endpoint not in fake.outage:
+                    return False
+                page = b"<html><body><h1>502 Bad Gateway</h1></body></html>"
+                self.send_response(502)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(page)))
+                self.end_headers()
+                self.wfile.write(page)
+                return True
+
             def do_GET(self):
+                if "/git/ref/heads/" in self.path and self.down("ref"):
+                    return None
+                if "/commits/" in self.path and self.down("commits"):
+                    return None
                 if "/git/ref/heads/" in self.path:
                     name = self.path.split("/git/ref/heads/", 1)[1]
                     if name in fake.branches:
@@ -77,6 +95,8 @@ class FakeGitHub:
                     fake.created_refs.append(body)
                     fake.branches[body["ref"].removeprefix("refs/heads/")] = body["sha"]
                     return self.reply(201, {})
+                if self.down("graphql"):
+                    return None
                 if fake.reject_graphql:
                     return self.reply(401, {"message": "Bad credentials"})
                 inp = body["variables"]["input"]
@@ -391,6 +411,47 @@ class VerifiedCommitTest(Checkout):
         self.assertIn("::error title=Branch refused::could not create release/new", err)
         self.assertEqual(fake.mutations, [], "no commit without its branch")
 
+    # An outage must end in the documented exit code and a readable ::error,
+    # never a traceback: a traceback exits 1, which means "refused before any
+    # write", and that is not what happened.
+    def test_an_outage_reading_the_branch_is_not_taken_for_a_missing_branch(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        fake.outage = {"ref"}
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn("could not read b: 502", err)
+        self.assertEqual(fake.created_refs, [], "a 502 is not a 404: the branch is never re-created")
+        self.assertEqual(fake.mutations, [])
+
+    def test_an_html_error_page_on_the_commit_is_reported_not_raised(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        fake.outage = {"graphql"}
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn('"status": 502', err)
+        self.assertIn("502 Bad Gateway", err)
+
+    def test_an_outage_reading_the_verification_says_so(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        fake.outage = {"commits"}
+        code, out, _ = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 3, "committed, but not confirmed Verified")
+        self.assertIn("could not read the commit: 502", out)
+
+    def test_an_unreachable_api_is_reported_not_raised(self):
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        fake.close()  # nothing listens on its port any more
+        code, _, err = self.run_main("--branch", "b", "--message", "m", fake=fake)
+        self.assertEqual(code, 2)
+        self.assertIn("GitHub unreachable", err)
+
     def test_a_commit_that_does_not_descend_from_head_is_not_fast_forwarded(self):
         self.with_origin()
         tree = sh(self.repo, "git", "rev-parse", "HEAD^{tree}")
@@ -436,6 +497,15 @@ class ActionSteps(Checkout):
         self.assertEqual([a["path"] for a in sent["fileChanges"]["additions"]], ["pyproject.toml", "new.md"])
         self.assertEqual(sent["message"]["headline"], "chore: bump")
         self.assertEqual(out["verified"], "true")
+
+    def test_spaces_around_a_path_are_not_part_of_its_name(self):
+        # `paths: |` in YAML keeps a trailing space or a tab: "new.md " is not a file.
+        self.edit_tree()
+        fake = FakeGitHub({"b": self.head})
+        self.addCleanup(fake.close)
+        p, _ = self.commit_step(fake, PATHS="pyproject.toml \n\t new.md\t\n")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual([a["path"] for a in fake.mutations[0]["fileChanges"]["additions"]], ["pyproject.toml", "new.md"])
 
     def test_no_paths_commits_everything_git_status_reports(self):
         self.edit_tree()

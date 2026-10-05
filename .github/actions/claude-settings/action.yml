@@ -34,7 +34,8 @@ description: >-
 #
 # The deny list still names the escape hatches, because a deny beats an allow:
 # an `extra-allow` cannot reopen them by accident. `extra-allow` may not grant
-# a bare `Bash`.
+# a bare `Bash`, in any spelling: a rule with no fixed command before its
+# first `*` (`Bash(*)`, `Bash(**)`, `Bash(* --version)`) runs any program.
 #
 # NOTHING OUTSIDE THE CHECKOUT. Claude Code refuses a path outside its
 # working directory even for an allowed `cat`, so gate results in
@@ -130,12 +131,23 @@ runs:
         def rules(var):
             return [r.strip() for r in os.environ.get(var, "").splitlines() if r.strip()]
 
+        def opens_bash(rule):
+            # A `*` matches any text anywhere in a rule, so a Bash rule with no
+            # fixed command before its first `*` runs any program.
+            if rule == "Bash":
+                return True
+            if not (rule.startswith("Bash(") and rule.endswith(")")):
+                return False
+            return not rule[5:-1].split("*", 1)[0].removesuffix(":").strip()
+
         profile = os.environ["PROFILE"]
         if profile not in ("review", "respond"):
             sys.exit(f"profile must be review or respond, not {profile!r}")
         extra_allow, extra_deny = rules("EXTRA_ALLOW"), rules("EXTRA_DENY")
-        if any(r in ("Bash", "Bash(*)", "Bash(:*)") for r in extra_allow):
-            sys.exit("extra-allow may not grant a bare Bash: list the gate commands instead")
+        opened = [r for r in extra_allow if opens_bash(r)]
+        if opened:
+            sys.exit(f"extra-allow may not grant a bare Bash ({', '.join(opened)} names no command "
+                     "before its first *): list the gate commands instead")
 
         allow = READ + [f"Bash({c}:*)" for c in BASH_READ + GATES] + ["Bash(pwd)"]
         deny = list(DENY)

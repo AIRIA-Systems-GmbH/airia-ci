@@ -104,11 +104,19 @@ class Extras(Compose):
         self.assertEqual(s["permissions"]["deny"][-1], "Bash(my-money-cli:*)")
 
     def test_extra_allow_may_not_grant_a_bare_bash(self):
-        for spelling in ("Bash", "Bash(*)", "Bash(:*)"):
+        # A `*` matches any text anywhere in a rule, so a rule with no fixed
+        # command before its first `*` runs any program: `Bash(* --version)`
+        # matches `bash -c '...' --version` (Claude Code's permissions docs).
+        for spelling in ("Bash", "Bash(*)", "Bash(:*)", "Bash(**)", "Bash( * )", "Bash(* --version)", "Bash(*:*)"):
             p, s = self.compose("review", allow=f"Bash(cargo test:*)\n{spelling}")
             self.assertNotEqual(p.returncode, 0, spelling)
             self.assertIn("may not grant a bare Bash", p.stderr)
             self.assertIsNone(s, "no settings file may be written")
+
+    def test_a_gate_rule_with_a_fixed_command_is_still_allowed(self):
+        rules = ["Bash(cargo test:*)", "Bash(npm run *)", "Bash(make lint)", "Bash(pytest*)"]
+        s = self.settings("review", allow="\n".join(rules))
+        self.assertEqual(s["permissions"]["allow"][-len(rules):], rules)
 
     def test_an_unknown_profile_is_refused(self):
         p, s = self.compose("admin")
