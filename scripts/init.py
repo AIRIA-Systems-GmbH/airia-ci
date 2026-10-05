@@ -21,7 +21,8 @@ Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from the environment
 variable of that name, or by running `claude setup-token`; one token serves
 every repository of the same Anthropic account), and offers to protect the
 default branch with a ruleset: changes only through a pull request whose gate
-jobs passed, no force-push, no deletion. Recommended; a private repository of
+jobs passed and whose commits are signed and verified, no force-push, no
+deletion. Recommended; a private repository of
 an organization on the Free plan cannot have one, and it says so.
 
 It commits nothing: review the files, commit them on a branch, open a PR.
@@ -244,8 +245,8 @@ def protect(repo: str, branch: str, checks: list[str], assume_yes: bool) -> None
     if p.returncode == 0 and p.stdout.strip():
         print(f"kept      the {RULESET!r} ruleset (exists)")
         return
-    if not ask(f"Protect {branch} (recommended): changes only by pull request, "
-               f"required checks {checks or 'none yet'}, no force-push or deletion?", assume_yes):
+    if not ask(f"Protect {branch} (recommended): changes only by pull request, signed and verified "
+               f"commits only, required checks {checks or 'none yet'}, no force-push or deletion?", assume_yes):
         print(f"skipped   protection: anyone with write access can push to {branch} directly")
         return
     body = {
@@ -253,6 +254,8 @@ def protect(repo: str, branch: str, checks: list[str], assume_yes: bool) -> None
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
         "rules": [
             {"type": "deletion"}, {"type": "non_fast_forward"},
+            # Every commit a PR brings must verify, even for a squash merge.
+            {"type": "required_signatures"},
             {"type": "pull_request", "parameters": {
                 "allowed_merge_methods": ["merge", "squash", "rebase"], "dismiss_stale_reviews_on_push": False,
                 "require_code_owner_review": False, "require_last_push_approval": False,

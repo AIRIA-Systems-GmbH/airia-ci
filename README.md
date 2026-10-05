@@ -30,7 +30,7 @@ It writes whichever of these files are missing and never overwrites one:
 - the review job at the end of the repository's pull-request workflow, or a `merge-gate.yml` whose placeholder gate fails until it is replaced;
 - `.github/claude-review.md`.
 
-It then sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, from that environment variable or by running `claude setup-token`. Finally it offers a ruleset on the default branch: changes only by pull request, with the gate jobs required, and no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for that. It commits nothing. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool.
+It then sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, from that environment variable or by running `claude setup-token`. Finally it offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, and no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for that. It commits nothing. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool.
 
 The call contract is the header of `reusable-claude-review.yml`. Read it before wiring a repository by hand. In short, the caller:
 

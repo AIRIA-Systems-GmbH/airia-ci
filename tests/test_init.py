@@ -100,6 +100,7 @@ class Init(unittest.TestCase):
         body = json.loads(ruleset["files"]["stdin"])
         self.assertEqual(body["conditions"]["ref_name"]["include"], ["~DEFAULT_BRANCH"])
         self.assertEqual(body["bypass_actors"], [])
+        self.assertIn({"type": "required_signatures"}, body["rules"], "an unverified commit never reaches main")
         checks = [r for r in body["rules"] if r["type"] == "required_status_checks"][0]
         self.assertEqual(checks["parameters"]["required_status_checks"], [{"context": "gates"}])
         self.assertIn("put the real gates in the same pull request, or it cannot merge", out)
