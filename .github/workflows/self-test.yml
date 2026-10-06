@@ -124,12 +124,15 @@ jobs:
   claude-review:
     # The automatic review, as a consumer wires it: last, after every gate,
     # and also when one is red, because a red gate is review input. Never on a
-    # fork's PR: it would have no secret, and must not get one.
+    # fork's PR: it would have no secret, and must not get one. Nor on
+    # Dependabot's: its runs get no Actions secrets either, and a review that
+    # can only fail for want of a token says nothing about the bump.
     needs: [unittest, coverage, lint, actions]
     if: >-
       always() && github.event_name == 'pull_request'
       && github.event.pull_request.draft == false
       && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       contents: read
       pull-requests: write

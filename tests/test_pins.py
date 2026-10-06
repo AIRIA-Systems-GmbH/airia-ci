@@ -6,7 +6,7 @@
   (the comment is what Dependabot reads and rewrites), except the few that
   follow a major tag on purpose;
 - Dependabot never touches the pins of this repository's own actions, nor the
-  ones that follow a major;
+  ones that follow a major, and its pull requests get no Claude review;
 - this repository's own jobs name a runner image, not `ubuntu-latest`.
 
 Run: python3 -m unittest discover -s tests
@@ -83,6 +83,12 @@ class Pins(unittest.TestCase):
         ignored = [i["dependency-name"] for i in update["ignore"]]
         for name in FOLLOWS_MAJOR:
             self.assertIn(name, ignored)
+
+    def test_dependabot_pull_requests_are_not_reviewed(self):
+        # Its runs get no Actions secrets, so the review could only fail with
+        # "No Claude credential", a red mark on every weekly bump.
+        job = yaml.safe_load((ROOT / ".github/workflows/self-test.yml").read_text())["jobs"]["claude-review"]
+        self.assertIn("github.event.pull_request.user.login != 'dependabot[bot]'", job["if"])
 
     def test_this_repository_runs_on_a_named_image(self):
         # ubuntu-latest moves to a new release under us (Ubuntu 26 from
