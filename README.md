@@ -54,7 +54,7 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 
 - `lint`: actionlint, shellcheck (also over the sliced composite-action blocks, which actionlint does not read) and ruff;
 - `actions`: the composite actions at the PR's own commit (the reusable workflows call them `@ci-v3`, so this is the only job that runs a change to an action before release);
-- `claude-review`: this repository reviews itself with its own reusable workflow, on `ubuntu-latest` (a public repository cannot use the Thor pool). `claude.yml` is its `@claude` responder.
+- `claude-review`: this repository reviews itself with its own reusable workflow, on `ubuntu-24.04` (a public repository cannot use the Thor pool). `claude.yml` is its `@claude` responder.
 
 ## Versioning
 

@@ -114,7 +114,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Replace with this repository's gates
         run: |
           echo "::error::merge-gate.yml still has the placeholder gate: put the tests, lint and type checks here"
