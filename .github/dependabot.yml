@@ -17,3 +17,6 @@ updates:
       # ci-v3 tag. Dependabot would "update" that to the newest ci-v3.N, which
       # is frozen: callers would stop receiving every later fix.
       - dependency-name: "AIRIA-Systems-GmbH/airia-ci*"
+      # claude-code-action follows @v1 on purpose: its fixes reach every caller
+      # the day they ship, with no PR and no tag move. A v2 is moved by hand.
+      - dependency-name: "anthropics/claude-code-action"

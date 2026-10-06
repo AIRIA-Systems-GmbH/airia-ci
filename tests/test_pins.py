@@ -3,8 +3,10 @@
 """What the shipped YAML runs on, and at which version.
 
 - every third-party action is pinned to a commit, with its release as a comment
-  (the comment is what Dependabot reads and rewrites);
-- Dependabot never touches the pins of this repository's own actions;
+  (the comment is what Dependabot reads and rewrites), except the few that
+  follow a major tag on purpose;
+- Dependabot never touches the pins of this repository's own actions, nor the
+  ones that follow a major;
 - this repository's own jobs name a runner image, not `ubuntu-latest`.
 
 Run: python3 -m unittest discover -s tests
@@ -20,13 +22,20 @@ from steps import ROOT
 
 YAML = sorted(ROOT.glob(".github/workflows/*.yml")) + sorted(ROOT.glob(".github/actions/*/action.yml"))
 USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$", re.MULTILINE)
+# Actions that run at their moving major tag by choice. claude-code-action ships
+# fixes almost daily; at @v1 every caller has them the same day, where a pin
+# would hold each one behind a Dependabot PR (which has no Claude token to test
+# it with) and a ci-v3 move.
+FOLLOWS_MAJOR = {"anthropics/claude-code-action": "v1"}
 
 
-def third_party() -> list[tuple[str, str, str]]:
+def third_party(*, following_major: bool = False) -> list[tuple[str, str, str]]:
     found = []
     for path in YAML:
         for ref, rest in USES.findall(path.read_text()):
             if ref.startswith("./") or ref.startswith("AIRIA-Systems-GmbH/airia-ci/"):
+                continue
+            if (ref.split("@")[0] in FOLLOWS_MAJOR) != following_major:
                 continue
             found.append((path.relative_to(ROOT).as_posix(), ref, rest.strip()))
     return found
@@ -50,6 +59,15 @@ class Pins(unittest.TestCase):
             commits.setdefault(name, set()).add(sha)
         self.assertEqual({n: s for n, s in commits.items() if len(s) > 1}, {})
 
+    def test_an_action_that_follows_its_major_is_on_exactly_that_tag(self):
+        found = third_party(following_major=True)
+        self.assertEqual({ref.split("@")[0] for _, ref, _ in found}, set(FOLLOWS_MAJOR))
+        for where, ref, comment in found:
+            with self.subTest(where=where, ref=ref):
+                name, tag = ref.split("@")
+                self.assertEqual(tag, FOLLOWS_MAJOR[name])
+                self.assertEqual(comment, "")
+
     def test_dependabot_leaves_the_moving_ci_tag_alone(self):
         # Dependabot would rewrite @ci-v3 to the newest frozen ci-v3.N, and the
         # callers would stop receiving every later fix.
@@ -58,6 +76,13 @@ class Pins(unittest.TestCase):
         self.assertEqual(update["package-ecosystem"], "github-actions")
         self.assertIn("/.github/actions/*", update["directories"])
         self.assertIn("AIRIA-Systems-GmbH/airia-ci*", [i["dependency-name"] for i in update["ignore"]])
+
+    def test_dependabot_leaves_an_action_that_follows_its_major_alone(self):
+        # Dependabot would otherwise pin it, or propose the next major, as a PR.
+        (update,) = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())["updates"]
+        ignored = [i["dependency-name"] for i in update["ignore"]]
+        for name in FOLLOWS_MAJOR:
+            self.assertIn(name, ignored)
 
     def test_this_repository_runs_on_a_named_image(self):
         # ubuntu-latest moves to a new release under us (Ubuntu 26 from

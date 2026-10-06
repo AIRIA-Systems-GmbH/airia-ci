@@ -323,7 +323,7 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.once.outputs.review == 'true'
-        uses: anthropics/claude-code-action@86d88e619d8e6caf07b5c3944dd14f441c533718 # v1.0.243
+        uses: anthropics/claude-code-action@v1
         with:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
