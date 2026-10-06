@@ -35,7 +35,7 @@ Consumers run this repository's YAML at the moving tag `@ci-v3`. Every `run:` bl
 
 ## Dogfooding
 
-`self-test.yml` ends with `claude-review`, which calls `./.github/workflows/reusable-claude-review.yml` at the PR's commit; `claude.yml` answers `@claude` with the respond workflow from the default branch. Both run on `ubuntu-latest` via the `runner` input, so `claude-cli` falls back to claude-code-action's own install. The reusable workflows still call the actions `@ci-v3`; the `actions` job is what tests a change to an action.
+`self-test.yml` ends with `claude-review`, which calls `./.github/workflows/reusable-claude-review.yml` at the PR's commit; `claude.yml` answers `@claude` with the respond workflow from the default branch. Both run on `ubuntu-24.04` via the `runner` input, so `claude-cli` falls back to claude-code-action's own install. The reusable workflows still call the actions `@ci-v3`; the `actions` job is what tests a change to an action.
 
 ## Before you finish
 
