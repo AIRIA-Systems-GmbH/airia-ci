@@ -30,7 +30,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/reusable-claude-respond.yml
     with:
-      runner: '["ubuntu-latest"]'
+      runner: '["ubuntu-24.04"]'
       gate-workflow: self-test.yml
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

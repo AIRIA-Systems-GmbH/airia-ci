@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Third-party actions are pinned by commit SHA with the release as a comment;
+# this keeps those pins current, in one grouped pull request a week.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories: ["/", "/.github/actions/*"]
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # The reusable workflows call this repository's own actions at the moving
+      # ci-v3 tag. Dependabot would "update" that to the newest ci-v3.N, which
+      # is frozen: callers would stop receiving every later fix.
+      - dependency-name: "AIRIA-Systems-GmbH/airia-ci*"

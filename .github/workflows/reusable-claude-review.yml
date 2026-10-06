@@ -210,7 +210,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.once.outputs.review == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full history: `git diff origin/<base>...HEAD` and `git merge-base`
           # are how a reviewer separates a defect this PR introduced from one
@@ -323,7 +323,7 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.once.outputs.review == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@86d88e619d8e6caf07b5c3944dd14f441c533718 # v1.0.243
         with:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
