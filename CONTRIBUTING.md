@@ -15,10 +15,10 @@ A fix made in one calling repository helps that repository only. The same fix ma
 
    ```
    gh issue list -R AIRIA-Systems-GmbH/airia-ci --search "<words>"
-   gh issue create -R AIRIA-Systems-GmbH/airia-ci --template ci-defect.yml --label "from:<repo>"
+   gh issue create -R AIRIA-Systems-GmbH/airia-ci --label defect --label "from:<repo>" --title "[defect] <what>" --body "<the form's fields>"
    ```
 
-   There are templates for a **CI defect**, a **Thor runner problem** and a **harvest request**.
+   There are forms for a **CI defect**, a **Thor runner problem** and a **harvest request**, at <https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/new/choose>. `gh issue create --template` reads only Markdown templates, not these forms. From the command line, use the form's label (`defect`, `runner` or `harvest`) and answer its fields in the body.
 2. **Mark every workaround.** You may unblock yourself locally, but the workaround carries the comment `# upstream: airia-ci#<n>`. It is deleted in the PR that adopts the fix. `git grep -n 'upstream: airia-ci#'` in a calling repository lists its open workarounds; no script here counts them yet.
 3. **Never make a third copy.** If a job, action or script you need exists in another repository, file a harvest request. A shared piece is harvested once there are two donors. The harvest names its inputs from what differs between the donors, and its first adopter deletes its own copy in the same week.
 4. **Link both sides.** If the calling repository records the problem as one of its own artifacts (an Issue in `.airia/`), that artifact links the airia-ci issue. It resolves when the repository adopts the tag that carries the fix.
