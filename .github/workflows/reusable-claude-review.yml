@@ -117,7 +117,9 @@ name: Claude Code Review (shared)
 # posts it; the job fails when there is none. Before this, `claude-review` went
 # green having posted nothing on AIRIA-process PR #49 and Portfolio-Dashboard
 # PRs #26–#32, and a run asked to post for itself could still end without
-# doing so (Portfolio-Dashboard PR #36).
+# doing so (Portfolio-Dashboard PR #36). Nor does it go green without the
+# gate results: a run whose jobs could not be listed, or that has no finished
+# job, fails before Claude runs (airia-ci#24).
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -234,6 +236,7 @@ jobs:
         uses: ./.github/actions/claude-toolchain
 
       - name: Collect the merge gate's results
+        id: results
         if: steps.once.outputs.review == 'true' || steps.once.outputs.refresh == 'true'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
         with:
@@ -241,6 +244,24 @@ jobs:
           run-id: ${{ github.run_id }}
           out-dir: ${{ github.workspace }}/ci-results
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ci-results never fails, so that a Claude job without gate results still
+      # runs (the respond workflow relies on it). The automatic review must not:
+      # it exists to verify the gates, and one that read none went green
+      # (AIRIA-DevTools ISS-36, airia-ci#24). A failed job lookup and a run with
+      # no finished job both leave `collected` at 0. Failing here, before Claude,
+      # posts no review, so the re-run reviews afresh. The refresh path needs no
+      # such guard: review_refresh.py already fails on a jobs.md with no table.
+      - name: Require the merge gate's results
+        if: steps.once.outputs.review == 'true'
+        env:
+          COLLECTED: ${{ steps.results.outputs.collected }}
+        run: |
+          if [ "${COLLECTED:-0}" -eq 0 ]; then
+            cat "$GITHUB_WORKSPACE/ci-results/jobs.md" || true
+            echo "::error title=No CI results::the review found no finished gate job in run ${GITHUB_RUN_ID} to verify, so it did not review. Re-run it with 'gh run rerun ${GITHUB_RUN_ID} --failed'; if that fails the same way, check that the calling job grants 'actions: read' and needs every gate job."
+            exit 1
+          fi
 
       # A re-run attempt of the run that wrote the review: no new review, just
       # this attempt's gate table in the existing comment.

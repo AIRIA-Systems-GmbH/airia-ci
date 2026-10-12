@@ -6,6 +6,8 @@
   re-run attempt of the run that wrote the review asks for a refresh;
 - "Post the review": the workflow posts Claude's final message, and a run that
   produced none fails loud instead of going green having posted nothing;
+- "Require the merge gate's results": a review that could read no gate job
+  fails before Claude runs, instead of going green having verified nothing;
 - "Look for a newer airia-ci major": a frozen pin says so on every review;
 - the credential, git-exclude and staging steps around them.
 
@@ -68,6 +70,48 @@ class RequireTheCredential(unittest.TestCase):
 
     def test_a_present_token_passes(self):
         self.assertEqual(Runner(self).run(WORKFLOW, "Require the Claude credential", HAS_CLAUDE_TOKEN="true").returncode, 0)
+
+
+class RequireTheGateResults(unittest.TestCase):
+    """The review exists to verify the gates; one that read none must not be green (airia-ci#24).
+
+    AIRIA-DevTools PR #14 (run 37056603140): ci-results could not list the
+    run's jobs, the reviewer said so as told, and Claude Review went green.
+    """
+
+    STEP = "Require the merge gate's results"
+
+    def run_with(self, collected, jobs_md="# CI results\n"):
+        r = Runner(self)
+        (r.tmp / "ci-results").mkdir()
+        (r.tmp / "ci-results/jobs.md").write_text(jobs_md)
+        return r.run(WORKFLOW, self.STEP, GITHUB_WORKSPACE=str(r.tmp), GITHUB_RUN_ID="37056603140", COLLECTED=collected)
+
+    def test_jobs_that_could_not_be_listed_fail_with_why_and_the_fix(self):
+        p = self.run_with("0", "**The run's jobs could not be listed** (gh api exited non-zero)\n")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("could not be listed", p.stdout)
+        self.assertIn("::error title=No CI results::", p.stdout)
+        self.assertIn("gh run rerun 37056603140 --failed", p.stdout)
+
+    def test_a_run_with_no_finished_job_fails(self):
+        table = "| Job | Conclusion | Failed steps | Log |\n|---|---|---|---|\n"
+        self.assertEqual(self.run_with("0", table).returncode, 1)
+
+    def test_an_unset_count_fails(self):
+        # The collect step skipped or never wrote its output: still nothing read.
+        self.assertEqual(self.run_with("").returncode, 1)
+
+    def test_a_missing_jobs_md_still_fails_with_the_error(self):
+        r = Runner(self)
+        p = r.run(WORKFLOW, self.STEP, GITHUB_WORKSPACE=str(r.tmp), GITHUB_RUN_ID="1", COLLECTED="0")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No CI results::", p.stdout)
+
+    def test_collected_gate_results_pass(self):
+        p = self.run_with("3")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout, "")
 
 
 class StagingForClaude(unittest.TestCase):
