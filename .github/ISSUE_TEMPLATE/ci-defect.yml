@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+name: CI defect
+description: A reusable workflow or composite action of airia-ci misbehaves in a calling repository.
+title: "[defect] "
+labels: ["defect"]
+body:
+  - type: input
+    id: repo
+    attributes:
+      label: Calling repository
+      description: Also add the matching `from:<repo>` label.
+      placeholder: AIRIA-framework
+    validations:
+      required: true
+  - type: input
+    id: run
+    attributes:
+      label: Failing run URL
+      placeholder: https://github.com/AIRIA-Systems-GmbH/<repo>/actions/runs/<id>
+    validations:
+      required: true
+  - type: input
+    id: pin
+    attributes:
+      label: airia-ci pin and component
+      description: The ref you call (for example `@ci-v3`) and which workflow or action.
+      placeholder: "@ci-v3 · reusable-claude-review.yml"
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: What happened, and what you expected
+      description: Quote the log lines. State what you measured, not what you assume.
+    validations:
+      required: true
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Local workaround, if any
+      description: Any workaround must carry the comment `# upstream: airia-ci#<this issue>` and be deleted when the fix ships.

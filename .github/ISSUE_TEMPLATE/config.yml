@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+blank_issues_enabled: false
+contact_links:
+  - name: How to call airia-ci
+    url: https://github.com/AIRIA-Systems-GmbH/airia-ci/blob/main/HOWTO.md
+    about: Wiring, review rules, toolchain, extra-allow, @claude, upgrading a major.
