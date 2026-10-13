@@ -92,7 +92,6 @@ class CollectLabelsJobsThatNeverRan(Collect):
         reads = [c["args"] for c in self.r.calls() if "annotations" in " ".join(c["args"])]
         self.assertEqual([a[2] for a in reads], ["https://api.github.com/repos/o/r/check-runs/3/annotations"])
 
-
     def test_never_ran_is_not_an_unreadable_log(self):
         # Before: "1 of 3 job logs could not be fetched", which the reviewer
         # reported as a log it could not read.
@@ -113,6 +112,11 @@ class CollectLabelsJobsThatHitTheirTimeCap(Collect):
         self.assertIn("not infrastructure", md)
         self.assertNotIn("gh run rerun", md, "a re-run is not the remedy for a gate over its budget")
         self.assertEqual(self.log(2), "The operation was canceled.\n", "its log is still read")
+
+    def test_an_annotation_without_a_message_does_not_hide_the_cap(self):
+        out, md = self.collect([job(2, "Pytest", "cancelled", KILLED)], {2: "killed\n"},
+                               annotations={2: {"json": [{"annotation_level": "notice", "message": None}, *TIME_CAP]}})
+        self.assertIn("| Pytest | cancelled (time cap) |", md)
 
     def test_unreadable_annotations_leave_the_time_cap_open_and_say_how_long_it_ran(self):
         # The review job's token has `actions: read` only; on a private repository

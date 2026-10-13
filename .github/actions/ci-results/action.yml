@@ -126,7 +126,7 @@ runs:
           # reading them needs `checks: read`, which a caller may not grant.
           if [ "$conclusion" = "cancelled" ]; then
             if cap="$(gh api --paginate "$check_run/annotations" \
-                        --jq '.[] | select(.message | test("exceeded the maximum execution time")) | .message' 2>/dev/null)"; then
+                        --jq '.[] | select(.message // "" | test("exceeded the maximum execution time")) | .message' 2>/dev/null)"; then
               if [ -n "$cap" ]; then
                 conclusion="cancelled (time cap)"
                 capped=$((capped + 1))
