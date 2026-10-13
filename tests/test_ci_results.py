@@ -20,11 +20,25 @@ RAN = [{"name": "Run tests", "conclusion": "success"}]
 
 
 def job(id_, name, conclusion, steps):
-    return {"id": id_, "name": name, "status": "completed", "conclusion": conclusion, "steps": steps}
+    return {"id": id_, "name": name, "status": "completed", "conclusion": conclusion, "steps": steps,
+            "check_run_url": f"https://api.github.com/repos/o/r/check-runs/{id_}",
+            "started_at": "2026-10-13T00:40:51Z", "completed_at": "2026-10-13T01:11:17Z"}
 
 
-def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None):
+# A real time-capped job's annotations (AIRIA-DevTools run 38328432427, Pytest):
+# the cap is one of three, and its job log says only "The operation was canceled."
+TIME_CAP = [
+    {"annotation_level": "failure", "message": "The job has exceeded the maximum execution time of 30m0s"},
+    {"annotation_level": "warning", "message": "Node.js 20 is deprecated. The following actions target Node.js 20 ..."},
+    {"annotation_level": "failure", "message": "The operation was canceled."},
+]
+CANCELLED = [{"annotation_level": "failure", "message": "The operation was canceled."}]
+
+
+def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None, annotations=None):
     out = [[r"^api --help", {"text": help_text}]]
+    for id_, reply in (annotations or {}).items():
+        out.append([rf"check-runs/{id_}/annotations ", reply])
     for id_, text in logs.items():
         out.append([rf"actions/jobs/{id_}/logs$", {"text": text} if text is not None
                     else {"stderr": "HTTP 404: Not Found\n", "exit": 1}])
@@ -48,6 +62,10 @@ class Collect(unittest.TestCase):
         return (self.r.tmp / f"ci/logs/{id_}.log").read_text()
 
 
+KILLED = [{"name": "Set up job", "conclusion": "success"}, {"name": "Run tests", "conclusion": "cancelled"},
+          {"name": "Coverage floor", "conclusion": "skipped"}]
+
+
 class CollectLabelsJobsThatNeverRan(Collect):
     def setUp(self):
         jobs = [
@@ -55,17 +73,24 @@ class CollectLabelsJobsThatNeverRan(Collect):
             # GitHub's "not acquired by Runner" shape: cancelled, no step, no log.
             job(2, "SurrealDB", "cancelled", []),
             # Cancelled mid-run: it ran, so it has a log worth reading.
-            job(3, "Coverage", "cancelled", [{"name": "Run tests", "conclusion": "cancelled"}]),
+            job(3, "Coverage", "cancelled", KILLED),
         ]
-        self.out, self.jobs_md = self.collect(jobs, {1: "lint ok\n", 3: "killed\n"})
+        self.out, self.jobs_md = self.collect(jobs, {1: "lint ok\n", 3: "killed\n"},
+                                              annotations={3: {"json": CANCELLED}})
 
     def test_a_job_with_no_step_is_labelled_never_ran(self):
         self.assertIn("| SurrealDB | cancelled (never ran) | - | logs/2.log |", self.jobs_md)
         self.assertIn("never ran", self.log(2))
 
     def test_a_job_cancelled_mid_run_is_still_plain_cancelled_with_its_log(self):
-        self.assertIn("| Coverage | cancelled | - | logs/3.log |", self.jobs_md)
+        # Its annotations were read and carry no time cap: a person or a newer run cancelled it.
+        self.assertIn("| Coverage | cancelled | Run tests (cancelled) | logs/3.log |", self.jobs_md)
         self.assertEqual(self.log(3), "killed\n")
+        self.assertNotIn("time cap", self.jobs_md)
+
+    def test_only_a_job_that_started_has_its_annotations_read(self):
+        reads = [c["args"] for c in self.r.calls() if "annotations" in " ".join(c["args"])]
+        self.assertEqual([a[2] for a in reads], ["https://api.github.com/repos/o/r/check-runs/3/annotations"])
 
     def test_never_ran_is_not_an_unreadable_log(self):
         # Before: "1 of 3 job logs could not be fetched", which the reviewer
@@ -74,6 +99,39 @@ class CollectLabelsJobsThatNeverRan(Collect):
         self.assertIn("**1 of 3 jobs never ran**", self.jobs_md)
         self.assertIn("gh run rerun 42 --failed", self.jobs_md)
         self.assertEqual(self.out["collected"], "3")
+
+
+class CollectLabelsJobsThatHitTheirTimeCap(Collect):
+    """ISS-66 in AIRIA-DevTools: a 30m Pytest gate was reported as infrastructure, re-run advised."""
+
+    def test_a_job_whose_annotations_say_time_cap_is_labelled_so(self):
+        out, md = self.collect([job(1, "Lint", "success", RAN), job(2, "Pytest", "cancelled", KILLED)],
+                               {1: "ok\n", 2: "The operation was canceled.\n"}, annotations={2: {"json": TIME_CAP}})
+        self.assertIn("| Pytest | cancelled (time cap) | Run tests (cancelled) | logs/2.log |", md)
+        self.assertIn("**1 of 2 jobs hit their `timeout-minutes` cap**", md)
+        self.assertIn("not infrastructure", md)
+        self.assertNotIn("gh run rerun", md, "a re-run is not the remedy for a gate over its budget")
+        self.assertEqual(self.log(2), "The operation was canceled.\n", "its log is still read")
+
+    def test_an_annotation_without_a_message_does_not_hide_the_cap(self):
+        out, md = self.collect([job(2, "Pytest", "cancelled", KILLED)], {2: "killed\n"},
+                               annotations={2: {"json": [{"annotation_level": "notice", "message": None}, *TIME_CAP]}})
+        self.assertIn("| Pytest | cancelled (time cap) |", md)
+
+    def test_unreadable_annotations_leave_the_time_cap_open_and_say_how_long_it_ran(self):
+        # The review job's token has `actions: read` only; on a private repository
+        # the check-runs API answers 403. That must not read as "not a timeout".
+        out, md = self.collect([job(2, "Pytest", "cancelled", KILLED)], {2: "killed\n"},
+                               annotations={2: {"stderr": "HTTP 403: Resource not accessible by integration\n", "exit": 1}})
+        self.assertEqual(out["collected"], "1")
+        self.assertIn("| Pytest | cancelled (time cap unchecked, ran 30m26s) | Run tests (cancelled) |", md)
+        self.assertIn("**1 of 1 jobs were cancelled after they started, and their annotations could not be read**", md)
+
+    def test_a_job_without_timestamps_still_lists(self):
+        # Every listed field must survive a job GitHub reports oddly, or the whole listing is lost.
+        odd = {**job(2, "Pytest", "cancelled", KILLED), "started_at": None, "check_run_url": None}
+        out, md = self.collect([odd], {2: "killed\n"})
+        self.assertIn("| Pytest | cancelled (time cap unchecked, ran ?) | Run tests (cancelled) |", md)
 
 
 class CollectNeverFailsTheJob(Collect):

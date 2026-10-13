@@ -74,7 +74,17 @@ runs:
                         # cancelled while queued. It has no log, and it is not a result.
                         (if .conclusion == "cancelled" and ((.steps // []) | length) == 0
                          then "cancelled (never ran)" else .conclusion end),
-                        ([.steps[]? | select(.conclusion == "failure") | .name] | join("; "))]
+                        (.check_run_url // "-"),
+                        (if .started_at and .completed_at
+                         then (.completed_at | fromdate) - (.started_at | fromdate)
+                              | "\(. / 60 | floor)m\(. % 60)s"
+                         else "?" end),
+                        # Last, because it can be empty: `read` collapses empty tab fields.
+                        # The step a cancellation killed is `cancelled`, not `failure`:
+                        # without it a timed-out job shows no step at all.
+                        ([.steps[]? | select(.conclusion == "failure" or .conclusion == "cancelled")
+                          | .name + (if .conclusion == "cancelled" then " (cancelled)" else "" end)]
+                         | join("; "))]
                      | @tsv' > "$OUT/jobs.tsv" 2> "$OUT/jobs.err" \
            || ! head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; then
           {
@@ -98,7 +108,7 @@ runs:
           echo
           echo "Commit: $head_sha. One log per job in logs/, named by job id."
           echo
-          echo "| Job | Conclusion | Failed steps | Log |"
+          echo "| Job | Conclusion | Failed or cancelled steps | Log |"
           echo "|---|---|---|---|"
         } > "$index"
         # Capture, then match: `gh ... | grep -q` under pipefail reads as "no" when
@@ -107,9 +117,25 @@ runs:
         case "$(gh api --help 2>&1)" in
           *--allow-escape-sequences*) esc=(--allow-escape-sequences) ;;
         esac
-        n=0; missing=0; never=0
-        while IFS=$'\t' read -r id name conclusion failed; do
+        n=0; missing=0; never=0; capped=0; unchecked=0
+        while IFS=$'\t' read -r id name conclusion check_run took failed; do
           log="$OUT/logs/$id.log"
+          # A job cancelled after it started was cancelled by a person, a newer
+          # run, or its own timeout-minutes. Only the check run's annotations
+          # tell which (the log just says "The operation was canceled."), and
+          # reading them needs `checks: read`, which a caller may not grant.
+          if [ "$conclusion" = "cancelled" ]; then
+            if cap="$(gh api --paginate "$check_run/annotations" \
+                        --jq '.[] | select(.message // "" | test("exceeded the maximum execution time")) | .message' 2>/dev/null)"; then
+              if [ -n "$cap" ]; then
+                conclusion="cancelled (time cap)"
+                capped=$((capped + 1))
+              fi
+            else
+              conclusion="cancelled (time cap unchecked, ran $took)"
+              unchecked=$((unchecked + 1))
+            fi
+          fi
           if [ "$conclusion" = "cancelled (never ran)" ]; then
             echo "(no log: this job was cancelled before any of its steps started, so it never ran)" > "$log"
             never=$((never + 1))
@@ -129,6 +155,14 @@ runs:
         if [ "$never" -gt 0 ]; then
           echo "::warning title=CI results::$never of $n jobs never ran (cancelled before any step started)"
           { echo; echo "**$never of $n jobs never ran** — cancelled before any step started, so they have no log and no result. That is the runner pool, not the code: \`gh run rerun $RUN_ID --failed\` runs them."; } >> "$index"
+        fi
+        if [ "$capped" -gt 0 ]; then
+          echo "::warning title=CI results::$capped of $n jobs hit their timeout-minutes cap"
+          { echo; echo "**$capped of $n jobs hit their \`timeout-minutes\` cap** — the gate exceeded its time budget. That is a finding, not infrastructure: a plain re-run on the same load is likely to time out again."; } >> "$index"
+        fi
+        if [ "$unchecked" -gt 0 ]; then
+          echo "::warning title=CI results::$unchecked of $n cancelled jobs could not be checked for a timeout"
+          { echo; echo "**$unchecked of $n jobs were cancelled after they started, and their annotations could not be read** (the token has no \`checks: read\`), so a time cap is not ruled out. Compare each one's run time with its job's \`timeout-minutes\` before calling it infrastructure."; } >> "$index"
         fi
         echo "collected=$n" >> "$GITHUB_OUTPUT"
         cat "$index" >> "$GITHUB_STEP_SUMMARY"
