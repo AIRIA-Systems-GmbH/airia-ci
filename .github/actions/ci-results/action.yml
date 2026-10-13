@@ -37,7 +37,7 @@ inputs:
     description: Where to write jobs.md and logs/.
     required: true
   github-token:
-    description: "A token with `actions: read`."
+    description: "A token with `actions: read`, and `checks: read` to tell a job that hit its timeout-minutes from one cancelled."
     required: true
 
 outputs:
@@ -123,7 +123,8 @@ runs:
           # A job cancelled after it started was cancelled by a person, a newer
           # run, or its own timeout-minutes. Only the check run's annotations
           # tell which (the log just says "The operation was canceled."), and
-          # reading them needs `checks: read`, which a caller may not grant.
+          # reading them needs `checks: read`. Without it the read fails and the
+          # job is labelled unchecked, never plain cancelled.
           if [ "$conclusion" = "cancelled" ]; then
             if cap="$(gh api --paginate "$check_run/annotations" \
                         --jq '.[] | select(.message // "" | test("exceeded the maximum execution time")) | .message' 2>/dev/null)"; then
@@ -162,7 +163,7 @@ runs:
         fi
         if [ "$unchecked" -gt 0 ]; then
           echo "::warning title=CI results::$unchecked of $n cancelled jobs could not be checked for a timeout"
-          { echo; echo "**$unchecked of $n jobs were cancelled after they started, and their annotations could not be read** (the token has no \`checks: read\`), so a time cap is not ruled out. Compare each one's run time with its job's \`timeout-minutes\` before calling it infrastructure."; } >> "$index"
+          { echo; echo "**$unchecked of $n jobs were cancelled after they started, and their annotations could not be read** (a token without \`checks: read\` is refused), so a time cap is not ruled out. Compare each one's run time with its job's \`timeout-minutes\` before calling it infrastructure."; } >> "$index"
         fi
         echo "collected=$n" >> "$GITHUB_OUTPUT"
         cat "$index" >> "$GITHUB_STEP_SUMMARY"

@@ -19,6 +19,7 @@ import os
 import unittest
 from unittest import mock
 
+import yaml
 from steps import ROOT, Runner
 
 SCRIPT = ROOT / "scripts/init.py"
@@ -78,6 +79,25 @@ class Init(unittest.TestCase):
     def call(self, pattern):
         return [c for c in self.r.calls() if pattern in " ".join(c["args"])]
 
+    def test_the_callers_grant_every_permission_the_reusable_jobs_request(self):
+        # A called job that requests more than its caller grants fails at
+        # startup, before any step: ci-v4's `checks: read` is such a request.
+        code, out, _ = self.run_main([VIEW, NO_SECRET, SET, NO_RULESET, CREATE], "--yes")
+        self.assertEqual(code, 0, out)
+        wf = ROOT / ".github/workflows"
+        callers = {
+            "reusable-claude-review.yml": [yaml.safe_load(self.file(".github/workflows/merge-gate.yml"))["jobs"]["claude-review"],
+                                           yaml.safe_load((wf / "self-test.yml").read_text())["jobs"]["claude-review"]],
+            "reusable-claude-respond.yml": [yaml.safe_load(self.file(".github/workflows/claude.yml"))["jobs"]["claude"],
+                                            yaml.safe_load((wf / "claude.yml").read_text())["jobs"]["claude"]],
+        }
+        for called, jobs in callers.items():
+            (requested,) = [j["permissions"] for j in yaml.safe_load((wf / called).read_text())["jobs"].values()]
+            self.assertIn("checks", requested, "ci-results reads a cancelled job's annotations")
+            for job in jobs:
+                with self.subTest(called=called, caller=job["uses"]):
+                    self.assertEqual({k: job["permissions"].get(k) for k in requested}, requested)
+
     def test_an_empty_repository_gets_a_failing_placeholder_gate_and_everything_wired(self):
         code, out, _ = self.run_main([VIEW, NO_SECRET, SET, NO_RULESET, CREATE], "--yes",
                                      "--runner", '["ubuntu-latest"]')
@@ -85,7 +105,7 @@ class Init(unittest.TestCase):
         gate = self.file(".github/workflows/merge-gate.yml")
         self.assertIn("exit 1", gate, "a placeholder gate must never pass")
         self.assertIn("needs: [gates]", gate)
-        self.assertIn("reusable-claude-review.yml@ci-v3", gate)
+        self.assertIn("reusable-claude-review.yml@ci-v4", gate)
         self.assertIn("${{ github.event.pull_request.number }}", gate)
         respond = self.file(".github/workflows/claude.yml")
         self.assertIn("gate-workflow: merge-gate.yml", respond)

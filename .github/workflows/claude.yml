@@ -28,6 +28,7 @@ jobs:
       issues: write
       id-token: write
       actions: read
+      checks: read
     uses: ./.github/workflows/reusable-claude-respond.yml
     with:
       runner: '["ubuntu-24.04"]'
