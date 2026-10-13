@@ -14,7 +14,7 @@ updates:
         patterns: ["*"]
     ignore:
       # The reusable workflows call this repository's own actions at the moving
-      # ci-v3 tag. Dependabot would "update" that to the newest ci-v3.N, which
+      # ci-vN tag. Dependabot would "update" that to the newest ci-vN.M, which
       # is frozen: callers would stop receiving every later fix.
       - dependency-name: "AIRIA-Systems-GmbH/airia-ci*"
       # claude-code-action follows @v1 on purpose: its fixes reach every caller

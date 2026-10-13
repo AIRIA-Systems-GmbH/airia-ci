@@ -25,7 +25,7 @@ USES = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)(.*)$", re.MULTILINE)
 # Actions that run at their moving major tag by choice. claude-code-action ships
 # fixes almost daily; at @v1 every caller has them the same day, where a pin
 # would hold each one behind a Dependabot PR (which has no Claude token to test
-# it with) and a ci-v3 move.
+# it with) and a ci-vN move.
 FOLLOWS_MAJOR = {"anthropics/claude-code-action": "v1"}
 
 
@@ -69,7 +69,7 @@ class Pins(unittest.TestCase):
                 self.assertEqual(comment, "")
 
     def test_dependabot_leaves_the_moving_ci_tag_alone(self):
-        # Dependabot would rewrite @ci-v3 to the newest frozen ci-v3.N, and the
+        # Dependabot would rewrite @ci-vN to the newest frozen ci-vN.M, and the
         # callers would stop receiving every later fix.
         config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
         (update,) = config["updates"]

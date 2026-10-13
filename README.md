@@ -58,7 +58,7 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 
 ## Versioning
 
-Callers pin `@ci-v4`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v4`, and the older tag is frozen.
+Callers pin `@ci-v4`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v5`, and the older tag is frozen.
 
 - **Every move is a GitHub Release** (`ci-v4.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
 - **A frozen pin hears of a newer major from its own run.** Both workflows look up this repository's `ci-vN` tags; when one is newer than the major they belong to (`HARNESS_MAJOR` in the step *Look for a newer airia-ci major*), the job warns and the automatic review ends with a note. A lookup that fails only leaves a notice. This began in `ci-v3`; `ci-v1` and `ci-v2` callers do not get it.
