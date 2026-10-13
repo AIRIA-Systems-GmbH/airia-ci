@@ -119,8 +119,8 @@ class CollectLabelsJobsThatHitTheirTimeCap(Collect):
         self.assertIn("| Pytest | cancelled (time cap) |", md)
 
     def test_unreadable_annotations_leave_the_time_cap_open_and_say_how_long_it_ran(self):
-        # The review job's token has `actions: read` only; on a private repository
-        # the check-runs API answers 403. That must not read as "not a timeout".
+        # A token without `checks: read` (ci-results called outside the reusable
+        # workflows) gets a 403 on a private repository. That must not read as "not a timeout".
         out, md = self.collect([job(2, "Pytest", "cancelled", KILLED)], {2: "killed\n"},
                                annotations={2: {"stderr": "HTTP 403: Resource not accessible by integration\n", "exit": 1}})
         self.assertEqual(out["collected"], "1")

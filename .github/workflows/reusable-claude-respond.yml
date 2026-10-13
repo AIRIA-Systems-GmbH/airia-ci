@@ -27,8 +27,8 @@ name: Claude (shared @claude responder)
 #   jobs:
 #     claude:
 #       permissions: { contents: read, pull-requests: write, issues: write,
-#                      id-token: write, actions: read }
-#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-respond.yml@ci-v3
+#                      id-token: write, actions: read, checks: read }
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-respond.yml@ci-v4
 #       with:
 #         gate-workflow: ci.yml          # optional: the PR gate whose results to read
 #       secrets:
@@ -164,6 +164,7 @@ jobs:
       issues: write
       id-token: write # the action exchanges an OIDC token for the Claude App token
       actions: read # read the gate's results on a PR
+      checks: read # a cancelled job's annotations: did it hit its timeout-minutes?
     services:
       postgres:
         image: ${{ inputs.postgres-image }}
@@ -287,7 +288,7 @@ jobs:
 
       - name: Collect the gate's results
         if: steps.gate-run.outcome == 'success'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v4
         with:
           run-id: ${{ steps.gate-run.outputs.run-id }}
           out-dir: ${{ github.workspace }}/ci-results
@@ -303,7 +304,7 @@ jobs:
       - name: Look for a newer airia-ci major
         env:
           GH_TOKEN: ${{ github.token }}
-          HARNESS_MAJOR: "3"
+          HARNESS_MAJOR: "4"
         run: |
           if ! refs="$(gh api "repos/AIRIA-Systems-GmbH/airia-ci/git/matching-refs/tags/ci-v" --jq '.[].ref')"; then
             echo "::notice title=airia-ci version not checked::the harness's tags could not be read"
@@ -334,11 +335,11 @@ jobs:
 
       - name: Resolve the cached Claude Code
         id: claude-cli
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v4
 
       - name: Compose the Claude settings
         id: settings
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v4
         with:
           profile: respond
           extra-allow: ${{ inputs.extra-allow }}

@@ -57,13 +57,14 @@ jobs:
 
   actions:
     # The composite actions at THIS commit. The reusable workflows call them
-    # @ci-v3, so the review below runs the released ones: this job is the only
+    # @ci-v4, so the review below runs the released ones: this job is the only
     # one that runs a change to an action before the tag moves.
     needs: unittest
     runs-on: ubuntu-24.04
     permissions:
       contents: read
       actions: read # ci-results reads this run's jobs and logs
+      checks: read # and a cancelled job's annotations
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -138,6 +139,7 @@ jobs:
       pull-requests: write
       issues: write
       actions: read
+      checks: read
     uses: ./.github/workflows/reusable-claude-review.yml
     with:
       pr-number: ${{ github.event.pull_request.number }}

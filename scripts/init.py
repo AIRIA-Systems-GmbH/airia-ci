@@ -39,7 +39,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TAG = "ci-v3"
+TAG = "ci-v4"
 HARNESS = "AIRIA-Systems-GmbH/airia-ci/.github/workflows"
 RULESET = "Restrict Direct Merge on Main"
 THOR = '["self-hosted","linux","x64","thor"]'
@@ -71,6 +71,7 @@ jobs:
       issues: write
       id-token: write
       actions: read
+      checks: read
     uses: {harness}/reusable-claude-respond.yml@{tag}
     with:
       runner: '{runner}'
@@ -90,6 +91,7 @@ REVIEW_JOB = """\
       pull-requests: write
       issues: write
       actions: read
+      checks: read
     uses: {harness}/reusable-claude-review.yml@{tag}
     with:
       pr-number: ${{{{ github.event.pull_request.number }}}}

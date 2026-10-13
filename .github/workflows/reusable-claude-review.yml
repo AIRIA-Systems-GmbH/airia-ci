@@ -27,8 +27,8 @@ name: Claude Code Review (shared)
 #   claude-review:
 #     needs: [<every gate job>]
 #     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
-#     permissions: { contents: read, pull-requests: write, issues: write, actions: read }
-#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v3
+#     permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v4
 #     with:
 #       pr-number: ${{ github.event.pull_request.number }}
 #       extra-allow: |          # optional: this repo's own gates, if not covered
@@ -50,8 +50,11 @@ name: Claude Code Review (shared)
 #       the repo's own review rules (how its gates are invoked, its traps). The
 #       reviewer reads it before anything else.
 #
-# VERSIONING. Consumers pin `@ci-v3`. A compatible change moves the tag; a
-# change to the call contract above is the next major (`ci-v4`). `ci-v3` began
+# VERSIONING. Consumers pin `@ci-v4`. A compatible change moves the tag; a
+# change to the call contract above is the next major (`ci-v5`). `ci-v4` began
+# when both jobs started requesting `checks: read`, which ci-results needs to
+# read a cancelled job's annotations and tell a `timeout-minutes` cap from a
+# cancellation: a caller that does not grant it fails at startup. `ci-v3` began
 # when the optional FRAMEWORK_READ_TOKEN secret left the contract: a caller
 # still passing it fails with an undefined-secret error, so it must drop it.
 # `ci-v2` began when the bare `Bash` allow became an explicit allowlist: a
@@ -166,6 +169,7 @@ jobs:
       pull-requests: write # post the review
       issues: write # `gh pr comment` goes through the issues API
       actions: read # read the calling run's job results and logs
+      checks: read # a cancelled job's annotations: did it hit its timeout-minutes?
 
     steps:
 
@@ -238,7 +242,7 @@ jobs:
       - name: Collect the merge gate's results
         id: results
         if: steps.once.outputs.review == 'true' || steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v4
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
@@ -259,7 +263,7 @@ jobs:
         run: |
           if [ "${COLLECTED:-0}" -eq 0 ]; then
             cat "$GITHUB_WORKSPACE/ci-results/jobs.md" || true
-            echo "::error title=No CI results::the review found no finished gate job in run ${GITHUB_RUN_ID} to verify, so it did not review. Re-run it with 'gh run rerun ${GITHUB_RUN_ID} --failed'; if that fails the same way, check that the calling job grants 'actions: read' and needs every gate job."
+            echo "::error title=No CI results::the review found no finished gate job in run ${GITHUB_RUN_ID} to verify, so it did not review. Re-run it with 'gh run rerun ${GITHUB_RUN_ID} --failed'; if that fails the same way, check that the calling job grants 'actions: read' and 'checks: read' and needs every gate job."
             exit 1
           fi
 
@@ -267,7 +271,7 @@ jobs:
       # this attempt's gate table in the existing comment.
       - name: Refresh the review's gate results
         if: steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v4
         with:
           comment-id: ${{ steps.once.outputs.comment-id }}
           jobs-md: ${{ github.workspace }}/ci-results/jobs.md
@@ -286,7 +290,7 @@ jobs:
         if: steps.once.outputs.review == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HARNESS_MAJOR: "3"
+          HARNESS_MAJOR: "4"
         run: |
           if ! refs="$(gh api "repos/AIRIA-Systems-GmbH/airia-ci/git/matching-refs/tags/ci-v" --jq '.[].ref')"; then
             echo "::notice title=airia-ci version not checked::the harness's tags could not be read"
@@ -327,7 +331,7 @@ jobs:
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v4
 
       # The review's Claude Code settings: the shared policy's read-only
       # `review` profile plus the caller's extra-allow / extra-deny. The policy
@@ -335,7 +339,7 @@ jobs:
       - name: Compose the review settings
         id: settings
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v3
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v4
         with:
           profile: review
           extra-allow: ${{ inputs.extra-allow }}

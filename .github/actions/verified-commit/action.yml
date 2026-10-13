@@ -46,7 +46,7 @@ description: >-
 # (tumma72/CryptoStudio) can install an organization's App only if the App is
 # set to "Any account"; otherwise give that account its own App.
 #
-#   - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/verified-commit@ci-v3
+#   - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/verified-commit@ci-v4
 #     with:
 #       client-id: ${{ vars.AIRIA_COMMIT_APP_CLIENT_ID }}
 #       private-key: ${{ secrets.AIRIA_COMMIT_APP_PRIVATE_KEY }}

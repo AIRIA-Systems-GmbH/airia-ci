@@ -34,4 +34,4 @@ A change to the Thor pool, such as a new interpreter in the toolcache, a new run
 
 ## Pull requests
 
-PRs follow [HOWTO.md](HOWTO.md) and the tests in [README.md](README.md#tests). The `self-test` workflow is the gate: coverage stays at or above 95%, and lint must pass. A change reaches calling repositories when it is released under the moving `ci-v3` tag.
+PRs follow [HOWTO.md](HOWTO.md) and the tests in [README.md](README.md#tests). The `self-test` workflow is the gate: coverage stays at or above 95%, and lint must pass. A change reaches calling repositories when it is released under the moving `ci-v4` tag.

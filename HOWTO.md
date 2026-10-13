@@ -23,7 +23,7 @@ It writes only the files that are missing:
 
 Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variable, or by running `claude setup-token`) and offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for it. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool; `--yes` answers every question yes.
 
-The script is fetched from `main` and writes the pin it names (today `@ci-v3`). It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
+The script is fetched from `main` and writes the pin it names (today `@ci-v4`). It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
 
 ## Write your review rules
 
@@ -70,7 +70,7 @@ Re-running the gate on the same commit (`gh run rerun --failed`) does not post a
 
 ## Stay current
 
-- **Within a major** there is nothing to do: `@ci-v3` moves, and your next run uses it. Every move is a GitHub Release (`ci-v3.N`) listing what changed. To hear of them, choose *Watch → Custom → Releases* on this repository.
+- **Within a major** there is nothing to do: `@ci-v4` moves, and your next run uses it. Every move is a GitHub Release (`ci-v4.N`) listing what changed. To hear of them, choose *Watch → Custom → Releases* on this repository.
 - **Which harness ran** is in every job's `ci-results/harness.md`: the airia-ci workflow, ref and commit (the review's copy also has the inputs you passed).
 - **A new major** never reaches you on its own: your pin is frozen. From `ci-v3` on, both workflows look up airia-ci's tags on every run; when a newer `ci-vN` exists, the job shows a *Newer airia-ci major* warning and the automatic review ends with a note naming it. Then follow the next section.
 
@@ -84,7 +84,8 @@ A new major means the call contract changed: an input, a secret, an output or th
 
 | Major | What a caller must change |
 |---|---|
-| `ci-v3` | Drop the `FRAMEWORK_READ_TOKEN` secret from both callers: passing it fails with an undefined-secret error. Gate results are staged in `ci-results/` inside the checkout. |
+| `ci-v4` | Add `checks: read` to the `permissions:` of both calling jobs (`claude-review` in your gate workflow, `claude` in `claude.yml`): without it the run fails at startup. With it, a gate that hit its `timeout-minutes` is reported as `cancelled (time cap)`, not as infrastructure. |
+| `ci-v3` | Frozen; move off it. Drop the `FRAMEWORK_READ_TOKEN` secret from both callers: passing it fails with an undefined-secret error. Gate results are staged in `ci-results/` inside the checkout. |
 | `ci-v2` | Frozen at `9ed10a6`; move off it. Its reviewer never sees the gate results (its prompt names `$RUNNER_TEMP` in a command Bash refuses). It replaced the bare `Bash` permission with the allowlist: gates outside it go in `extra-allow`. |
 | `ci-v1` | Frozen; move off it. It still grants a bare `Bash`. |
 
