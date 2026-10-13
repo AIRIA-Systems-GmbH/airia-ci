@@ -408,7 +408,11 @@ jobs:
                or cancelled gate job is a finding in its own right; read its failed step first. A job
                jobs.md marks `cancelled (never ran)` started no step: report it as infrastructure, not as
                a code finding or an unreadable log, and name `gh run rerun <run-id> --failed` — a re-run
-               refreshes this review's gate table without a new review. Check
+               refreshes this review's gate table without a new review. A job marked
+               `cancelled (time cap)` hit its `timeout-minutes`: that is a finding, the gate exceeded
+               its time budget. It is not infrastructure, and a plain re-run is not the remedy. A job
+               marked `cancelled (time cap unchecked, ...)` may have timed out: compare its run time
+               with its `timeout-minutes` in `.github/workflows/` before you call it infrastructure. Check
                the gates actually cover the diff: a package the diff touches that no job tested, or
                a skip on a cell that matters, is a finding. Run commands only for those gaps.
             4. Report what you are confident is wrong, most serious first, each with file:line and a
