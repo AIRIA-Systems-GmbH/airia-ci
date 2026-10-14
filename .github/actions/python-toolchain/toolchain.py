@@ -5,10 +5,12 @@
     toolchain.py [--pins FILE] standard   validate the caller's inputs; print uv/python/pyyaml to GITHUB_OUTPUT
     toolchain.py [--pins FILE] check      the project's uv.lock and workflows against the pins
     toolchain.py [--pins FILE] install    put the gate tools on GITHUB_PATH, at the pinned or locked version
+    toolchain.py [--pins FILE] services   export the service addresses and the caller's job-env to GITHUB_ENV
 
 Run from the root of the caller's checkout. Inputs come from the environment:
 PYTHON_VERSION (empty: `.python-version`), TYPE_CHECKER, COVERAGE_FLOOR,
-TOOLS (space-separated), GITHUB_REPOSITORY. Every problem found is reported,
+TOOLS (space-separated), GITHUB_REPOSITORY, SERVICES (`toJSON(job.services)`),
+JOB_ENV. Every problem found is reported,
 as one `::error::` line each, before it exits 1: a red gate should name all of
 its causes at once, not one per push.
 
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -276,10 +279,42 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
     return done
 
 
+def services(env: dict) -> dict[str, str]:
+    """CI_POSTGRES_DSN / CI_QDRANT_URL for the slots that started, then the caller's KEY=VALUE lines.
+
+    The same contract as the respond workflow's `job-env`: a value may name
+    either address, and naming one whose service did not start is refused.
+    """
+    try:
+        started = json.loads(env.get("SERVICES") or "{}") or {}
+    except ValueError as exc:
+        raise Refused(f"the services context is not JSON: {exc}") from None
+    out = {}
+    if pg := ((started.get("postgres") or {}).get("ports") or {}).get("5432"):
+        out["CI_POSTGRES_DSN"] = f"postgres://postgres:postgres@localhost:{pg}/postgres"
+    if qd := ((started.get("qdrant") or {}).get("ports") or {}).get("6333"):
+        out["CI_QDRANT_URL"] = f"http://localhost:{qd}"
+    for line in env.get("JOB_ENV", "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep or not key.strip():
+            raise Refused(f"job-env line is not KEY=VALUE: {line!r}")
+        for name in ("CI_POSTGRES_DSN", "CI_QDRANT_URL"):
+            for ref in ("${" + name + "}", "$" + name):
+                if ref in value:
+                    if name not in out:
+                        raise Refused(f"job-env {key.strip()} uses {name}, but that service is not configured")
+                    value = value.replace(ref, out[name])
+        out[key.strip()] = value
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pins", type=Path, default=PINS)
-    ap.add_argument("command", choices=["standard", "check", "install"])
+    ap.add_argument("command", choices=["standard", "check", "install", "services"])
     args = ap.parse_args(argv)
     pins, env, root = load_pins(args.pins), dict(os.environ), Path.cwd()
     try:
@@ -289,9 +324,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "check":
             check(pins, env, root)
             print("uv.lock and the workflows meet the pins")
-        else:
+        elif args.command == "install":
             for line in install(pins, env, root):
                 print(line)
+        else:
+            exported = services(env)
+            for name, value in exported.items():
+                output(name, value, "GITHUB_ENV")
+            print("job environment:", ", ".join(exported) or "(none)")
     except Refused as exc:
         for reason in exc.args:
             print(f"::error title=AIRIA standard::{reason}")

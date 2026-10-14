@@ -46,6 +46,19 @@ inputs:
       pip-audit, zizmor and gitleaks.
     required: false
     default: ""
+  services:
+    description: >-
+      `toJSON(job.services)` of a job with the gate's `postgres` / `qdrant`
+      service slots; their addresses are exported as CI_POSTGRES_DSN and
+      CI_QDRANT_URL.
+    required: false
+    default: ""
+  job-env:
+    description: >-
+      KEY=VALUE lines exported to the rest of the job; a value may name
+      $CI_POSTGRES_DSN or $CI_QDRANT_URL.
+    required: false
+    default: ""
   sync:
     description: "`true` installs the project (`uv sync --locked`); a job that only reads the lock passes `false`."
     required: false
@@ -92,3 +105,11 @@ runs:
       env:
         TOOLS: ${{ inputs.tools }}
       run: python3 "$GITHUB_ACTION_PATH/toolchain.py" install | tee -a "$GITHUB_STEP_SUMMARY"
+
+    - name: Export the service addresses and the job environment
+      if: inputs.services != '' || inputs.job-env != ''
+      shell: bash
+      env:
+        SERVICES: ${{ inputs.services }}
+        JOB_ENV: ${{ inputs.job-env }}
+      run: python3 "$GITHUB_ACTION_PATH/toolchain.py" services
