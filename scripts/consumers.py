@@ -181,8 +181,8 @@ def drift(repo: str, newest: str) -> list[str]:
             found.append(f"the ruleset can be bypassed ({names}): the standard has no bypass")
         required = {c["context"] for r in rules.get("rules", []) if r["type"] == "required_status_checks"
                     for c in r["parameters"]["required_status_checks"]}
-        expected = standard[1] if standard else ["<job> / gate", "<job> / claude-review / claude-review"]
-        for check in expected:
+        # Without the gate there is no check name to require yet; the line above says so.
+        for check in standard[1] if standard else []:
             if check not in required:
                 found.append(f"`{check}` is not a required check: run `init.py protect`")
     return found
@@ -209,7 +209,9 @@ def file_issue(repo: str, reasons: list[str], dry_run: bool) -> str:
     numbers = [str(i["number"]) for i in json.loads(p.stdout) if i["title"] == TITLE]
     if not reasons:
         for n in numbers:
-            gh("issue", "close", n, "--repo", repo, "--comment", f"No drift from the AIRIA standard as of {today}.")
+            c = gh("issue", "close", n, "--repo", repo, "--comment", f"No drift from the AIRIA standard as of {today}.")
+            if c.returncode:
+                raise RuntimeError(f"cannot close {repo}#{n}: {c.stderr.strip()}")
         return f"closed #{numbers[0]}" if numbers else "no drift"
     if numbers:
         c = gh("issue", "edit", numbers[0], "--repo", repo, "--body", body)
@@ -244,17 +246,19 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len({r[0] for r in rows})} consumers, {len(rows)} pins, {behind} behind {newest}")
     if not args.conformance:
         return 1 if behind else 0
-    drifting = 0
-    try:
-        for repo in sorted({r[0] for r in rows}):
+    drifting, failed = 0, 0
+    # One consumer the token cannot read must not blind the scan of the others.
+    for repo in sorted({r[0] for r in rows}):
+        try:
             reasons = drift(repo, newest)
             drifting += bool(reasons)
             print(f"{repo}\t{len(reasons)} drift\t{file_issue(repo, reasons, args.dry_run)}")
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
-    print(f"{drifting} of {len({r[0] for r in rows})} consumers drift from the standard")
-    return 1 if behind or drifting else 0
+        except RuntimeError as exc:
+            failed += 1
+            print(f"error: {repo}: {exc}", file=sys.stderr)
+    print(f"{drifting} of {len({r[0] for r in rows})} consumers drift from the standard"
+          + (f"; {failed} could not be scanned" if failed else ""))
+    return 2 if failed else 1 if behind or drifting else 0
 
 
 if __name__ == "__main__":
