@@ -48,6 +48,12 @@ Claude's Bash is an allowlist (read-only commands and the common Python gate run
 
 The review and `@claude` are separate callers: set the same lists on both. The shared deny list always wins.
 
+## Pin your quality tools
+
+Your own gate jobs install their linters and type checkers; airia-ci does not. Pin every one of them. `uv run --with ty ty check` or `uvx ruff check` installs whatever was released last night, so a new diagnostic turns your PR red on files it never touched (airia-ci#37: a `ty` release did that to SiteBuilder).
+
+Put the tools in a dev dependency group with an exact version (`uv add --dev ty==<version> ruff==<version>`) and call them as `uv run ty check …` and `uv run ruff check …`, so `uv.lock` holds the version and a bump is its own PR that shows the new diagnostics. A one-off `--with ty==<version>` also works, but nothing tells you when it is stale. `uv run ty` is not in the reviewer's default allowlist: add `Bash(uv run ty:*)` to `extra-allow` so the review can run it.
+
 ## Run on GitHub's runners
 
 Both workflows default to the Thor pool (`[self-hosted, linux, x64, thor]`). A public repository cannot use it. Pass `runner: '["ubuntu-latest"]'` (a JSON array of `runs-on` labels) to both callers.
