@@ -28,14 +28,17 @@ TAGS = [r"airia-ci/tags", {"json": [{"name": n} for n in ("ci-v2", "ci-v10", "ci
 CALLER = "uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@{}\n"
 
 
-class Consumers(unittest.TestCase):
+class Scan(unittest.TestCase):
     def run_main(self, rules, *owners):
         r = Runner(self, rules)
         out, err = io.StringIO(), io.StringIO()
+        consumers.workflows.cache_clear()
         with mock.patch.dict(os.environ, r.env()), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = consumers.main(list(owners or ["o"]))
         return code, out.getvalue(), err.getvalue(), r
 
+
+class Consumers(Scan):
     def test_a_frozen_pin_is_behind_and_fails_the_run(self):
         code, out, _, _ = self.run_main([
             TAGS,
@@ -86,6 +89,165 @@ class Consumers(unittest.TestCase):
         code, _, err, _ = self.run_main([[r"airia-ci/tags", {"exit": 1, "stderr": "HTTP 502"}]])
         self.assertEqual(code, 2)
         self.assertIn("cannot list AIRIA-Systems-GmbH/airia-ci tags: HTTP 502", err)
+
+
+T = consumers.PINS["tools"]
+STANDARD_CI = """\
+on:
+  pull_request:
+jobs:
+  ci:
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v10
+"""
+PYPROJECT = "[project]\nname = 'app'\n[tool.pytest.ini_options]\naddopts = '--cov=app'\n"
+LOCK = "".join(f'[[package]]\nname = "{n}"\nversion = "{T[n]}"\n' for n in ("pytest", "pytest-cov", "coverage"))
+RULESET = {"name": "Restrict Direct Merge on Main", "bypass_actors": [], "rules": [
+    {"type": "required_status_checks", "parameters": {"required_status_checks": [
+        {"context": "ci / gate"}, {"context": "ci / claude-review / claude-review"}]}}]}
+
+
+def consumer(ci=STANDARD_CI, pyproject=PYPROJECT, lock=LOCK, ruleset=RULESET, issues=(), extra=()):
+    """The fake `gh` of one consumer, o/app; None for a file it does not have."""
+    def file(path, text):
+        return [f"o/app/contents/{path} ", {"exit": 1, "stderr": "gh: Not Found (HTTP 404)"} if text is None
+                else {"text": text}]
+    return [
+        *extra,
+        TAGS,
+        ["repo list o", {"json": [{"nameWithOwner": "o/app"}]}],
+        ["o/app/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
+        file(".github/workflows/ci.yml", ci),
+        file("pyproject.toml", pyproject),
+        file("uv.lock", lock),
+        ["o/app/rulesets --jq", {"json": [{"name": "Restrict Direct Merge on Main", "id": 7}] if ruleset else []}],
+        ["o/app/rulesets/7", {"json": ruleset}],
+        ["issue list", {"json": [{"number": n, "title": t} for n, t in issues]}],
+        ["issue create", {"text": "https://github.com/o/app/issues/12\n"}],
+        ["issue (edit|close)", {"text": ""}],
+    ]
+
+
+class Conformance(Scan):
+    def scan(self, *flags, **kw):
+        return self.run_main(consumer(**kw), "--conformance", *flags, "o")
+
+    def issue_calls(self, r, verb):
+        return [c["args"] for c in r.calls() if c["args"][:2] == ["issue", verb]]
+
+    def test_a_consumer_on_the_standard_has_no_drift_and_its_old_issue_is_closed(self):
+        code, out, err, r = self.scan(issues=[(3, consumers.TITLE), (4, "something else")])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("o/app\t0 drift\tclosed #3", out)
+        self.assertEqual([a[2] for a in self.issue_calls(r, "close")], ["3"])
+        self.assertEqual(self.issue_calls(r, "create") + self.issue_calls(r, "edit"), [])
+
+    def test_a_conforming_consumer_with_no_issue_files_nothing(self):
+        code, out, _, r = self.scan()
+        self.assertEqual(code, 0)
+        self.assertIn("o/app\t0 drift\tno drift", out)
+        self.assertIn("0 of 1 consumers drift from the standard", out)
+
+    def test_every_kind_of_drift_lands_in_one_new_issue(self):
+        ci = STANDARD_CI.replace("@ci-v10", "@ci-v2") + (
+            "    with:\n      coverage-floor: 85\n      type-checker: ty\n"
+            "  lint:\n    runs-on: x\n    steps:\n      - run: uvx ruff check\n")
+        pyproject = PYPROJECT.replace("'--cov=app'", "'--cov=app --no-cov --cov-fail-under=80'") + (
+            "[tool.coverage.report]\nfail_under = 70\n[tool.ty]\n")
+        lock = LOCK + '[[package]]\nname = "ruff"\nversion = "0.1.0"\n'
+        bypass = {**RULESET, "bypass_actors": [{"actor_type": "RepositoryRole", "actor_id": 5}],
+                  "rules": [{"type": "required_status_checks", "parameters": {"required_status_checks": [
+                      {"context": "ci / gate"}]}}]}
+        code, out, _, r = self.scan(ci=ci, pyproject=pyproject, lock=lock, ruleset=bypass)
+        self.assertEqual(code, 1)
+        (create,) = self.issue_calls(r, "create")
+        self.assertEqual(create[create.index("--title") + 1], consumers.TITLE)
+        body = create[create.index("--body") + 1]
+        for expected in ("calls airia-ci at `ci-v2`, not the current `ci-v10`",
+                         "runs ruff unpinned",
+                         "uv.lock resolves ruff 0.1.0, below the pinned",
+                         "fail_under is 70, under the standard's 90",
+                         "`--no-cov`",
+                         "`--cov-fail-under=80`, under the standard's 90",
+                         "`coverage-floor: 85`, under the standard's 90",
+                         "type-checker `ty` is not one the standard accepts",
+                         "ty is configured or locked",
+                         "can be bypassed (RepositoryRole 5)",
+                         "`ci / claude-review / claude-review` is not a required check"):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, body)
+        self.assertIn("o/app\t11 drift\topened https://github.com/o/app/issues/12", out)
+
+    def test_an_open_drift_issue_is_rewritten_not_duplicated(self):
+        code, out, _, r = self.scan(ruleset=None, issues=[(3, consumers.TITLE)])
+        self.assertEqual(code, 1)
+        (edit,) = self.issue_calls(r, "edit")
+        self.assertEqual(edit[2], "3")
+        self.assertIn("run `init.py protect`", edit[edit.index("--body") + 1])
+        self.assertEqual(self.issue_calls(r, "create"), [])
+        self.assertIn("rewrote #3", out)
+
+    def test_a_repository_with_its_own_gates_is_not_on_the_standard(self):
+        own = "on:\n  pull_request:\njobs:\n  review:\n    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/" \
+              "reusable-claude-review.yml@ci-v10\n"
+        code, out, _, _ = self.scan("--dry-run", ci=own, lock=None)
+        self.assertEqual(code, 1)
+        self.assertIn("no pull-request workflow calls `reusable-python-gate.yml`", out)
+        self.assertIn("no uv.lock", out)
+        self.assertIn("`<job> / gate` is not a required check", out)
+
+    def test_mypy_strict_outside_its_one_repository_drifts(self):
+        ci = STANDARD_CI + "    with:\n      type-checker: mypy-strict\n"
+        code, out, _, _ = self.scan("--dry-run", ci=ci)
+        self.assertEqual(code, 1)
+        self.assertIn("accepted only where it was already the gate", out)
+
+    def test_a_dry_run_prints_and_writes_nothing(self):
+        code, out, _, r = self.scan("--dry-run", ruleset=None)
+        self.assertEqual(code, 1)
+        self.assertIn("would file:", out)
+        self.assertEqual([c for c in r.calls() if c["args"][0] == "issue"], [])
+        code, out, _, _ = self.scan("--dry-run")
+        self.assertIn("would close any open drift issue", out)
+
+    def test_a_repository_without_pyproject_is_checked_for_pin_and_ruleset_only(self):
+        code, out, _, _ = self.scan("--dry-run", pyproject=None)
+        self.assertEqual(code, 1)
+        self.assertIn("no pyproject.toml: only the pin and the ruleset are checked", out)
+        self.assertNotIn("uv.lock", out)
+
+    def test_a_lookup_that_fails_is_an_error_not_a_clean_scan(self):
+        failing = {
+            "cannot read o/app/pyproject.toml: HTTP 403": ["o/app/contents/pyproject.toml", {"exit": 1, "stderr": "HTTP 403"}],
+            "cannot list o/app's rulesets: HTTP 403": ["o/app/rulesets --jq", {"exit": 1, "stderr": "HTTP 403"}],
+            "cannot read o/app's ruleset: HTTP 404": ["o/app/rulesets/7", {"exit": 1, "stderr": "HTTP 404"}],
+            "cannot list o/app's issues: HTTP 410": ["issue list", {"exit": 1, "stderr": "HTTP 410"}],
+            "cannot write o/app's drift issue: HTTP 422": ["issue create", {"exit": 1, "stderr": "HTTP 422"}],
+        }
+        for message, rule in failing.items():
+            with self.subTest(message):
+                code, _, err, _ = self.run_main(consumer(ruleset=None if "write" in message else RULESET,
+                                                         extra=[rule]), "--conformance", "o")
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+
+    def test_the_scheduled_scan_fails_without_its_token(self):
+        r = Runner(self)
+        wf = ROOT / ".github/workflows/conformance.yml"
+        p = r.run(wf, "Require the conformance token", HAS_TOKEN="false")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No conformance token::", p.stdout)
+        self.assertEqual(r.run(wf, "Require the conformance token", HAS_TOKEN="true").returncode, 0)
+
+    def test_the_scheduled_scan_fails_on_drift_through_its_pipe(self):
+        r = Runner(self)
+        (r.tmp / "pins.toml").write_text('[harness]\npyyaml = "6.0.3"\n')
+        (r.tmp / "scripts").mkdir()
+        r.tool("uv", '#!/bin/sh\necho "uv $*" > "$(dirname "$0")/uv-args"\necho "1 of 1 consumers drift"\nexit 1\n')
+        p = r.run(ROOT / ".github/workflows/conformance.yml", "Scan every consumer and keep its drift issue")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("--with pyyaml==6.0.3 python3 scripts/consumers.py --conformance AIRIA-Systems-GmbH tumma72",
+                      (r.bin / "uv-args").read_text())
+        self.assertIn("1 of 1 consumers drift", r.summary.read_text())
 
 
 if __name__ == "__main__":
