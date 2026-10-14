@@ -244,18 +244,26 @@ def standard_gate(root: Path) -> tuple[str, list[str]] | None:
 
     GitHub names a called job `<caller job> / <called job>`, once more for the
     review the gate calls in turn; the caller job is reported by its `name:`.
+    Only a job's own `uses:` line counts, never a comment or an input naming the file.
     """
     for path in pr_workflows(root):
         text = path.read_text()
-        call = text.find("reusable-python-gate.yml@")
-        if call < 0:
-            continue
-        # The caller is the last job whose header comes before the call.
-        body = re.search(r"^jobs:", text, re.M).end()
-        heads = [(re.compile(rf"^ +{re.escape(job)}:\s*$", re.M).search(text, body).start(), name)
-                 for job, name, _ in jobs(text)]
-        name = max(h for h in heads if h[0] < call)[1]
-        return path.name, [f"{name} / gate", f"{name} / claude-review / claude-review"]
+        names = {job: name for job, name, _ in jobs(text)}
+        indent, in_jobs, current = None, False, None
+        for line in text.splitlines():
+            if re.match(r"^[A-Za-z]", line):
+                in_jobs = line.startswith("jobs:")
+                continue
+            m = re.match(r"^( +)([A-Za-z0-9_-]+):\s*$", line)
+            if not in_jobs or not m and current is None:
+                continue
+            if m and indent is None:
+                indent = m.group(1)
+            if m and m.group(1) == indent:
+                current = m.group(2)
+            elif re.match(rf"^{indent}  uses:\s*\S*/reusable-python-gate\.yml@", line):
+                name = names[current]
+                return path.name, [f"{name} / gate", f"{name} / claude-review / claude-review"]
     return None
 
 
@@ -361,6 +369,13 @@ def protect(repo: str, branch: str, checks: list[str], assume_yes: bool, update:
               f"skipped   protection: anyone with write access can push to {branch} directly")
         return
     if existing:
+        # Every other gate reaches the standard through `extra-jobs` and `<job> / gate`, so a
+        # required check outside the canonical pair is dropped, and named.
+        d = gh("api", f"repos/{repo}/rulesets/{existing}")
+        had = [c["context"] for r in (json.loads(d.stdout).get("rules", []) if d.returncode == 0 else [])
+               if r["type"] == "required_status_checks" for c in r["parameters"]["required_status_checks"]]
+        for dropped in [c for c in had if c not in checks]:
+            print(f"dropped   the required check {dropped!r}: feed its job into the gate's extra-jobs")
         c = gh("api", "-X", "PUT", f"repos/{repo}/rulesets/{existing}", "--input", "-", stdin=json.dumps(ruleset(checks)))
     else:
         c = gh("api", "-X", "POST", f"repos/{repo}/rulesets", "--input", "-", stdin=json.dumps(ruleset(checks)))
