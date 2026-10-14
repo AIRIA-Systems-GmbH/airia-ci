@@ -1,0 +1,319 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: AIRIA Python gate (shared)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE AIRIA QUALITY STANDARD for a Python repository: one workflow file in the
+# caller, the same gates everywhere, at the versions in pins.toml. A project
+# may ADD to it (a higher floor, more Pythons, its own jobs fed into `gate`);
+# there is no input that switches a gate off. The caller's whole merge gate:
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#     push:
+#       branches: [main]
+#   permissions: {}
+#   jobs:
+#     ci:
+#       permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v4
+#       secrets:
+#         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#
+# THE REQUIRED CHECKS are `ci / gate` and `ci / claude-review / claude-review`
+# (GitHub names a called job `<caller job> / <called job>`). `init.py protect`
+# writes them into the ruleset from the caller's own job name.
+#
+# THE GATES, each a job on the caller's runner, each from a clean checkout
+# through the python-toolchain action (uv and Python from `.python-version`,
+# `uv sync --locked`, uv.lock and every workflow step checked against the pins):
+#   lint      ruff check, ruff format --check, the type checker (pyright, or
+#             mypy --strict where pins.toml allows it), and import-linter when
+#             pyproject.toml has [tool.importlinter];
+#   test      pytest, once per Python, with the project's own `--cov=…`; the
+#             JSON report must exist and reach `coverage-floor` (a `--no-cov`
+#             in addopts writes none, and fails);
+#   security  reuse lint, pip-audit over the locked requirements, gitleaks over
+#             the tree, zizmor over .github/ (offline, the standard's policy);
+#   gate      needs every one of them and the caller's `extra-jobs`; red unless
+#             each one succeeded. A skipped gate is a failed gate.
+# Then the automatic Claude review, chained after `gate` and run even when it
+# is red (a red gate is review input). On a PR it never skips silently: no
+# Claude credential fails it with the reason.
+#
+# EXTRA JOBS. A called workflow cannot `needs:` the caller's jobs, so the
+# caller makes its call job wait for them and hands their results in:
+#
+#     ci:
+#       needs: [e2e]
+#       if: always()
+#       uses: …/reusable-python-gate.yml@ci-v4
+#       with:
+#         extra-jobs: ${{ toJSON(needs) }}
+#
+# Without `if: always()` a red extra job skips the whole call: `ci / gate`
+# then never reports, and the PR waits on it rather than merging.
+#
+# SERVICES. A reusable workflow cannot take a `services:` block, so the test
+# job has two slots, started only when their image is set: Postgres-compatible
+# (`postgres-image`, user/password/database `postgres`) and Qdrant. Their
+# addresses are CI_POSTGRES_DSN and CI_QDRANT_URL; `job-env` maps them (and
+# any other KEY=VALUE) onto the project's own names, as in the respond workflow.
+#
+# VERSIONING. The gates and the review ship together under one tag; this file
+# calls the actions and the review at the same tag it is called at.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      type-checker:
+        description: "`pyright` (the standard) or `mypy-strict` (only where pins.toml allows it)."
+        required: false
+        type: string
+        default: pyright
+      coverage-floor:
+        description: The total coverage pytest must reach; refused under the standard's 90.
+        required: false
+        type: number
+        default: 90
+      python-versions:
+        description: >-
+          The Pythons to test on, as a JSON array from pins.toml's allowed list
+          (e.g. '["3.12", "3.13"]'). Empty: the one in `.python-version`.
+        required: false
+        type: string
+        default: ""
+      paths:
+        description: The paths ruff and the type checker check, space-separated.
+        required: false
+        type: string
+        default: "."
+      extra-jobs:
+        description: "`toJSON(needs)` of the call job: the caller's own gate jobs, each of which must succeed."
+        required: false
+        type: string
+        default: "{}"
+      postgres-image:
+        description: A Postgres-compatible image for the test job; empty starts none.
+        required: false
+        type: string
+        default: ""
+      qdrant-image:
+        description: A Qdrant image for the test job; empty starts none.
+        required: false
+        type: string
+        default: ""
+      job-env:
+        description: KEY=VALUE lines for the test job; a value may name $CI_POSTGRES_DSN or $CI_QDRANT_URL.
+        required: false
+        type: string
+        default: ""
+      runner:
+        description: >-
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool;
+          a public repository passes '["ubuntu-24.04"]'.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","thor"]'
+      extra-allow:
+        description: The review's extra permission-allow rules (see reusable-claude-review.yml).
+        required: false
+        type: string
+        default: ""
+      extra-deny:
+        description: The review's extra permission-deny rules (see reusable-claude-review.yml).
+        required: false
+        type: string
+        default: ""
+      extra-prompt:
+        description: Repository-specific sentences for the review's prompt.
+        required: false
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  lint:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v4
+        with:
+          type-checker: ${{ inputs.type-checker }}
+          coverage-floor: ${{ inputs.coverage-floor }}
+          tools: ${{ inputs.type-checker == 'pyright' && 'ruff pyright' || 'ruff' }}
+      - name: Ruff
+        env:
+          PATHS: ${{ inputs.paths }}
+        run: |
+          read -ra paths <<< "$PATHS"
+          status=0
+          ruff check "${paths[@]}" || status=1
+          ruff format --check "${paths[@]}" || status=1
+          exit "$status"
+      - name: Type check
+        env:
+          PATHS: ${{ inputs.paths }}
+          TYPE_CHECKER: ${{ inputs.type-checker }}
+        run: |
+          read -ra paths <<< "$PATHS"
+          case "$TYPE_CHECKER" in
+            pyright) pyright --pythonpath "$PWD/.venv/bin/python" "${paths[@]}" ;;
+            mypy-strict) mypy --strict "${paths[@]}" ;;
+            *) echo "::error title=AIRIA standard::no type checker $TYPE_CHECKER"; exit 1 ;;
+          esac
+      - name: Import contracts
+        run: |
+          if [ -f .importlinter ] || grep -q '^\[tool\.importlinter\]' pyproject.toml; then
+            lint-imports
+          else
+            echo "No import-linter contracts in this repository."
+          fi
+
+  test:
+    name: test ${{ matrix.python || '(.python-version)' }}
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python-versions != '' && inputs.python-versions || '[""]') }}
+    services:
+      postgres:
+        image: ${{ inputs.postgres-image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      qdrant:
+        image: ${{ inputs.qdrant-image }}
+        ports:
+          - 6333
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history: a suite may read past commits, and a shallow clone has none.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v4
+        with:
+          python-version: ${{ matrix.python }}
+          type-checker: ${{ inputs.type-checker }}
+          coverage-floor: ${{ inputs.coverage-floor }}
+          services: ${{ toJSON(job.services) }}
+          job-env: ${{ inputs.job-env }}
+      - name: Pytest at the coverage floor
+        env:
+          FLOOR: ${{ inputs.coverage-floor }}
+        run: |
+          report="$RUNNER_TEMP/coverage.json"
+          rm -f "$report"
+          pytest --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+          if [ ! -s "$report" ]; then
+            echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
+            exit 1
+          fi
+          jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
+
+  security:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v4
+        with:
+          type-checker: ${{ inputs.type-checker }}
+          coverage-floor: ${{ inputs.coverage-floor }}
+          tools: reuse pip-audit zizmor gitleaks
+          sync: "false"
+      - name: Licences (REUSE)
+        run: reuse lint
+      - name: Known vulnerabilities in the locked dependencies
+        run: |
+          uv export --locked --no-emit-workspace --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
+          pip-audit --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
+      - name: Secrets in the tree
+        run: gitleaks dir --redact --no-banner .
+      - name: Workflow security
+        run: zizmor --offline --config "$ZIZMOR_CONFIG" .github
+
+  gate:
+    needs: [lint, test, security]
+    if: always()
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every gate succeeded
+        env:
+          OWN: ${{ toJSON(needs) }}
+          EXTRA: ${{ inputs.extra-jobs }}
+        run: |
+          if ! jq -e 'type == "object"' <<< "$EXTRA" > /dev/null 2>&1; then
+            echo "::error title=extra-jobs::extra-jobs must be toJSON(needs) of the call job, a JSON object; got: $EXTRA"
+            exit 1
+          fi
+          # The caller's jobs are prefixed, so one called `lint` cannot hide this workflow's.
+          all="$(jq -n --argjson own "$OWN" --argjson extra "$EXTRA" '$own + ($extra | with_entries(.key |= "extra: " + .))')"
+          jq -r 'to_entries[] | "- \(.key): \(.value.result)"' <<< "$all" | tee -a "$GITHUB_STEP_SUMMARY"
+          failed="$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$all")"
+          if [ -n "$failed" ]; then
+            while IFS= read -r line; do
+              echo "::error title=Gate not passed::$line"
+            done <<< "$failed"
+            exit 1
+          fi
+
+  claude-review:
+    needs: [gate]
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v4
+    with:
+      pr-number: ${{ github.event.pull_request.number }}
+      runner: ${{ inputs.runner }}
+      extra-allow: ${{ inputs.extra-allow }}
+      extra-deny: ${{ inputs.extra-deny }}
+      extra-prompt: ${{ inputs.extra-prompt }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

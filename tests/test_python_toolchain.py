@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import json
 import os
 import platform
 import sys
@@ -365,6 +366,49 @@ class Steps(unittest.TestCase):
     def test_install_failure_fails_the_step_through_the_pipe(self):
         p = self.run_step("Install the pinned tools", TOOLS="ty")
         self.assertEqual(p.returncode, 1)
+
+
+class Services(unittest.TestCase):
+    """The test job's service slots and job-env, as the respond workflow's contract has them."""
+
+    STARTED = json.dumps({"postgres": {"id": "a", "ports": {"5432": "49153"}}, "qdrant": {"ports": {"6333": "49154"}}})
+
+    def test_started_services_are_addressed_and_mapped(self):
+        out = tc.services({"SERVICES": self.STARTED, "JOB_ENV": "# a comment\n\nDB=${CI_POSTGRES_DSN}\nQ=$CI_QDRANT_URL/x\nTERM=dumb"})
+        self.assertEqual(out, {
+            "CI_POSTGRES_DSN": "postgres://postgres:postgres@localhost:49153/postgres",
+            "CI_QDRANT_URL": "http://localhost:49154",
+            "DB": "postgres://postgres:postgres@localhost:49153/postgres",
+            "Q": "http://localhost:49154/x",
+            "TERM": "dumb",
+        })
+
+    def test_no_services_and_no_env_export_nothing(self):
+        for started in ("", "null", "{}", '{"postgres": {"ports": {}}}'):
+            with self.subTest(services=started):
+                self.assertEqual(tc.services({"SERVICES": started}), {})
+
+    def test_naming_a_service_that_did_not_start_is_refused(self):
+        with self.assertRaises(tc.Refused) as cm:
+            tc.services({"SERVICES": "{}", "JOB_ENV": "DB=$CI_POSTGRES_DSN"})
+        self.assertIn("not configured", cm.exception.args[0])
+
+    def test_a_line_that_is_not_key_value_is_refused(self):
+        for line in ("JUST_A_NAME", "=value"):
+            with self.subTest(line=line), self.assertRaises(tc.Refused):
+                tc.services({"JOB_ENV": line})
+
+    def test_a_context_that_is_not_json_is_refused(self):
+        with self.assertRaises(tc.Refused):
+            tc.services({"SERVICES": "{"})
+
+    def test_the_step_writes_github_env(self):
+        r = Runner(self)
+        p = r.run(ACTION, "Export the service addresses and the job environment", SERVICES=self.STARTED,
+                  JOB_ENV="TERM=dumb")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("job environment: CI_POSTGRES_DSN, CI_QDRANT_URL, TERM", p.stdout)
+        self.assertEqual(r.github_env.read_text().splitlines()[-1], "TERM=dumb")
 
 
 class Main(unittest.TestCase):

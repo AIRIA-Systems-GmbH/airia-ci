@@ -214,8 +214,9 @@ class NewerMajor(unittest.TestCase):
         # HARNESS_MAJOR is bumped by hand with every ci-vN+1; a stale one would
         # tell ci-v4's own callers to upgrade, or never tell ci-v3's.
         respond = ROOT / ".github/workflows/reusable-claude-respond.yml"
+        gate = ROOT / ".github/workflows/reusable-python-gate.yml"
         self.assertEqual(step(respond, self.STEP)["env"]["HARNESS_MAJOR"], self.MAJOR)
-        pins = set(re.findall(r"airia-ci/\S+@(ci-v\d+)", WORKFLOW.read_text() + respond.read_text()))
+        pins = set(re.findall(r"airia-ci/\S+@(ci-v\d+)", WORKFLOW.read_text() + respond.read_text() + gate.read_text()))
         self.assertEqual(pins, {f"ci-v{self.MAJOR}"})
         (tag,) = re.findall(r'^TAG = "(ci-v\d+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
         self.assertEqual(tag, f"ci-v{self.MAJOR}")

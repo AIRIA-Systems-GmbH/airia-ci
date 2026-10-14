@@ -156,6 +156,13 @@ on:
         required: false
         type: string
         default: ""
+      extra-prompt:
+        description: >-
+          Repository-specific sentences appended to the review's prompt (what
+          `.github/claude-review.md` says at more length).
+        required: false
+        type: string
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -443,6 +450,8 @@ jobs:
             your last message and nothing else: the workflow posts that message to the PR as one
             comment. Do NOT post it yourself (`gh pr comment` is disabled here). If a hook makes you
             continue after it, end again with the complete review as your final message.
+
+            ${{ inputs.extra-prompt }}
 
       # The workflow posts, not the model. Asked to finish with `gh pr comment`,
       # a run can end its turn without doing it: Portfolio-Dashboard PR #36 ran
