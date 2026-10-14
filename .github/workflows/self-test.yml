@@ -57,7 +57,7 @@ jobs:
 
   actions:
     # The composite actions at THIS commit. The reusable workflows call them
-    # @ci-v4, so the review below runs the released ones: this job is the only
+    # @ci-v5, so the review below runs the released ones: this job is the only
     # one that runs a change to an action before the tag moves.
     needs: unittest
     runs-on: ubuntu-24.04

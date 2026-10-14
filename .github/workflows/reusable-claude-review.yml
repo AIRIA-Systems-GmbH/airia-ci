@@ -28,7 +28,7 @@ name: Claude Code Review (shared)
 #     needs: [<every gate job>]
 #     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
 #     permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
-#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v4
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v5
 #     with:
 #       pr-number: ${{ github.event.pull_request.number }}
 #       extra-allow: |          # optional: this repo's own gates, if not covered
@@ -50,8 +50,11 @@ name: Claude Code Review (shared)
 #       the repo's own review rules (how its gates are invoked, its traps). The
 #       reviewer reads it before anything else.
 #
-# VERSIONING. Consumers pin `@ci-v4`. A compatible change moves the tag; a
-# change to the call contract above is the next major (`ci-v5`). `ci-v4` began
+# VERSIONING. Consumers pin `@ci-v5`. A compatible change moves the tag; a
+# change to the call contract above is the next major (`ci-v6`). `ci-v5` began
+# with the AIRIA quality standard: reusable-python-gate.yml calls this review
+# after its `gate` check, and both are required checks; this workflow's own
+# contract only gained the optional `extra-prompt`. `ci-v4` began
 # when both jobs started requesting `checks: read`, which ci-results needs to
 # read a cancelled job's annotations and tell a `timeout-minutes` cap from a
 # cancellation: a caller that does not grant it fails at startup. `ci-v3` began
@@ -249,7 +252,7 @@ jobs:
       - name: Collect the merge gate's results
         id: results
         if: steps.once.outputs.review == 'true' || steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v4
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v5
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
@@ -278,7 +281,7 @@ jobs:
       # this attempt's gate table in the existing comment.
       - name: Refresh the review's gate results
         if: steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v4
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v5
         with:
           comment-id: ${{ steps.once.outputs.comment-id }}
           jobs-md: ${{ github.workspace }}/ci-results/jobs.md
@@ -297,7 +300,7 @@ jobs:
         if: steps.once.outputs.review == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HARNESS_MAJOR: "4"
+          HARNESS_MAJOR: "5"
         run: |
           if ! refs="$(gh api "repos/AIRIA-Systems-GmbH/airia-ci/git/matching-refs/tags/ci-v" --jq '.[].ref')"; then
             echo "::notice title=airia-ci version not checked::the harness's tags could not be read"
@@ -338,7 +341,7 @@ jobs:
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v4
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v5
 
       # The review's Claude Code settings: the shared policy's read-only
       # `review` profile plus the caller's extra-allow / extra-deny. The policy
@@ -346,7 +349,7 @@ jobs:
       - name: Compose the review settings
         id: settings
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v4
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v5
         with:
           profile: review
           extra-allow: ${{ inputs.extra-allow }}

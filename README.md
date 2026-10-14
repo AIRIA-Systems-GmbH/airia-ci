@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
-The shared CI harness for AIRIA repositories, and the distribution channel of the AIRIA quality standard. It has three reusable workflows and six composite actions, consumed at the moving tag `@ci-v4` (the standard from `@ci-v5`).
+The shared CI harness for AIRIA repositories, and the distribution channel of the AIRIA quality standard. It has three reusable workflows and six composite actions, consumed at the moving tag `@ci-v5`.
 
 **The standard** is one workflow file in a Python repository, calling `reusable-python-gate.yml`, plus `init.py protect` for the branch. Every repository then runs the same gates, at the versions in `pins.toml`, summed into one required `gate` check and followed by a required Claude review. A project may add to it, never weaken it. [HOWTO.md](HOWTO.md#adopt-the-standard) has the snippet and the rules.
 
@@ -36,7 +36,7 @@ It writes the `@claude` caller, the review job (or a placeholder `merge-gate.yml
 
 The call contract is the header of `reusable-claude-review.yml`; read it before wiring a repository by hand. In short, the caller:
 
-- adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v4`;
+- adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v5`;
 - has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
 - runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-latest"]'`);
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
@@ -58,20 +58,20 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
   ```
 
 - `lint`: actionlint, shellcheck (also over the sliced composite-action blocks, which actionlint does not read) and ruff;
-- `actions`: the composite actions at the PR's own commit (the reusable workflows call them `@ci-v4`, so this is the only job that runs a change to an action before release);
+- `actions`: the composite actions at the PR's own commit (the reusable workflows call them `@ci-v5`, so this is the only job that runs a change to an action before release);
 - `claude-review`: this repository reviews itself with its own reusable workflow, on `ubuntu-24.04` (a public repository cannot use the Thor pool), except on a Dependabot PR, which gets no secrets. `claude.yml` is its `@claude` responder.
 
 ## Versioning
 
-Callers pin `@ci-v4`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v5`, and the older tag is frozen.
+Callers pin `@ci-v5`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v6`, and the older tag is frozen.
 
-- **Every move is a GitHub Release** (`ci-v4.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
+- **Every move is a GitHub Release** (`ci-v5.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
 - **A frozen pin hears of a newer major from its own run.** Both workflows look up this repository's `ci-vN` tags; when one is newer than the major they belong to (`HARNESS_MAJOR` in the step *Look for a newer airia-ci major*), the job warns and the automatic review ends with a note. A lookup that fails only leaves a notice. This began in `ci-v3`; `ci-v1` and `ci-v2` callers do not get it.
 - **What each major asks of a caller** is in [HOWTO.md](HOWTO.md#upgrade-to-a-new-major).
 
 `conformance.yml` runs `scripts/consumers.py --conformance` weekly. It keeps one "airia-ci standard drift" issue in each consumer that falls short of the standard, and it needs the `CONFORMANCE_TOKEN` secret (see its header).
 
-A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `main` can be ahead of `ci-v4`. After a release, `scripts/consumers.py` lists every caller and flags one on an older major, and `scripts/canary.py` proves `@claude` answers on a consumer PR; [CLAUDE.md](CLAUDE.md) has the commands. A new major also bumps `HARNESS_MAJOR` in both workflows and `TAG` in `init.py`; a test refuses them out of step with the workflows' own pins, and `release.yml` refuses a release whose `HARNESS_MAJOR` is not the major it tags.
+A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `main` can be ahead of `ci-v5`. After a release, `scripts/consumers.py` lists every caller and flags one on an older major, and `scripts/canary.py` proves `@claude` answers on a consumer PR; [CLAUDE.md](CLAUDE.md) has the commands. A new major also bumps `HARNESS_MAJOR` in both workflows and `TAG` in `init.py`; a test refuses them out of step with the workflows' own pins, and `release.yml` refuses a release whose `HARNESS_MAJOR` is not the major it tags.
 
 ## Licence
 

@@ -133,7 +133,7 @@ class Init(unittest.TestCase):
         gate = self.file(".github/workflows/merge-gate.yml")
         self.assertIn("exit 1", gate, "a placeholder gate must never pass")
         self.assertIn("needs: [gates]", gate)
-        self.assertIn("reusable-claude-review.yml@ci-v4", gate)
+        self.assertIn(f"reusable-claude-review.yml@{init.TAG}", gate)
         self.assertIn("${{ github.event.pull_request.number }}", gate)
         respond = self.file(".github/workflows/claude.yml")
         self.assertIn("gate-workflow: merge-gate.yml", respond)
