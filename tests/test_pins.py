@@ -7,7 +7,9 @@
   follow a major tag on purpose;
 - Dependabot never touches the pins of this repository's own actions, nor the
   ones that follow a major, and its pull requests get no Claude review;
-- this repository's own jobs name a runner image, not `ubuntu-latest`.
+- this repository's own jobs name a runner image, not `ubuntu-latest`;
+- pins.toml, the standard's tool versions and floors, is well-formed: every
+  gate tool at one exact version, the floors where Andrea set them.
 
 Run: python3 -m unittest discover -s tests
 """
@@ -15,6 +17,7 @@ Run: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import re
+import tomllib
 import unittest
 
 import yaml
@@ -99,6 +102,45 @@ class Pins(unittest.TestCase):
                 with self.subTest(workflow=path.name, job=name):
                     labels = [job.get("runs-on", ""), str(job.get("with", {}).get("runner", ""))]
                     self.assertFalse([label for label in labels if "ubuntu-latest" in str(label)])
+
+
+class Standard(unittest.TestCase):
+    """pins.toml: what the python-toolchain action installs and the floors it holds."""
+
+    def setUp(self):
+        self.pins = tomllib.loads((ROOT / "pins.toml").read_text())
+
+    def test_every_gate_tool_has_one_exact_version(self):
+        # A range or a bare name is what broke SiteBuilder (airia-ci#37).
+        tools = self.pins["tools"]
+        self.assertEqual(set(tools), {"uv", "ruff", "pyright", "mypy", "pytest", "pytest-cov", "coverage",
+                                      "import-linter", "reuse", "pip-audit", "zizmor", "gitleaks"})
+        for name, version in [*tools.items(), *self.pins["harness"].items()]:
+            with self.subTest(tool=name):
+                self.assertRegex(version, r"^\d+(\.\d+)+$")
+
+    def test_gitleaks_is_checked_against_a_digest_per_platform(self):
+        digests = self.pins["gitleaks"]["sha256"]
+        self.assertIn("linux_x64", digests)  # the Thor pool and GitHub's runners
+        for key, digest in digests.items():
+            with self.subTest(platform=key):
+                self.assertRegex(key, r"^(linux|darwin)_(x64|arm64)$")
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_the_floors_are_the_ones_decided(self):
+        # 2026-10-14: 90 % coverage; pyright, or mypy --strict where it already
+        # was the gate; ty not before its 1.0.
+        standard = self.pins["standard"]
+        self.assertEqual(standard["coverage-floor"], 90)
+        self.assertEqual(standard["type-checkers"], ["pyright", "mypy-strict"])
+        self.assertEqual(standard["mypy-strict-repositories"], ["AIRIA-Systems-GmbH/AIRIA-process"])
+
+    def test_the_allowed_pythons_are_minor_versions_in_order(self):
+        allowed = self.pins["python"]["allowed"]
+        self.assertTrue(allowed)
+        for v in allowed:
+            self.assertRegex(v, r"^3\.\d+$")
+        self.assertEqual(allowed, sorted(allowed, key=lambda v: int(v.split(".")[1])))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: AIRIA Python toolchain
+description: >-
+  Provision uv and Python from `.python-version`, install the project with
+  `uv sync --locked`, refuse a uv.lock or workflow that undercuts the pinned
+  gate tools, and put those tools on PATH at the versions in pins.toml.
+
+# Why: every repository installed its own linters, at its own versions, and an
+# unpinned `uv run --with ty` broke SiteBuilder overnight (airia-ci#37). The
+# versions live in pins.toml at the root of this repository, read at the tag
+# the caller pins; toolchain.py beside this file says which version of a tool
+# runs (the locked one, never below the pin, else the pin) and why. Run from
+# the root of the caller's checkout. On the Thor pool there is no prebuilt
+# CPython for setup-python, so uv provides the interpreter.
+
+inputs:
+  python-version:
+    description: The interpreter to provision; empty means the first line of `.python-version`.
+    required: false
+    default: ""
+  type-checker:
+    description: "`pyright` or `mypy-strict` (the latter only where pins.toml allows it)."
+    required: false
+    default: pyright
+  coverage-floor:
+    description: The coverage floor the caller asks for; refused under the standard's.
+    required: false
+    default: "90"
+  tools:
+    description: >-
+      The gate tools to put on PATH, space-separated, from ruff, pyright, reuse,
+      pip-audit, zizmor and gitleaks.
+    required: false
+    default: ""
+  sync:
+    description: "`true` installs the project (`uv sync --locked`); a job that only reads the lock passes `false`."
+    required: false
+    default: "true"
+
+outputs:
+  python:
+    description: The interpreter version provisioned.
+    value: ${{ steps.standard.outputs.python }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs against the standard
+      id: standard
+      shell: bash
+      env:
+        PYTHON_VERSION: ${{ inputs.python-version }}
+        TYPE_CHECKER: ${{ inputs.type-checker }}
+        COVERAGE_FLOOR: ${{ inputs.coverage-floor }}
+      run: python3 "$GITHUB_ACTION_PATH/toolchain.py" standard
+
+    - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      with:
+        version: ${{ steps.standard.outputs.uv }}
+        python-version: ${{ steps.standard.outputs.python }}
+        # On the Thor pool UV_CACHE_DIR is the runner's persistent volume.
+        enable-cache: false
+
+    - name: Install the locked project
+      if: inputs.sync == 'true'
+      shell: bash
+      run: uv sync --locked
+
+    - name: Check uv.lock and the workflows against the pins
+      shell: bash
+      env:
+        TYPE_CHECKER: ${{ inputs.type-checker }}
+        PYYAML: ${{ steps.standard.outputs.pyyaml }}
+      run: uv run --no-project --with "pyyaml==${PYYAML}" python3 "$GITHUB_ACTION_PATH/toolchain.py" check
+
+    - name: Install the pinned tools
+      shell: bash
+      env:
+        TOOLS: ${{ inputs.tools }}
+      run: python3 "$GITHUB_ACTION_PATH/toolchain.py" install | tee -a "$GITHUB_STEP_SUMMARY"
