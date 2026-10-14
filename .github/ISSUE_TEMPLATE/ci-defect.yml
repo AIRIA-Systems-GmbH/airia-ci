@@ -24,8 +24,8 @@ body:
     id: pin
     attributes:
       label: airia-ci pin and component
-      description: The ref you call (for example `@ci-v4`) and which workflow or action.
-      placeholder: "@ci-v4 · reusable-claude-review.yml"
+      description: The ref you call (for example `@ci-v5`) and which workflow or action.
+      placeholder: "@ci-v5 · reusable-claude-review.yml"
     validations:
       required: true
   - type: textarea

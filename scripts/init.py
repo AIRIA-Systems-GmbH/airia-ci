@@ -51,7 +51,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TAG = "ci-v4"
+TAG = "ci-v5"
 HARNESS = "AIRIA-Systems-GmbH/airia-ci/.github/workflows"
 RULESET = "Restrict Direct Merge on Main"
 THOR = '["self-hosted","linux","x64","thor"]'
