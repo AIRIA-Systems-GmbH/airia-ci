@@ -122,13 +122,42 @@ jobs:
           CLI_PATH: ${{ steps.cli.outputs.path }}
         run: '[ -z "$CLI_PATH" ]'
 
+  python-toolchain:
+    # The python-toolchain action at THIS commit, for real, against the
+    # smallest project that meets the standard: uv, Python, the locked project
+    # and every gate tool at its pin. The action runs at the workspace root, so
+    # this repository is checked out beside the project, not under it.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: airia-ci
+      - run: cp -R airia-ci/validation/python-toolchain/project/. .
+      - id: toolchain
+        uses: ./airia-ci/.github/actions/python-toolchain
+        with:
+          tools: ruff pyright reuse pip-audit zizmor gitleaks
+      - name: Every tool runs at its pin, the project's own from the lock
+        env:
+          PYTHON: ${{ steps.toolchain.outputs.python }}
+        run: |
+          pin() { python3 -c 'import sys, tomllib; print(tomllib.load(open("airia-ci/pins.toml", "rb"))["tools"][sys.argv[1]])' "$1"; }
+          [ "$PYTHON" = "$(cat .python-version)" ]
+          for t in ruff pyright reuse pip-audit zizmor; do
+            "$t" --version | tee /dev/stderr | grep -qF "$(pin "$t")"
+          done
+          gitleaks version | grep -qF "$(pin gitleaks)"
+          [ "$(command -v pytest)" = "$PWD/.venv/bin/pytest" ]
+          pytest -q --cov-report=term --cov-report="json:$RUNNER_TEMP/coverage.json" --cov-fail-under=90
+          jq -e '.totals.percent_covered >= 90' "$RUNNER_TEMP/coverage.json"
+
   claude-review:
     # The automatic review, as a consumer wires it: last, after every gate,
     # and also when one is red, because a red gate is review input. Never on a
     # fork's PR: it would have no secret, and must not get one. Nor on
     # Dependabot's: its runs get no Actions secrets either, and a review that
     # can only fail for want of a token says nothing about the bump.
-    needs: [unittest, coverage, lint, actions]
+    needs: [unittest, coverage, lint, actions, python-toolchain]
     if: >-
       always() && github.event_name == 'pull_request'
       && github.event.pull_request.draft == false

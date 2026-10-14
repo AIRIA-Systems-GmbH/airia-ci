@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# The standard's zizmor policy, used in place of any the project has: every
+# action is pinned to a commit, except this harness, which callers follow at
+# its moving ci-vN tag on purpose (a tag move is how they receive its fixes).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "AIRIA-Systems-GmbH/airia-ci/*": ref-pin
+        "*": hash-pin
