@@ -26,6 +26,18 @@ deletion. Recommended; a private repository of
 an organization on the Free plan cannot have one, and it says so.
 
 It commits nothing: review the files, commit them on a branch, open a PR.
+
+A Python repository adopts the AIRIA standard with one workflow that calls
+`reusable-python-gate.yml` (with no pull-request workflow and a pyproject.toml,
+this script writes it as `.github/workflows/ci.yml`), then:
+
+    python3 init.py protect
+
+which writes the canonical ruleset on the default branch, or rewrites the
+existing one into it: changes only by pull request, up to date with the base,
+review threads resolved, every commit signed, no force-push or deletion, no
+bypass, and the required checks `<job> / gate` and
+`<job> / claude-review / claude-review` of the job that calls the gate.
 """
 
 from __future__ import annotations
@@ -95,6 +107,38 @@ REVIEW_JOB = """\
     uses: {harness}/reusable-claude-review.yml@{tag}
     with:
       pr-number: ${{{{ github.event.pull_request.number }}}}
+      runner: '{runner}'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+"""
+
+PYTHON_GATE = """\
+name: CI
+
+# The AIRIA quality standard, from AIRIA-Systems-GmbH/airia-ci: lint, types,
+# tests at the coverage floor, licences, known vulnerabilities, secrets and
+# workflow security, summed into the `ci / gate` check, then the Claude review.
+# What a project may add, and may not weaken: airia-ci's HOWTO.md.
+
+on:
+  pull_request:
+    branches: [{branch}]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [{branch}]
+
+permissions: {{}}
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+    uses: {harness}/reusable-python-gate.yml@{tag}
+    with:
       runner: '{runner}'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
@@ -195,9 +239,44 @@ def write_new(path: Path, text: str) -> bool:
     return True
 
 
+def standard_gate(root: Path) -> tuple[str, list[str]] | None:
+    """The workflow that calls the Python gate, and the checks the standard requires of it.
+
+    GitHub names a called job `<caller job> / <called job>`, once more for the
+    review the gate calls in turn; the caller job is reported by its `name:`.
+    Only a job's own `uses:` line counts, never a comment or an input naming the file.
+    """
+    for path in pr_workflows(root):
+        text = path.read_text()
+        names = {job: name for job, name, _ in jobs(text)}
+        indent, in_jobs, current = None, False, None
+        for line in text.splitlines():
+            if re.match(r"^[A-Za-z]", line):
+                in_jobs = line.startswith("jobs:")
+                continue
+            m = re.match(r"^( +)([A-Za-z0-9_-]+):\s*$", line)
+            if not in_jobs or not m and current is None:
+                continue
+            if m and indent is None:
+                indent = m.group(1)
+            if m and m.group(1) == indent:
+                current = m.group(2)
+            elif re.match(rf"^{indent}  uses:\s*\S*/reusable-python-gate\.yml@", line):
+                name = names[current]
+                return path.name, [f"{name} / gate", f"{name} / claude-review / claude-review"]
+    return None
+
+
 def wire_review(root: Path, branch: str, runner: str) -> tuple[str, list[str]]:
     """Add the review job; return the gate workflow's file name and its gate check names."""
+    if standard := standard_gate(root):
+        print(f"kept      .github/workflows/{standard[0]} (calls the standard gate, which runs the review)")
+        return standard
     gates = [p for p in pr_workflows(root) if p.name not in ("claude.yml",)]
+    if not gates and (root / "pyproject.toml").is_file():
+        write_new(root / ".github/workflows/ci.yml", PYTHON_GATE.format(
+            branch=branch, harness=HARNESS, tag=TAG, runner=runner))
+        return standard_gate(root)
     if not gates:
         path = root / ".github/workflows/merge-gate.yml"
         write_new(path, GATE.format(branch=branch))
@@ -253,15 +332,8 @@ def set_token(repo: str, assume_yes: bool) -> None:
     print("set       the CLAUDE_CODE_OAUTH_TOKEN secret")
 
 
-def protect(repo: str, branch: str, checks: list[str], assume_yes: bool) -> None:
-    p = gh("api", f"repos/{repo}/rulesets", "--jq", f'.[] | select(.name == "{RULESET}") | .id')
-    if p.returncode == 0 and p.stdout.strip():
-        print(f"kept      the {RULESET!r} ruleset (exists)")
-        return
-    if not ask(f"Protect {branch} (recommended): changes only by pull request, signed and verified "
-               f"commits only, required checks {checks or 'none yet'}, no force-push or deletion?", assume_yes):
-        print(f"skipped   protection: anyone with write access can push to {branch} directly")
-        return
+def ruleset(checks: list[str]) -> dict:
+    """The canonical ruleset: the one shape every AIRIA default branch has."""
     body = {
         "name": RULESET, "target": "branch", "enforcement": "active", "bypass_actors": [],
         "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
@@ -279,18 +351,48 @@ def protect(repo: str, branch: str, checks: list[str], assume_yes: bool) -> None
         body["rules"].append({"type": "required_status_checks", "parameters": {
             "do_not_enforce_on_create": False, "strict_required_status_checks_policy": True,
             "required_status_checks": [{"context": c} for c in checks]}})
-    c = gh("api", "-X", "POST", f"repos/{repo}/rulesets", "--input", "-", stdin=json.dumps(body))
+    return body
+
+
+def protect(repo: str, branch: str, checks: list[str], assume_yes: bool, update: bool = False) -> None:
+    """Create the ruleset; with `update`, also rewrite an existing one into the canonical form."""
+    p = gh("api", f"repos/{repo}/rulesets", "--jq", f'.[] | select(.name == "{RULESET}") | .id')
+    existing = p.stdout.strip() if p.returncode == 0 else ""
+    if existing and not update:
+        print(f"kept      the {RULESET!r} ruleset (exists)")
+        return
+    verb = "Rewrite the existing" if existing else "Protect"
+    if not ask(f"{verb} {branch} ruleset (recommended): changes only by pull request, up to date with {branch}, "
+               f"review threads resolved, signed and verified commits only, required checks {checks or 'none yet'}, "
+               "no force-push, deletion or bypass?", assume_yes):
+        print(f"skipped   protection: the existing {RULESET!r} ruleset was left as it is" if existing else
+              f"skipped   protection: anyone with write access can push to {branch} directly")
+        return
+    if existing:
+        # Every other gate reaches the standard through `extra-jobs` and `<job> / gate`, so a
+        # required check outside the canonical pair is dropped, and named.
+        d = gh("api", f"repos/{repo}/rulesets/{existing}")
+        had = [c["context"] for r in (json.loads(d.stdout).get("rules", []) if d.returncode == 0 else [])
+               if r["type"] == "required_status_checks" for c in r["parameters"]["required_status_checks"]]
+        for dropped in [c for c in had if c not in checks]:
+            print(f"dropped   the required check {dropped!r}: feed its job into the gate's extra-jobs")
+        c = gh("api", "-X", "PUT", f"repos/{repo}/rulesets/{existing}", "--input", "-", stdin=json.dumps(ruleset(checks)))
+    else:
+        c = gh("api", "-X", "POST", f"repos/{repo}/rulesets", "--input", "-", stdin=json.dumps(ruleset(checks)))
     if c.returncode == 0:
-        print(f"protected {branch} with the {RULESET!r} ruleset")
+        print(f"protected {branch} with the {'rewritten ' if existing else ''}{RULESET!r} ruleset")
     elif "Upgrade to GitHub" in c.stdout + c.stderr:
         print("not protected: GitHub refuses rulesets on this repository under its owner's plan. A private "
               "repository needs GitHub Pro (personal) or Team (organization), or the repository made public.")
     else:
-        raise RuntimeError(f"could not create the ruleset: {(c.stdout + c.stderr).strip()}")
+        raise RuntimeError(f"could not {'update' if existing else 'create'} the ruleset: {(c.stdout + c.stderr).strip()}")
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", choices=["wire", "protect"], default="wire",
+                    help="wire (default): write the missing files, set the token, offer a ruleset; "
+                         "protect: write the standard's canonical ruleset, or rewrite the existing one into it")
     ap.add_argument("--dir", default=".", help="the repository's checkout (default: here)")
     ap.add_argument("--runner", default=THOR,
                     help=f"runs-on labels as a JSON array (default: the AIRIA Thor pool, {THOR}); "
@@ -305,6 +407,13 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(f"not a GitHub repository checkout, or gh is not logged in: {v.stderr.strip()}")
         info = json.loads(v.stdout)
         repo, branch = info["nameWithOwner"], info["defaultBranchRef"]["name"]
+        if args.command == "protect":
+            standard = standard_gate(root)
+            if not standard:
+                raise RuntimeError("no pull-request workflow calls reusable-python-gate.yml, so the standard's "
+                                   "required checks do not exist yet: adopt the gate first (HOWTO.md)")
+            protect(repo, branch, standard[1], args.yes, update=True)
+            return 0
         print(f"wiring {repo} ({branch}) to airia-ci @{TAG}")
         gate, checks = wire_review(root, branch, args.runner)
         write_new(root / ".github/workflows/claude.yml",
@@ -312,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         write_new(root / ".github/claude-review.md",
                   RULES_MD.format(name=repo.split("/")[1], gate=gate or "<the gate workflow>"))
         set_token(repo, args.yes)
-        protect(repo, branch, checks, args.yes)
+        protect(repo, branch, checks, args.yes, update=standard_gate(root) is not None)
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

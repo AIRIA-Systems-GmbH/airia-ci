@@ -34,6 +34,34 @@ SET = ["secret set", {}]
 NO_RULESET = [r"rulesets --jq", {"json": []}]
 HAS_RULESET = [r"rulesets --jq", {"json": [{"name": init.RULESET, "id": 7}]}]
 CREATE = ["-X POST .*rulesets", {"text": "{}"}]
+UPDATE = ["-X PUT .*rulesets/7", {"text": "{}"}]
+OLD_RULESET = [r"^api repos/o/app/rulesets/7$", {"json": {"rules": [
+    {"type": "deletion"},
+    {"type": "required_status_checks", "parameters": {"required_status_checks": [
+        {"context": "Code quality (ruff + ty)"}, {"context": "Quality / gate"}]}}]}}]
+
+STANDARD = """\
+# The standard gate, reusable-python-gate.yml@ci-v5, is called below.
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      # not the call: reusable-python-gate.yml@ci-v5
+      - uses: o/reusable-python-gate.yml@v1
+        with:
+          ci: reusable-python-gate.yml@ci-v5
+  quality:
+    name: Quality
+    needs: [e2e]
+    if: always()
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+    with:
+      extra-jobs: ${{ toJSON(needs) }}
+"""
 
 CI = """\
 name: CI
@@ -248,6 +276,100 @@ class Init(unittest.TestCase):
                 code, _, err = self.run_main(rules, "--yes")
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
+
+    def ruleset_body(self, pattern: str) -> dict:
+        (call,) = self.call(pattern)
+        return json.loads(call["files"]["stdin"])
+
+    @staticmethod
+    def contexts(body: dict) -> list[str]:
+        return [c["context"] for r in body["rules"] if r["type"] == "required_status_checks"
+                for c in r["parameters"]["required_status_checks"]]
+
+    def test_a_python_repository_gets_the_standard_gate_and_its_two_required_checks(self):
+        (self.repo / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+        code, out, _ = self.run_main([VIEW, HAS_SECRET, NO_RULESET, CREATE], "--yes")
+        self.assertEqual(code, 0, out)
+        ci = yaml.safe_load(self.file(".github/workflows/ci.yml"))
+        self.assertEqual(ci["jobs"]["ci"]["uses"], f"{init.HARNESS}/reusable-python-gate.yml@{init.TAG}")
+        self.assertFalse((self.repo / ".github/workflows/merge-gate.yml").exists())
+        self.assertIn("gate-workflow: ci.yml", self.file(".github/workflows/claude.yml"))
+        body = self.ruleset_body("-X POST")
+        self.assertEqual(self.contexts(body), ["ci / gate", "ci / claude-review / claude-review"])
+        self.assertEqual(body, init.ruleset(["ci / gate", "ci / claude-review / claude-review"]))
+
+    def test_the_canonical_ruleset_is_the_standard(self):
+        # No bypass, PR only, up to date, threads resolved, signed, no force-push or deletion.
+        body = init.ruleset(["ci / gate"])
+        self.assertEqual(body["name"], "Restrict Direct Merge on Main")
+        self.assertEqual(body["bypass_actors"], [])
+        self.assertEqual(body["enforcement"], "active")
+        rules = {r["type"]: r.get("parameters") for r in body["rules"]}
+        self.assertEqual(set(rules), {"deletion", "non_fast_forward", "required_signatures", "pull_request",
+                                      "required_status_checks"})
+        self.assertTrue(rules["pull_request"]["required_review_thread_resolution"])
+        self.assertTrue(rules["required_status_checks"]["strict_required_status_checks_policy"])
+
+    def test_the_standard_caller_grants_every_permission_the_gate_and_its_review_request(self):
+        caller = yaml.safe_load(init.PYTHON_GATE.format(branch="main", harness=init.HARNESS, tag=init.TAG,
+                                                        runner=init.THOR))["jobs"]["ci"]["permissions"]
+        wf = ROOT / ".github/workflows"
+        called = [*yaml.safe_load((wf / "reusable-python-gate.yml").read_text())["jobs"].values(),
+                  *yaml.safe_load((wf / "reusable-claude-review.yml").read_text())["jobs"].values()]
+        for job in called:
+            for scope, level in (job.get("permissions") or {}).items():
+                with self.subTest(scope=scope):
+                    self.assertIn(caller.get(scope), (level, "write"))
+
+    def test_protect_rewrites_an_existing_ruleset_into_the_canonical_form(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
+        code, out, _ = self.run_main([VIEW, HAS_RULESET, OLD_RULESET, UPDATE], "protect", "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.call("-X POST"), [])
+        # A check the canonical pair does not hold is dropped, and said: it would never report again.
+        self.assertIn("dropped   the required check 'Code quality (ruff + ty)': feed its job into the gate's "
+                      "extra-jobs", out)
+        self.assertNotIn("dropped   the required check 'Quality / gate'", out)
+        body = self.ruleset_body("-X PUT")
+        # The caller job's `name:`, not the job before it that it waits for.
+        self.assertEqual(self.contexts(body), ["Quality / gate", "Quality / claude-review / claude-review"])
+        self.assertIn("rewritten 'Restrict Direct Merge on Main'", out)
+        self.assertEqual(self.call("secret"), [], "protect touches only the ruleset")
+        self.assertFalse((self.repo / ".github/workflows/claude.yml").exists())
+
+    def test_protect_creates_the_ruleset_when_there_is_none(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
+        code, _, _ = self.run_main([VIEW, NO_RULESET, CREATE], "protect", "--yes")
+        self.assertEqual(code, 0)
+        self.assertEqual(self.contexts(self.ruleset_body("-X POST"))[0], "Quality / gate")
+
+    def test_protect_without_the_standard_gate_is_refused(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(CI)
+        code, _, err = self.run_main([VIEW], "protect", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("no pull-request workflow calls reusable-python-gate.yml", err)
+
+    def test_protect_declined_changes_nothing(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
+        code, out, _ = self.run_main([VIEW, HAS_RULESET], "protect", answers=["n"])
+        self.assertEqual(code, 0)
+        self.assertIn("skipped   protection: the existing 'Restrict Direct Merge on Main' ruleset was left", out)
+        self.assertEqual(self.call("-X PUT"), [])
+
+    def test_protect_reports_a_failed_update(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
+        code, _, err = self.run_main([VIEW, HAS_RULESET, ["-X PUT", {"exit": 1, "stderr": "HTTP 403"}]],
+                                     "protect", "--yes")
+        self.assertEqual(code, 2)
+        self.assertIn("could not update the ruleset: HTTP 403", err)
+
+    def test_wiring_a_repository_on_the_standard_keeps_its_workflow_and_rewrites_the_ruleset(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
+        code, out, _ = self.run_main([VIEW, HAS_SECRET, HAS_RULESET, UPDATE], "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.file(".github/workflows/ci.yml"), STANDARD)
+        self.assertIn("calls the standard gate, which runs the review", out)
+        self.assertEqual(self.contexts(self.ruleset_body("-X PUT"))[1], "Quality / claude-review / claude-review")
 
     def test_a_runner_that_is_not_json_is_refused(self):
         code, _, err = self.run_main([VIEW], "--runner", "ubuntu-latest")
