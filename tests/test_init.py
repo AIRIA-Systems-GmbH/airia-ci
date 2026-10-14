@@ -35,8 +35,13 @@ NO_RULESET = [r"rulesets --jq", {"json": []}]
 HAS_RULESET = [r"rulesets --jq", {"json": [{"name": init.RULESET, "id": 7}]}]
 CREATE = ["-X POST .*rulesets", {"text": "{}"}]
 UPDATE = ["-X PUT .*rulesets/7", {"text": "{}"}]
+OLD_RULESET = [r"^api repos/o/app/rulesets/7$", {"json": {"rules": [
+    {"type": "deletion"},
+    {"type": "required_status_checks", "parameters": {"required_status_checks": [
+        {"context": "Code quality (ruff + ty)"}, {"context": "Quality / gate"}]}}]}}]
 
 STANDARD = """\
+# The standard gate, reusable-python-gate.yml@ci-v5, is called below.
 name: CI
 on:
   pull_request:
@@ -45,7 +50,10 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - run: true
+      # not the call: reusable-python-gate.yml@ci-v5
+      - uses: o/reusable-python-gate.yml@v1
+        with:
+          ci: reusable-python-gate.yml@ci-v5
   quality:
     name: Quality
     needs: [e2e]
@@ -315,9 +323,13 @@ class Init(unittest.TestCase):
 
     def test_protect_rewrites_an_existing_ruleset_into_the_canonical_form(self):
         (self.repo / ".github/workflows/ci.yml").write_text(STANDARD)
-        code, out, _ = self.run_main([VIEW, HAS_RULESET, UPDATE], "protect", "--yes")
+        code, out, _ = self.run_main([VIEW, HAS_RULESET, OLD_RULESET, UPDATE], "protect", "--yes")
         self.assertEqual(code, 0, out)
         self.assertEqual(self.call("-X POST"), [])
+        # A check the canonical pair does not hold is dropped, and said: it would never report again.
+        self.assertIn("dropped   the required check 'Code quality (ruff + ty)': feed its job into the gate's "
+                      "extra-jobs", out)
+        self.assertNotIn("dropped   the required check 'Quality / gate'", out)
         body = self.ruleset_body("-X PUT")
         # The caller job's `name:`, not the job before it that it waits for.
         self.assertEqual(self.contexts(body), ["Quality / gate", "Quality / claude-review / claude-review"])

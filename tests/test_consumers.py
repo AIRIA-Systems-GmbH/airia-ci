@@ -193,7 +193,8 @@ class Conformance(Scan):
         self.assertEqual(code, 1)
         self.assertIn("no pull-request workflow calls `reusable-python-gate.yml`", out)
         self.assertIn("no uv.lock", out)
-        self.assertIn("`<job> / gate` is not a required check", out)
+        # No gate, no check name to require yet: one line says what is wrong, not an unfollowable second.
+        self.assertNotIn("is not a required check", out)
 
     def test_mypy_strict_outside_its_one_repository_drifts(self):
         ci = STANDARD_CI + "    with:\n      type-checker: mypy-strict\n"
@@ -229,6 +230,30 @@ class Conformance(Scan):
                                                          extra=[rule]), "--conformance", "o")
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
+
+    def test_a_failed_close_is_an_error_not_a_close(self):
+        code, out, err, _ = self.run_main(consumer(issues=[(3, consumers.TITLE)],
+                                                   extra=[["issue close", {"exit": 1, "stderr": "HTTP 403"}]]),
+                                          "--conformance", "o")
+        self.assertEqual(code, 2)
+        self.assertIn("cannot close o/app#3: HTTP 403", err)
+        self.assertNotIn("closed #3", out)
+
+    def test_one_unreadable_consumer_does_not_stop_the_others(self):
+        rules = [
+            ["o/bad/rulesets --jq", {"exit": 1, "stderr": "HTTP 403"}],
+            ["o/bad/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
+            ["o/bad/contents/.github/workflows/ci.yml ", {"text": STANDARD_CI}],
+            ["o/bad/contents/(pyproject.toml|uv.lock) ", {"exit": 1, "stderr": "Not Found"}],
+            *consumer(),
+        ]
+        rules[rules.index(["repo list o", {"json": [{"nameWithOwner": "o/app"}]}])] = \
+            ["repo list o", {"json": [{"nameWithOwner": "o/app"}, {"nameWithOwner": "o/bad"}]}]
+        code, out, err, _ = self.run_main(rules, "--conformance", "o")
+        self.assertEqual(code, 2)
+        self.assertIn("error: o/bad: cannot list o/bad's rulesets: HTTP 403", err)
+        self.assertIn("o/app\t0 drift\tno drift", out)
+        self.assertIn("0 of 2 consumers drift from the standard; 1 could not be scanned", out)
 
     def test_the_scheduled_scan_fails_without_its_token(self):
         r = Runner(self)
