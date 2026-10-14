@@ -1,0 +1,11 @@
+name: zz-mid
+on: workflow_call
+permissions: {}
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo gate
+  claude-review:
+    needs: gate
+    uses: ./.github/workflows/zz-inner.yml

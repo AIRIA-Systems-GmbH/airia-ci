@@ -1,0 +1,8 @@
+name: zz-inner
+on: workflow_call
+permissions: {}
+jobs:
+  claude-review:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo review

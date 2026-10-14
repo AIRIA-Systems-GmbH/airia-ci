@@ -1,0 +1,8 @@
+name: zz-outer
+on:
+  push:
+    branches: ["scratch/nested-check-name"]
+permissions: {}
+jobs:
+  ci:
+    uses: ./.github/workflows/zz-mid.yml
