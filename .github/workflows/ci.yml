@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+# Throwaway: the ci-v5 Python gate, end to end, on the smallest conforming project.
+name: CI
+
+on:
+  push:
+    branches: ["scratch/python-gate-e2e"]
+
+permissions: {}
+
+jobs:
+  ci:
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+    with:
+      runner: '["ubuntu-24.04"]'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
