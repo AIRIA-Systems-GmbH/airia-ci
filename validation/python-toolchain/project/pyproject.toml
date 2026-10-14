@@ -17,3 +17,5 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 addopts = "--cov=airia_fixture"
+# self-test checks airia-ci out beside this project; its tests are not ours.
+testpaths = ["tests"]
