@@ -203,7 +203,7 @@ A new major means the call contract changed: an input, a secret, an output or th
 
 | Major | What a caller must change |
 |---|---|
-| `ci-v5` | Change every `@ci-v4` to `@ci-v5`; no input, secret or output a ci-v4 caller passes changed. A Python repository then [adopts the standard](#adopt-the-standard): its gate jobs and its `claude-review` job give way to the one-file caller of `reusable-python-gate.yml`, and `init.py protect` makes `ci / gate` and the Claude review the required checks. |
+| `ci-v5` | Change every `@ci-v4` to `@ci-v5`; no input, secret or output a ci-v4 caller passes changed. A Python repository then [adopts the standard](#adopt-the-standard): its gate jobs and its `claude-review` job give way to the one-file caller of `reusable-python-gate.yml`, and `init.py protect` makes `ci / gate` and the Claude review the required checks. Any other repository stops after the pin change. |
 | `ci-v4` | Frozen; move off it. Add `checks: read` to the `permissions:` of both calling jobs (`claude-review` in your gate workflow, `claude` in `claude.yml`): without it the run fails at startup. With it, a gate that hit its `timeout-minutes` is reported as `cancelled (time cap)`, not as infrastructure. |
 | `ci-v3` | Frozen; move off it. Drop the `FRAMEWORK_READ_TOKEN` secret from both callers: passing it fails with an undefined-secret error. Gate results are staged in `ci-results/` inside the checkout. |
 | `ci-v2` | Frozen at `9ed10a6`; move off it. Its reviewer never sees the gate results (its prompt names `$RUNNER_TEMP` in a command Bash refuses). It replaced the bare `Bash` permission with the allowlist: gates outside it go in `extra-allow`. |
