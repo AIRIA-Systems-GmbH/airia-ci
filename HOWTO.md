@@ -25,6 +25,119 @@ Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variabl
 
 The script is fetched from `main` and writes the pin it names (today `@ci-v4`). It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
 
+## Adopt the standard
+
+From `ci-v5` on, a Python repository's merge gate is the AIRIA quality standard, `reusable-python-gate.yml`. Every repository runs the same gates, with the tool versions in [`pins.toml`](pins.toml), and the same configuration on a laptop, on another machine and in the cloud. A project may **add** to it. It may **not weaken** it, and code enforces that, not this page.
+
+1. **One workflow file**, `.github/workflows/ci.yml` (`init.py` writes it for a Python repository that has no pull-request workflow):
+
+   ```yaml
+   name: CI
+
+   on:
+     pull_request:
+       types: [opened, synchronize, reopened, ready_for_review]
+     push:
+       branches: [main]
+
+   permissions: {}
+
+   jobs:
+     ci:
+       permissions:
+         contents: read
+         pull-requests: write
+         issues: write
+         actions: read
+         checks: read
+       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+       secrets:
+         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+   ```
+
+   It replaces the repository's own lint, type and test jobs and its `claude-review` job, because the gate runs the review itself. Keep `claude.yml` for `@claude`.
+2. **Protect the branch**: from the checkout, with your `gh` login, run
+   `python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw') protect`.
+   It writes the "Restrict Direct Merge on Main" ruleset, or rewrites the existing one into the standard form:
+   - no bypass;
+   - changes by pull request only, up to date with the base;
+   - review threads resolved;
+   - signed commits;
+   - no force-push or deletion;
+   - required checks `ci / gate` and `ci / claude-review / claude-review`.
+
+   The `ci` prefix is the name of your calling job, read from your workflow.
+
+What the gate expects of the repository. It fails, and says what is missing, when any of these is not true:
+
+- `.python-version` is committed. Its Python must be one of `pins.toml`'s `[python] allowed`.
+- `uv.lock` is committed, and `uv sync --locked` works.
+- pytest, pytest-cov and coverage are in a dev group, at or above their pins (`uv add --dev pytest==<pin> pytest-cov==<pin> coverage==<pin>`). The same goes for mypy under `mypy-strict`, and for import-linter when `[tool.importlinter]` exists. They run inside your environment, at your locked versions.
+- pytest measures your package: `addopts = "--cov=<package>"` under `[tool.pytest.ini_options]`. With no coverage report, or with `--no-cov`, the test job fails, because there is no figure to hold to the floor.
+- The tree is `ruff format`ted, every file carries REUSE licence information, and every action in `.github/` is pinned to a commit (zizmor, with the standard policy; only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
+- No workflow step runs a tool unpinned: `uvx ruff`, `uv run --with ty`, `uv tool run x` and `pipx run x` are refused. Pin it (`uvx ruff@0.17.0`, `--with ty==0.0.20`), or lock it and call it with `uv run`.
+
+### What runs
+
+| Check | What it runs | Required |
+|---|---|---|
+| `ci / lint` | ruff check, ruff format --check, the type checker, import-linter (when configured) | |
+| `ci / test …` | pytest per Python, at the coverage floor | |
+| `ci / security` | reuse lint, pip-audit over the locked requirements, gitleaks over the tree, zizmor over `.github/` | |
+| **`ci / gate`** | red unless every job above, and every extra job, succeeded; a skipped job is not a pass | required |
+| **`ci / claude-review / claude-review`** | the automatic review, after `gate`, even a red one; with no Claude credential it fails, and says why | required |
+
+The same gates on a laptop, at the versions in `pins.toml`:
+
+```
+uv sync --locked
+uv run ruff check . && uv run ruff format --check .        # or uvx ruff@<pin> if ruff is not locked
+uvx --from 'pyright[nodejs]==<pin>' pyright --pythonpath .venv/bin/python .
+uv run pytest --cov-report=term-missing --cov-fail-under=90
+uvx reuse@<pin> lint
+uv export --locked --no-emit-workspace --format requirements-txt -o /tmp/req.txt && uvx pip-audit@<pin> --disable-pip -r /tmp/req.txt
+gitleaks dir --redact .
+uvx zizmor@<pin> --offline .github
+```
+
+### Extend it
+
+| Input | What it adds | Limit |
+|---|---|---|
+| `coverage-floor` | a higher floor | refused under 90 |
+| `type-checker` | `mypy-strict` instead of `pyright` | only where pins.toml allows it (AIRIA-process); `ty` is refused until its 1.0 |
+| `python-versions` | more Pythons, e.g. `'["3.12", "3.13"]'` | each from `pins.toml`'s allowed list |
+| `paths` | what ruff and the type checker read | |
+| `postgres-image`, `qdrant-image`, `job-env` | service containers for the tests; `CI_POSTGRES_DSN` / `CI_QDRANT_URL` mapped onto your names | |
+| `extra-jobs` | your own gate jobs, counted by `ci / gate` | see below |
+| `runner` | GitHub's runners for a public repository (`'["ubuntu-24.04"]'`) | |
+| `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
+
+There is no `skip-*` input, and none will be added. An extra job of your own goes before the gate, and its result is handed in:
+
+```yaml
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    steps: [...]
+  ci:
+    needs: [e2e]
+    if: always()          # without it a red e2e skips the whole gate, and `ci / gate` never reports
+    permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+    with:
+      extra-jobs: ${{ toJSON(needs) }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
+### May add, may not weaken
+
+- **May:** raise the floor; test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin.
+- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check.
+
+The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
+
 ## Write your review rules
 
 `.github/claude-review.md` is read by the reviewer before anything else. Put there only what is particular to the repository: how each gate runs locally, what a reviewer must not run, and the traps a newcomer falls into. The review procedure itself lives in airia-ci; do not restate it.
@@ -50,7 +163,7 @@ The review and `@claude` are separate callers: set the same lists on both. The s
 
 ## Pin your quality tools
 
-Your own gate jobs install their linters and type checkers; airia-ci does not. Pin every one of them. `uv run --with ty ty check` or `uvx ruff check` installs whatever was released last night, so a new diagnostic turns your PR red on files it never touched (airia-ci#37: a `ty` release did that to SiteBuilder).
+On the standard ([Adopt the standard](#adopt-the-standard)) the gate installs the tools at the pins and refuses unpinned ones. Until then, your own gate jobs install their linters and type checkers, and airia-ci does not. Pin every one of them. `uv run --with ty ty check` or `uvx ruff check` installs whatever was released last night, so a new diagnostic turns your PR red on files it never touched (airia-ci#37: a `ty` release did that to SiteBuilder).
 
 Put the tools in a dev dependency group with an exact version (`uv add --dev ty==<version> ruff==<version>`) and call them as `uv run ty check …` and `uv run ruff check …`, so `uv.lock` holds the version and a bump is its own PR that shows the new diagnostics. A one-off `--with ty==<version>` also works, but nothing tells you when it is stale. `uv run ty` is not in the reviewer's default allowlist: add `Bash(uv run ty:*)` to `extra-allow` so the review can run it.
 

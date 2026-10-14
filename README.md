@@ -5,10 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
-The shared CI harness for AIRIA repositories. It has two reusable workflows and five composite actions, consumed at the moving tag `@ci-v4`.
+The shared CI harness for AIRIA repositories, and the distribution channel of the AIRIA quality standard. It has three reusable workflows and six composite actions, consumed at the moving tag `@ci-v4` (the standard from `@ci-v5`).
+
+**The standard** is one workflow file in a Python repository, calling `reusable-python-gate.yml`, plus `init.py protect` for the branch. Every repository then runs the same gates, at the versions in `pins.toml`, summed into one required `gate` check and followed by a required Claude review. A project may add to it, never weaken it. [HOWTO.md](HOWTO.md#adopt-the-standard) has the snippet and the rules.
 
 | Path | What it is |
 |---|---|
+| `.github/workflows/reusable-python-gate.yml` | The AIRIA quality standard for a Python repository. It runs `lint` (ruff check and format, pyright or mypy --strict, import-linter), `test` (pytest per Python at the coverage floor), `security` (reuse, pip-audit, gitleaks, zizmor), then `gate`: red unless every one of them, and every caller's extra job, succeeded. Then the Claude review. Its call contract is its own header. |
 | `.github/workflows/reusable-claude-review.yml` | The automatic Claude review. It runs once per PR, as the last job of the caller's merge-gate workflow, and reads the gate results instead of re-running them. |
 | `.github/workflows/reusable-claude-respond.yml` | The `@claude` responder. Only an OWNER, MEMBER or COLLABORATOR can start it; it can edit, commit and push, and it reads the PR's gate results. Its call contract is its own header. |
 | `.github/actions/claude-settings` | The one Claude Code permission policy both workflows use: an explicit Bash allowlist (never a bare `Bash`), in a read-only `review` profile and a `respond` profile that can also write and commit. |
@@ -65,6 +68,8 @@ Callers pin `@ci-v4`. It moves on every compatible change, so a caller runs each
 - **Every move is a GitHub Release** (`ci-v4.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
 - **A frozen pin hears of a newer major from its own run.** Both workflows look up this repository's `ci-vN` tags; when one is newer than the major they belong to (`HARNESS_MAJOR` in the step *Look for a newer airia-ci major*), the job warns and the automatic review ends with a note. A lookup that fails only leaves a notice. This began in `ci-v3`; `ci-v1` and `ci-v2` callers do not get it.
 - **What each major asks of a caller** is in [HOWTO.md](HOWTO.md#upgrade-to-a-new-major).
+
+`conformance.yml` runs `scripts/consumers.py --conformance` weekly. It keeps one "airia-ci standard drift" issue in each consumer that falls short of the standard, and it needs the `CONFORMANCE_TOKEN` secret (see its header).
 
 A maintainer releases by dispatching `release.yml` on `main` (`move` or `new`); it refuses a commit whose `self-test` did not succeed and a move that is not forward. `main` can be ahead of `ci-v4`. After a release, `scripts/consumers.py` lists every caller and flags one on an older major, and `scripts/canary.py` proves `@claude` answers on a consumer PR; [CLAUDE.md](CLAUDE.md) has the commands. A new major also bumps `HARNESS_MAJOR` in both workflows and `TAG` in `init.py`; a test refuses them out of step with the workflows' own pins, and `release.yml` refuses a release whose `HARNESS_MAJOR` is not the major it tags.
 
