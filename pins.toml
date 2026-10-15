@@ -18,6 +18,9 @@ mypy = "2.4.0"
 pytest = "9.1.1"
 pytest-cov = "7.1.0"
 coverage = "7.16.2"
+# Not a gate tool: the gate neither installs nor requires it. The dev group of
+# templates/python/pyproject.toml pins it, for the `-n auto` in its addopts.
+pytest-xdist = "3.8.0"
 import-linter = "2.15"
 reuse = "6.2.0"
 pip-audit = "2.10.1"

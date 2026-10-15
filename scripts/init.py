@@ -29,7 +29,12 @@ It commits nothing: review the files, commit them on a branch, open a PR.
 
 A Python repository adopts the AIRIA standard with one workflow that calls
 `reusable-python-gate.yml` (with no pull-request workflow and a pyproject.toml,
-this script writes it as `.github/workflows/ci.yml`), then:
+this script writes it as `.github/workflows/ci.yml`). In a pyproject.toml it
+adds the standard's blocks from airia-ci's `templates/python/pyproject.toml`
+([tool.ruff], [tool.pyright], [tool.pytest.ini_options], [tool.coverage] and
+the dev group's gate tools at their pins): a table that exists is kept as it
+is, a dev-group entry that exists is kept at its version, and each is named.
+It ends with the steps that remain. Then:
 
     python3 init.py protect
 
@@ -49,6 +54,7 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 TAG = "ci-v5"
@@ -56,6 +62,12 @@ HARNESS = "AIRIA-Systems-GmbH/airia-ci/.github/workflows"
 RULESET = "Restrict Direct Merge on Main"
 THOR = '["self-hosted","linux","x64","thor"]'
 APP_URL = "https://github.com/apps/claude"
+TEMPLATES = "repos/AIRIA-Systems-GmbH/airia-ci/contents/templates/python"
+RAW = "Accept: application/vnd.github.raw"
+# A tool's own file wins over its pyproject.toml table, so a table added beside it would be dead.
+OWN_CONFIG = {"ruff": ("ruff.toml", ".ruff.toml"), "pyright": ("pyrightconfig.json",),
+              "pytest": ("pytest.ini",), "coverage": (".coveragerc",)}
+FETCH = f"gh api {{path}} -H '{RAW}'"
 
 RESPOND = """\
 name: Claude
@@ -310,6 +322,111 @@ def wire_review(root: Path, branch: str, runner: str) -> tuple[str, list[str]]:
     return path.name, checks
 
 
+def template(name: str) -> str:
+    """A file of airia-ci's templates/python, from its default branch, as init.py itself is."""
+    p = gh("api", f"{TEMPLATES}/{name}", "-H", RAW)
+    if p.returncode:
+        raise RuntimeError(f"could not fetch templates/python/{name}: {(p.stdout + p.stderr).strip()}")
+    return p.stdout
+
+
+def norm(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement(spec: str) -> tuple[str, tuple[int, ...] | None]:
+    """(normalised name, its `==` version or None) of a dependency string."""
+    m = re.match(r"\s*([A-Za-z0-9._-]+)(?:\[[^]]*\])?\s*(?:==\s*([0-9][0-9.]*))?", spec)
+    name, version = (m.group(1), m.group(2)) if m else (spec, None)
+    return norm(name), tuple(int(x) for x in version.split(".")) if version else None
+
+
+def package(root: Path, project: dict) -> str | None:
+    """The import name `--cov` measures: the project's name, when that package is in the tree."""
+    name = re.sub(r"[-.]+", "_", project.get("name", "")).lower()
+    return name if name and ((root / "src" / name).is_dir() or (root / name).is_dir()) else None
+
+
+def standard_blocks(root: Path) -> list[str]:
+    """Add the standard's pyproject.toml blocks the project lacks; return what the next steps must say."""
+    path = root / "pyproject.toml"
+    text = path.read_text()
+    have = tomllib.loads(text)
+    pkg = package(root, have.get("project", {}))
+    blocks: dict[str, list[str]] = {}
+    for chunk in template("pyproject.toml").split("\n\n"):
+        if m := re.search(r"^\[(tool\.[A-Za-z0-9_-]+|dependency-groups)", chunk, re.M):
+            blocks.setdefault(m.group(1), []).append(chunk.strip("\n"))
+    notes, added = [], []
+    for key, chunks in blocks.items():
+        if key == "dependency-groups":
+            continue
+        tool = key.split(".", 1)[1]
+        if tool in have.get("tool", {}):
+            print(f"kept      [{key}] in pyproject.toml (exists)")
+            continue
+        if own := [f for f in OWN_CONFIG[tool] if (root / f).is_file()]:
+            print(f"kept      {own[0]} ({tool}'s own file, which wins over [{key}])")
+            continue
+        added.append("\n\n".join(chunks).replace("<package>", pkg or "<package>"))
+        print(f"added     [{key}] to pyproject.toml")
+    pytest = have.get("tool", {}).get("pytest", {}).get("ini_options")
+    if pytest is not None and "--cov" not in str(pytest.get("addopts", "")):
+        notes.append('add "--cov=<package>" to addopts under [tool.pytest.ini_options]: the gate fails with '
+                     "no coverage figure")
+    if any(c.count("<package>") for c in added):
+        notes.append("replace <package> in pyproject.toml's addopts with your package's import name")
+    if added:
+        text = text.rstrip("\n") + "\n\n" + "\n\n".join(added) + "\n"
+    text = dev_group(text, have, blocks["dependency-groups"][-1])
+    tomllib.loads(text)  # never write a pyproject.toml uv cannot read
+    path.write_text(text)
+    return notes
+
+
+def dev_group(text: str, have: dict, block: str) -> str:
+    """The dev group with every gate tool of the template: missing ones added, present ones kept."""
+    wanted = re.findall(r'^\s*"([^"]+)",', block, re.M)
+    groups = have.get("dependency-groups")
+    if groups is None:
+        print("added     [dependency-groups] dev to pyproject.toml")
+        return text.rstrip("\n") + "\n\n" + block + "\n"
+    present = {}
+    for spec in groups.get("dev", []):
+        if isinstance(spec, str):
+            name, version = requirement(spec)
+            present[name] = (spec, version)
+    missing = []
+    for spec in wanted:
+        name, pin = requirement(spec)
+        if name not in present:
+            missing.append(spec)
+            print(f"added     {spec} to the dev group")
+        elif present[name][1] is not None and present[name][1] < pin:
+            print(f"warning: the dev group has {present[name][0]}, below the standard's {spec}: "
+                  "the gate refuses it until you raise it")
+        else:
+            print(f"kept      {present[name][0]} in the dev group (exists)")
+    if not missing:
+        return text
+    entries = "".join(f'\n    "{spec}",' for spec in missing)
+    header = re.search(r"^\[dependency-groups\][^\n]*\n", text, re.M)
+    dev = header and re.search(r"^dev\s*=\s*\[", text[header.end():], re.M)
+    if not header or "dev" in groups and not dev:
+        raise RuntimeError("pyproject.toml declares its dev group in a form this script does not edit: "
+                           f"add {', '.join(missing)} to it by hand, then run it again")
+    if "dev" not in groups:
+        return text[:header.end()] + f"dev = [{entries}\n]\n" + text[header.end():]
+    # The `dev = [` inside [dependency-groups]: before the next table, so another table's `dev` is not it.
+    nxt = re.search(r"^\[", text[header.end():], re.M)
+    end = header.end() + nxt.start() if nxt else len(text)
+    if dev.start() > end - header.end():
+        raise RuntimeError("pyproject.toml's dev group is not under its [dependency-groups] header: "
+                           f"add {', '.join(missing)} to it by hand, then run it again")
+    at = header.end() + dev.end()
+    return text[:at] + entries + text[at:]
+
+
 def set_token(repo: str, assume_yes: bool) -> None:
     p = gh("secret", "list", "--repo", repo, "--json", "name", "--jq", ".[].name")
     if p.returncode == 0 and "CLAUDE_CODE_OAUTH_TOKEN" in p.stdout.split():
@@ -420,13 +537,32 @@ def main(argv: list[str] | None = None) -> int:
                   RESPOND.format(harness=HARNESS, tag=TAG, runner=args.runner, gate=gate or "''"))
         write_new(root / ".github/claude-review.md",
                   RULES_MD.format(name=repo.split("/")[1], gate=gate or "<the gate workflow>"))
+        python = (root / "pyproject.toml").is_file()
+        notes = standard_blocks(root) if python else []
         set_token(repo, args.yes)
-        protect(repo, branch, checks, args.yes, update=standard_gate(root) is not None)
-    except (RuntimeError, ValueError) as exc:
+        standard = standard_gate(root)
+        protect(repo, branch, checks, args.yes, update=standard is not None)
+    except (RuntimeError, ValueError, tomllib.TOMLDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"\nNext: install the Claude GitHub App on {repo} if it is not ({APP_URL}), "
-          "then commit the files on a branch and open a pull request.")
+    if not python:
+        print(f"\nNext: install the Claude GitHub App on {repo} if it is not ({APP_URL}), "
+              "then commit the files on a branch and open a pull request.")
+        return 0
+    steps = [f"install the Claude GitHub App on {repo} if it is not ({APP_URL})"]
+    if standard is None:
+        steps.append("your pull-request workflow is not the standard: replace it with the one-file caller of "
+                     "reusable-python-gate.yml (airia-ci HOWTO.md, Quick start), then run this script again")
+    steps += [*notes,
+              "uv lock (pyproject.toml changed), and commit .python-version and uv.lock",
+              "format the tree (uv run ruff format .) and give every file REUSE licence information (reuse lint)",
+              "run the gate's lint and test here: bash <(" + FETCH.format(path=f"{TEMPLATES}/ci-local.sh") + ")",
+              "commit on a branch, open a pull request, merge it when ci / gate and the Claude review are green",
+              "protect the branch: python3 <(" + FETCH.format(
+                  path="repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py") + ") protect"]
+    print("\nNext:")
+    for n, step in enumerate(steps, 1):
+        print(f"  {n}. {step}")
     return 0
 
 

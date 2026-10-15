@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
+> **This README is for airia-ci's maintainers.** If you are adopting airia-ci in a repository, read the **[Quick start guide → HOWTO.md](HOWTO.md#quick-start-adopt-the-standard-in-a-python-repository)**: five steps, in order, each a command.
+
 The shared CI harness for AIRIA repositories, and the distribution channel of the AIRIA quality standard. It has three reusable workflows and six composite actions, consumed at the moving tag `@ci-v5`.
 
 **The standard** is one workflow file in a Python repository, calling `reusable-python-gate.yml`, plus `init.py protect` for the branch. Every repository then runs the same gates, at the versions in `pins.toml`, summed into one required `gate` check and followed by a required Claude review. A project may add to it, never weaken it. [HOWTO.md](HOWTO.md#adopt-the-standard) has the snippet and the rules.
@@ -19,6 +21,7 @@ The shared CI harness for AIRIA repositories, and the distribution channel of th
 | `.github/actions/review-refresh` | When a gate is re-run on the same commit, writes that attempt's gate table into the existing automatic review instead of reviewing again. `review_refresh.py` beside it does the rewrite. |
 | `.github/actions/claude-cli` | A Claude Code build cached on the runner's `/var/cache/ci` volume, refreshed at most once a day. `CLAUDE_CLI_CACHE` moves the cache root; only the tests set it. |
 | `.github/actions/python-toolchain` | The AIRIA Python standard's toolchain: uv and Python from `.python-version`, `uv sync --locked`, and the gate tools on PATH at the versions in `pins.toml`. It refuses an input below the standard (a lower coverage floor, a type checker outside the accepted list), a `uv.lock` that resolves a gate tool below its pin, and a workflow step that runs a tool unpinned (`uvx ruff`, `uv run --with ty`). `toolchain.py` beside it is the logic. |
+| `templates/python/` | What a consumer copies: the standard's `pyproject.toml` blocks (`init.py` adds the missing ones; a test holds their versions to `pins.toml`) and `ci-local.sh`, the gate's lint and test jobs on a laptop. |
 | `pins.toml` | The standard itself: one exact version per gate tool, the allowed Python versions, the 90 % coverage floor and the accepted type checkers. A project may raise a floor, never lower it. |
 | `.github/actions/verified-commit` | Commits a job's working-tree changes as a GitHub-signed ("Verified") commit, through `createCommitOnBranch` and a contents-only token minted for the AIRIA commit App, so no signing key lives on the runner. `verified_commit.py` beside it is the same thing as a CLI. Its contract and limits are its own header. |
 
@@ -32,7 +35,7 @@ To wire a repository, run `scripts/init.py` from the root of its checkout, logge
 python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw')
 ```
 
-It writes the `@claude` caller, the review job (or a placeholder `merge-gate.yml`) and `.github/claude-review.md`, whichever are missing, sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, and offers a ruleset on the default branch. It commits nothing.
+It writes whichever of these are missing: the `@claude` caller; the merge gate, which for a Python repository with no pull-request workflow is `.github/workflows/ci.yml` calling `reusable-python-gate.yml` (the whole standard, with the review), and otherwise the review job appended to the one pull-request workflow (or a placeholder `merge-gate.yml`); `.github/claude-review.md`; and, in a Python repository, the standard's `pyproject.toml` blocks from `templates/python/`. It sets the `CLAUDE_CODE_OAUTH_TOKEN` secret, offers a ruleset on the default branch, and prints the steps that remain. It commits nothing.
 
 The call contract is the header of `reusable-claude-review.yml`; read it before wiring a repository by hand. In short, the caller:
 

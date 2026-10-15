@@ -114,7 +114,7 @@ class Standard(unittest.TestCase):
         # A range or a bare name is what broke SiteBuilder (airia-ci#37).
         tools = self.pins["tools"]
         self.assertEqual(set(tools), {"uv", "ruff", "pyright", "mypy", "pytest", "pytest-cov", "coverage",
-                                      "import-linter", "reuse", "pip-audit", "zizmor", "gitleaks"})
+                                      "pytest-xdist", "import-linter", "reuse", "pip-audit", "zizmor", "gitleaks"})
         for name, version in [*tools.items(), *self.pins["harness"].items()]:
             with self.subTest(tool=name):
                 self.assertRegex(version, r"^\d+(\.\d+)+$")
@@ -141,6 +141,29 @@ class Standard(unittest.TestCase):
         for v in allowed:
             self.assertRegex(v, r"^3\.\d+$")
         self.assertEqual(allowed, sorted(allowed, key=lambda v: int(v.split(".")[1])))
+
+
+class Template(unittest.TestCase):
+    """templates/python: what a consumer copies, in step with the standard it is checked against."""
+
+    def test_the_template_dev_group_is_at_the_pins(self):
+        # A consumer that copies the template must pass the gate's below-the-pin check on its first run.
+        pins = tomllib.loads((ROOT / "pins.toml").read_text())["tools"]
+        dev = tomllib.loads((ROOT / "templates/python/pyproject.toml").read_text())["dependency-groups"]["dev"]
+        found = {}
+        for spec in dev:
+            name, version = re.fullmatch(r"([a-z-]+)(?:\[\w+\])?==([\d.]+)", spec).groups()
+            found[name] = version
+        self.assertEqual(set(found), {"ruff", "pyright", "pytest", "pytest-cov", "pytest-xdist", "coverage"})
+        for name, version in found.items():
+            with self.subTest(tool=name):
+                self.assertEqual(version, pins[name])
+
+    def test_the_template_holds_the_floor_and_measures_a_package(self):
+        tool = tomllib.loads((ROOT / "templates/python/pyproject.toml").read_text())["tool"]
+        self.assertEqual(tool["coverage"]["report"]["fail_under"], 90)
+        self.assertIn("--cov=<package>", tool["pytest"]["ini_options"]["addopts"].split())
+        self.assertIn("auto", tool["pytest"]["ini_options"]["addopts"].split(), "-n auto: ci-local caps it")
 
 
 if __name__ == "__main__":
