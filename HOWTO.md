@@ -82,9 +82,10 @@ What the gate expects of the repository. It fails, and says what is missing, whe
 | Check | What it runs | Required |
 |---|---|---|
 | `ci / lint` | ruff check, ruff format --check, the type checker, import-linter (when configured) | |
-| `ci / test …` | pytest per Python, at the coverage floor | |
+| `ci / changes` | whether the PR touched anything but `docs-paths`; with that input empty, always yes | |
+| `ci / test …` | pytest per Python, at the coverage floor, listing the slowest tests (`--durations`) | |
 | `ci / security` | reuse lint, pip-audit over the locked requirements, gitleaks over the tree, zizmor over `.github/` | |
-| **`ci / gate`** | red unless every job above, and every extra job, succeeded; a skipped job is not a pass | required |
+| **`ci / gate`** | red unless every job above, and every extra job, succeeded; a skipped job is not a pass, except `lint` and `test` on a docs-only PR | required |
 | **`ci / claude-review / claude-review`** | the automatic review, after `gate`, even a red one; with no Claude credential it fails, and says why | required |
 
 The same gates on a laptop, at the versions in `pins.toml`:
@@ -111,9 +112,24 @@ uvx zizmor@<pin> --offline .github
 | `postgres-image`, `qdrant-image`, `job-env` | service containers for the tests; `CI_POSTGRES_DSN` / `CI_QDRANT_URL` mapped onto your names | |
 | `extra-jobs` | your own gate jobs, counted by `ci / gate` | see below |
 | `runner` | GitHub's runners for a public repository (`'["ubuntu-24.04"]'`) | |
+| `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
+| `docs-paths` | the docs-only fast path, see below | some paths are never docs |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
 
-There is no `skip-*` input, and none will be added. An extra job of your own goes before the gate, and its result is handed in:
+There is no `skip-*` input, and none will be added.
+
+**The docs-only fast path** (`docs-paths`, off by default). A PR that changes only documentation need not wait for the test matrix. Name your documentation as git glob pathspecs, one per line:
+
+```yaml
+    with:
+      docs-paths: |
+        docs/**
+        **/*.md
+```
+
+When every path a pull request changes matches one (for a rename, both the old and the new path), `ci / lint` and `ci / test` are skipped and `ci / gate` passes on the rest: `security`, which still checks the docs for REUSE information and secrets, and every extra job. In glob pathspecs `*` stops at `/`, so `*.md` is the top level only and `**/*.md` is every directory. Everything still runs on a push to the default branch, on any event but a pull request, and on a PR that changes no file. Some paths are never docs, whatever the patterns say: `.airia/` (suites read it), `.github/`, every `tests/` or `test/` directory, Python sources, and the files that configure the tools or the build (any `*.toml`, `uv.lock`, `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`, `requirements*.txt`, `Dockerfile*`). Name your documentation narrowly all the same: anything else a pattern matches, such as a fixture outside `tests/`, skips the tests. The required checks stay `ci / gate` and the review, so the ruleset does not change.
+
+An extra job of your own goes before the gate, and its result is handed in:
 
 ```yaml
 jobs:
@@ -133,7 +149,7 @@ jobs:
 
 ### May add, may not weaken
 
-- **May:** raise the floor; test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin.
+- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin.
 - **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check.
 
 The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
