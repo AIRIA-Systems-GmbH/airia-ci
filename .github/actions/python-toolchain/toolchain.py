@@ -6,6 +6,8 @@
     toolchain.py [--pins FILE] check      the project's uv.lock and workflows against the pins
     toolchain.py [--pins FILE] install    put the gate tools on GITHUB_PATH, at the pinned or locked version
     toolchain.py [--pins FILE] services   export the service addresses and the caller's job-env to GITHUB_ENV
+    toolchain.py [--pins FILE] ruff [--write-baseline]
+                                          the ruff floor and the suppression ratchet (below)
 
 Run from the root of the caller's checkout. Inputs come from the environment:
 PYTHON_VERSION (empty: `.python-version`), TYPE_CHECKER, COVERAGE_FLOOR,
@@ -21,7 +23,25 @@ the pin. The tools that must import the project (pytest, pytest-cov, coverage;
 mypy under mypy-strict; import-linter when it is configured) must be locked:
 they run inside the project's own environment, which uv.lock alone defines.
 
-`standard` uses only the standard library: it runs before uv is installed.
+The ruff floor. The `select` of templates/python/pyproject.toml is the
+floor: every rule it enables (as `ruff --show-settings` resolves it, at the
+ruff that runs) must be enabled by each of the project's ruff configurations.
+A narrower `select`, or a global `ignore`/`extend-ignore` of a floor rule, is
+refused; extending is free. A `per-file-ignores` entry may switch floor rules
+off only for test paths (tests/, test/, conftest.py, test_*.py, *_test.py);
+anywhere else the finding takes a `# noqa`, which the ratchet counts.
+
+The ratchet. `.airia/ruff-baseline.json` records the `# noqa` suppressions per
+rule (findings with `--ignore-noqa` minus findings without). A count above its
+baseline is refused; with no baseline file every suppression is only warned
+about, until `--write-baseline` records it. A count below its baseline passes,
+with a notice that the baseline can fall. `.airia/` is never docs, so a PR
+that touches the baseline always runs the lint job. The count is held to the
+file, not to the base branch's copy: a baseline raised in a PR (by hand or by
+`--write-baseline`) passes the gate and is caught in the diff and the review.
+
+`standard` and `ruff` use only the standard library: `standard` runs before uv
+is installed, and `ruff` runs with ruff on PATH and nothing else.
 `check` needs PyYAML (the action runs it through `uv run --with pyyaml==<pin>`).
 """
 
@@ -37,6 +57,7 @@ import shlex
 import subprocess
 import sys
 import tarfile
+import tempfile
 import tomllib
 import urllib.request
 from pathlib import Path
@@ -50,6 +71,13 @@ STANDALONE = {"ruff": "ruff", "pyright": "pyright", "reuse": "reuse", "pip-audit
 # What `uv tool install` gets for a tool: pyright brings its own Node.js.
 SPEC = {"pyright": "pyright[nodejs]"}
 TOOLS_DIR = "airia-tools"
+TEMPLATE = HERE.parents[2] / "templates/python/pyproject.toml"
+BASELINE = ".airia/ruff-baseline.json"
+RULE = re.compile(r"\(([A-Z]+[0-9]+)\)")
+# Where a per-file ignore may switch a floor rule off (proposed, pending Andrea, 2026-10-15).
+TEST_PATH = re.compile(r"(^|/)(tests?|testing)(/|$)|(^|/)conftest\.py$|(^|/)test_[^/]*\.py$|_test\.py$")
+ONBOARD = ("ci-local.sh --onboard (ruff check --fix, ruff format, ruff check --add-noqa, then the baseline; "
+           "airia-ci HOWTO.md, Quick start step 2)")
 
 
 class Refused(Exception):
@@ -268,6 +296,8 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
         if p.returncode:
             raise Refused(f"`uv tool install {tool}=={v}` failed: {p.stderr.strip()}")
         done.append(f"{tool} {v} ({why})")
+    # The later steps of the job run this file's `ruff` command by this name.
+    output("AIRIA_TOOLCHAIN", str(HERE / "toolchain.py"), "GITHUB_ENV")
     if "zizmor" in env.get("TOOLS", "").split():
         # The standard's zizmor policy: hash pins, except this harness's own moving tag.
         output("ZIZMOR_CONFIG", str(HERE / "zizmor.yml"), "GITHUB_ENV")
@@ -277,6 +307,139 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
         if venv_bin.is_dir():
             fh.write(f"{venv_bin}\n")
     return done
+
+
+def ruff_settings(config: Path) -> tuple[set[str], list[tuple[str, bool, set[str]]]]:
+    """(enabled rules, per-file ignores as (pattern, negated, rules)) of one config, as ruff resolves it."""
+    p = subprocess.run(["ruff", "check", "--show-settings", str(config)], capture_output=True, text=True, check=False)
+    if p.returncode:
+        raise Refused(f"`ruff check --show-settings {config}` failed: {(p.stdout + p.stderr).strip()}")
+    enabled: set[str] = set()
+    ignores: list[tuple[str, bool, set[str]]] = []
+    block, data = None, False
+    for line in p.stdout.splitlines():
+        if line.startswith("linter.rules.enabled = ["):
+            block = "enabled"
+        elif line.startswith("linter.per_file_ignores = {"):
+            block = "ignores"
+        elif block == "enabled":
+            if line == "]":
+                block = None
+            enabled.update(RULE.findall(line))
+        elif block == "ignores":
+            if line == "}":
+                block = None
+            elif m := re.match(r'\s*basename_matcher = "(.*)"$', line):
+                ignores.append((m.group(1), False, set()))
+            elif line.strip() == "negated = true" and ignores:
+                ignores[-1] = (ignores[-1][0], True, ignores[-1][2])
+            elif line.strip() == "data = [":
+                data = True
+            elif data and line == "]":
+                data = False
+            elif data and ignores:
+                ignores[-1][2].update(RULE.findall(line))
+    if not enabled:
+        raise Refused(f"`ruff check --show-settings {config}` listed no enabled rules: this ruff's output is not "
+                      "one the standard can read")
+    return enabled, ignores
+
+
+def ruff_floor() -> set[str]:
+    """Every rule the template's ruff configuration enables, resolved by the ruff that runs."""
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "pyproject.toml"
+        config.write_text(TEMPLATE.read_text())
+        return ruff_settings(config)[0]
+
+
+def ruff_configs(root: Path) -> list[Path]:
+    """The project's ruff configurations: the root pyproject.toml always, then every tracked one outside tests."""
+    names = ("pyproject.toml", "ruff.toml", ".ruff.toml")
+    p = subprocess.run(["git", "ls-files", "--", *(f"*{n}" for n in names)], cwd=root,
+                       capture_output=True, text=True, check=False)
+    tracked = p.stdout.split() if p.returncode == 0 else [n for n in names if (root / n).is_file()]
+    found = [root / "pyproject.toml"] if (root / "pyproject.toml").is_file() else []
+    for rel in tracked:
+        path = root / rel
+        if path in found or Path(rel).name not in names or TEST_PATH.search(rel) or not path.is_file():
+            continue
+        if path.name != "pyproject.toml" or re.search(r"^\[tool\.ruff", path.read_text(), re.M):
+            found.append(path)
+    return found
+
+
+def codes(rules: set[str], most: int = 12) -> str:
+    listed = sorted(rules)
+    return ", ".join(listed[:most]) + (f" and {len(listed) - most} more" if len(listed) > most else "")
+
+
+def floor_problems(root: Path, floor: set[str]) -> list[str]:
+    errors: list[str] = []
+    for config in ruff_configs(root):
+        where = config.relative_to(root).as_posix()
+        enabled, ignores = ruff_settings(config)
+        if missing := floor - enabled:
+            errors.append(f"{where}: ruff does not enable the floor's {codes(missing)}: a narrower `select` or an "
+                          "`ignore` of a floor rule; the floor is the `select` of airia-ci's "
+                          "templates/python/pyproject.toml, which a project may extend, never narrow")
+        for pattern, negated, rules in ignores:
+            off = rules & floor
+            shown = "!" * negated + pattern
+            message = (f"{where}: per-file-ignores {shown!r} switches off the floor's {codes(off)}: only test "
+                       "paths may; elsewhere mark the line `# noqa: <rule>`, which the suppression baseline counts")
+            if off and (negated or not TEST_PATH.search(pattern)) and message not in errors:
+                errors.append(message)
+    return errors
+
+
+def suppressions(root: Path, paths: list[str]) -> dict[str, int]:
+    """`# noqa` suppressions per rule: what ruff finds when told to ignore them, minus what it finds otherwise."""
+    def findings(*extra: str) -> dict[str, int]:
+        p = subprocess.run(["ruff", "check", "--exit-zero", "--output-format", "json", *extra, *paths],
+                           cwd=root, capture_output=True, text=True, check=False)
+        if p.returncode:
+            raise Refused(f"`ruff check` failed: {(p.stdout + p.stderr).strip()}")
+        counts: dict[str, int] = {}
+        for finding in json.loads(p.stdout):
+            if finding.get("code"):
+                counts[finding["code"]] = counts.get(finding["code"], 0) + 1
+        return counts
+    every, shown = findings("--ignore-noqa"), findings()
+    return {code: n - shown.get(code, 0) for code, n in sorted(every.items()) if n > shown.get(code, 0)}
+
+
+def ruff(pins: dict, env: dict, root: Path, write: bool) -> list[str]:
+    """Hold the project to the ruff floor and its suppression baseline; return the notices to print."""
+    errors = floor_problems(root, ruff_floor())
+    if errors and pins["standard"].get("ruff-floor") == "warning":
+        notices = [f"::warning title=AIRIA standard (ruff floor)::{e}" for e in errors]
+        errors = []
+    else:
+        notices = []
+    now = suppressions(root, shlex.split(env.get("PATHS", "")) or ["."])
+    total = sum(now.values())
+    baseline = root / BASELINE
+    if write:
+        baseline.parent.mkdir(parents=True, exist_ok=True)
+        baseline.write_text(json.dumps(now, indent=2) + "\n")
+        notices.append(f"wrote {BASELINE}: {total} suppressions ({codes(set(now)) or 'none'}); commit it")
+    elif not baseline.is_file():
+        if total:
+            notices.append(f"::warning title=Ruff suppressions::{total} `# noqa` suppressions ({codes(set(now))}) "
+                           f"and no {BASELINE} to hold them: record it once with {ONBOARD}")
+    else:
+        recorded = json.loads(baseline.read_text())
+        for code, n in now.items():
+            if n > recorded.get(code, 0):
+                errors.append(f"{code} is suppressed {n} times, above the {recorded.get(code, 0)} in {BASELINE}: "
+                              "fix the finding instead of adding `# noqa`; the baseline may only fall")
+        if any(now.get(code, 0) < n for code, n in recorded.items()):
+            notices.append(f"::notice title=Ruff suppressions::fewer suppressions than {BASELINE} records: lower it "
+                           "with `ci-local.sh --write-baseline` and commit it")
+    if errors:
+        raise Refused(*errors)
+    return notices
 
 
 def services(env: dict) -> dict[str, str]:
@@ -314,7 +477,9 @@ def services(env: dict) -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--pins", type=Path, default=PINS)
-    ap.add_argument("command", choices=["standard", "check", "install", "services"])
+    ap.add_argument("command", choices=["standard", "check", "install", "services", "ruff"])
+    ap.add_argument("--write-baseline", action="store_true",
+                    help=f"ruff: record the current suppressions as {BASELINE}")
     args = ap.parse_args(argv)
     pins, env, root = load_pins(args.pins), dict(os.environ), Path.cwd()
     try:
@@ -327,6 +492,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "install":
             for line in install(pins, env, root):
                 print(line)
+        elif args.command == "ruff":
+            for line in ruff(pins, env, root, args.write_baseline):
+                print(line)
+            print("ruff: checked the floor and the suppressions")
         else:
             exported = services(env)
             for name, value in exported.items():

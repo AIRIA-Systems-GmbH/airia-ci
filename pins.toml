@@ -46,3 +46,7 @@ coverage-floor = 90
 type-checkers = ["pyright", "mypy-strict"]
 # mypy --strict is accepted only where it was already the gate (2026-10-14).
 mypy-strict-repositories = ["AIRIA-Systems-GmbH/AIRIA-process"]
+# The ruff floor, the `select` of templates/python/pyproject.toml (2026-10-15):
+# "error" refuses a project whose ruff configuration enables less, "warning"
+# only reports it, so a release can reach callers before they have upgraded.
+ruff-floor = "error"

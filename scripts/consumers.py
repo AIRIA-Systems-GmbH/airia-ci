@@ -132,7 +132,7 @@ def drift(repo: str, newest: str) -> list[str]:
         (root / ".github/workflows").mkdir(parents=True)
         for path, text in workflows(repo).items():
             (root / path).write_text(text)
-        files = {name: raw(repo, name) for name in ("pyproject.toml", "uv.lock")}
+        files = {name: raw(repo, name) for name in ("pyproject.toml", "uv.lock", "ruff.toml", ".ruff.toml")}
         for name, text in files.items():
             if text is not None:
                 (root / name).write_text(text)
@@ -172,6 +172,11 @@ def drift(repo: str, newest: str) -> list[str]:
                 found.append("type-checker `mypy-strict` is accepted only where it was already the gate; use pyright")
             if "ty" in tool or "ty" in lock:
                 found.append("ty is configured or locked: the standard does not accept it before its 1.0; use pyright")
+            # The root configuration only: the scan reads files, it has no checkout.
+            try:
+                found += [f"ruff floor: {p}" for p in toolchain.floor_problems(root, toolchain.ruff_floor())]
+            except toolchain.Refused as exc:
+                found += [f"ruff floor not checked: {reason}" for reason in exc.args]
     rules = ruleset(repo)
     if rules is None:
         found.append(f"no {init.RULESET!r} ruleset: run `init.py protect`")

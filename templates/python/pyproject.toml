@@ -10,11 +10,14 @@
 # allowed, an older one is refused by the gate. Change any setting here except
 # the floor; HOWTO.md's "May add, may not weaken" says what is fixed.
 
-# The portfolio baseline, the union of the strictest generic rule sets in use
-# (2026-10-15): AIRIA-process (E, W, F, I, B, C4, UP) and Portfolio-Dashboard
-# (adds SIM), at the 100-column width most repositories use. AIRIA-framework's
-# extra rules (D214, TID251) are about its own docs and its crypto owner, so
-# they stay there.
+# THE RUFF FLOOR (Andrea, 2026-10-15): every rule this `select` enables, less
+# E501, must stay enabled; a project may extend it, never narrow it, and the
+# gate refuses a narrower select or a global ignore of one of its rules (only
+# test paths may ignore them per file). It is the union of the strictest
+# generic rule sets in use: AIRIA-process (E, W, F, I, B, C4, UP) and
+# Portfolio-Dashboard (adds SIM), at the 100-column width most repositories
+# use. AIRIA-framework's extra rules (D214, TID251) are about its own docs and
+# its crypto owner, so they stay there.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

@@ -11,6 +11,13 @@ permission rule that merely names one are not; each tool runs at the locked
 version when the project locks it, else at the pin; gitleaks is refused unless
 its digest is the pinned one.
 
+The ruff floor: a project's ruff configuration (each one, nested ones too)
+must enable every rule the template's `select` enables; a narrower select or
+a global ignore of a floor rule is refused, a wider one is free, and only a
+test path may switch a floor rule off per file. The ratchet: `# noqa`
+suppressions per rule may not rise above `.airia/ruff-baseline.json`; with no
+baseline they are only warned about; `--write-baseline` records them.
+
 Run: python3 -m unittest discover -s tests
 """
 
@@ -22,13 +29,15 @@ import io
 import json
 import os
 import platform
+import re
+import subprocess
 import sys
 import tarfile
 import textwrap
 import unittest
 from unittest import mock
 
-from steps import ROOT, Runner
+from steps import FAKE_RUFF, ROOT, Runner
 
 ACTION = ROOT / ".github/actions/python-toolchain/action.yml"
 SCRIPT = ACTION.parent / "toolchain.py"
@@ -250,6 +259,8 @@ class Install(unittest.TestCase):
         ])
         self.assertEqual(done, [f"ruff {T['ruff']} (pinned)", f"pyright {T['pyright']} (pinned)"])
         self.assertEqual(self.path.read_text().splitlines(), [f"{base}/bin"])
+        self.assertIn(f"AIRIA_TOOLCHAIN={SCRIPT}", self.r.github_env.read_text().splitlines(),
+                      "the gate's later steps run the ruff floor by this name")
 
     def test_a_locked_tool_runs_at_the_locked_version(self):
         self.assertEqual(self.install("reuse"), ["reuse 99.1 (locked)"])
@@ -265,7 +276,7 @@ class Install(unittest.TestCase):
 
     def test_zizmor_brings_the_standard_policy(self):
         self.install("zizmor")
-        self.assertEqual(self.r.github_env.read_text(), f"ZIZMOR_CONFIG={ACTION.parent / 'zizmor.yml'}\n")
+        self.assertEqual(self.r.github_env.read_text().splitlines()[-1], f"ZIZMOR_CONFIG={ACTION.parent / 'zizmor.yml'}")
 
     def test_an_unknown_tool_is_refused(self):
         with self.assertRaises(tc.Refused) as cm:
@@ -421,6 +432,162 @@ class Main(unittest.TestCase):
                 mock.patch.object(sys, "stdout", out):
             self.assertEqual(tc.main(["check"]), 1)
         self.assertIn("::error title=AIRIA standard::uv.lock is missing", out.getvalue())
+
+
+TEMPLATE_RUFF = """\
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+ignore = ["E501"]
+"""
+
+
+class RuffFloor(unittest.TestCase):
+    def setUp(self):
+        self.r = Runner(self)
+        self.r.tool("ruff", FAKE_RUFF)
+        self.root = self.r.tmp / "project"
+        self.root.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+
+    def project(self, pyproject: str, **files: str) -> None:
+        (self.root / "pyproject.toml").write_text("[project]\nname = 'p'\n" + pyproject)
+        for rel, text in files.items():
+            path = self.root / re.sub(r"_(py|toml)$", r".\1", rel.replace("__", "/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
+
+    def ruff(self, write: bool = False, pins: dict = PINS, **env) -> list[str]:
+        env = self.r.env(**env)
+        with mock.patch.dict(os.environ, env):
+            return tc.ruff(pins, env, self.root, write)
+
+    def refused(self, **kw) -> list[str]:
+        with self.assertRaises(tc.Refused) as cm:
+            self.ruff(**kw)
+        return list(cm.exception.args)
+
+    def test_the_floor_is_what_the_template_enables(self):
+        # The template is the one source: its `ignore` of E501 is part of the floor.
+        with mock.patch.dict(os.environ, self.r.env()):
+            floor = tc.ruff_floor()
+        self.assertEqual(floor, {"B006", "B008", "C401", "E401", "E402", "E711", "F401", "F811", "I001",
+                                 "SIM108", "UP031", "W291"})
+        self.assertIn('select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]', tc.TEMPLATE.read_text())
+
+    def test_the_baseline_is_never_docs_so_a_pr_that_raises_it_runs_lint(self):
+        gate = (ROOT / ".github/workflows/reusable-python-gate.yml").read_text()
+        always_code = re.search(r"always_code=\((.*?)\)", gate, re.S).group(1).split()
+        self.assertIn(tc.BASELINE.split("/")[0], always_code)
+
+    def test_a_project_on_the_template_passes(self):
+        # init.py writes the template's [tool.ruff] where a project has none, so no select means this.
+        self.project(TEMPLATE_RUFF)
+        self.assertEqual(self.ruff(), [])
+
+    def test_no_ruff_configuration_is_ruffs_default_set_and_refused(self):
+        self.project("")
+        (reason,) = self.refused()
+        self.assertIn("pyproject.toml: ruff does not enable the floor's B006, B008, C401, I001, SIM108, UP031, W291",
+                      reason)
+
+    def test_a_narrower_select_is_refused_and_names_the_missing_rules(self):
+        self.project(TEMPLATE_RUFF.replace('"C4", "UP", "SIM"', '"UP"'))
+        (reason,) = self.refused()
+        self.assertIn("does not enable the floor's C401, SIM108: a narrower `select`", reason)
+
+    def test_a_wider_select_passes(self):
+        self.project(TEMPLATE_RUFF + 'extend-select = ["RUF"]\n')
+        self.assertEqual(self.ruff(), [])
+        self.project(TEMPLATE_RUFF.replace('select = ["E"', 'select = ["ALL", "E"'))
+        self.assertEqual(self.ruff(), [])
+
+    def test_a_global_ignore_of_a_floor_rule_is_a_narrowing(self):
+        self.project(TEMPLATE_RUFF.replace('ignore = ["E501"]', 'ignore = ["E501", "B008"]'))
+        self.assertIn("the floor's B008", self.refused()[0])
+        self.project(TEMPLATE_RUFF + 'extend-ignore = ["UP"]\n')
+        self.assertIn("the floor's UP031", self.refused()[0])
+
+    def test_only_a_test_path_may_switch_floor_rules_off_per_file(self):
+        allowed = ["tests/**", "src/pkg/tests/x.py", "test/a.py", "conftest.py", "src/test_a.py", "a_test.py"]
+        lines = "".join(f'"{p}" = ["F401", "E402"]\n' for p in allowed)
+        self.project(TEMPLATE_RUFF + "[tool.ruff.lint.per-file-ignores]\n" + lines + '"docs/**" = ["RUF012"]\n')
+        self.assertEqual(self.ruff(), [], "a test path, or a rule outside the floor, is free")
+        self.project(TEMPLATE_RUFF + '[tool.ruff.lint.per-file-ignores]\n"src/pkg/__init__.py" = ["F401"]\n'
+                     '"!tests/**" = ["E402"]\n"contests/x.py" = ["E401"]\n')
+        reasons = self.refused()
+        self.assertEqual(len(reasons), 3)
+        self.assertIn("per-file-ignores 'src/pkg/__init__.py' switches off the floor's F401: only test paths may",
+                      reasons[0])
+        self.assertIn("'!tests/**' switches off the floor's E402", reasons[1], "a negated test path is everything else")
+
+    def test_every_tracked_configuration_is_held_except_under_tests(self):
+        self.project(TEMPLATE_RUFF, packages__a__pyproject_toml="[tool.ruff.lint]\nselect = ['F']\n",
+                     packages__b__pyproject_toml="[project]\nname = 'b'\n",
+                     tools__ruff_toml="[lint]\nselect = ['E']\n",
+                     tests__fixtures__pyproject_toml="[tool.ruff.lint]\nselect = ['F']\n")
+        reasons = self.refused()
+        self.assertEqual([r.split(":")[0] for r in reasons], ["packages/a/pyproject.toml", "tools/ruff.toml"])
+
+    def test_suppressions_without_a_baseline_are_warned_not_refused(self):
+        self.project(TEMPLATE_RUFF, src__a_py="x  # FINDING(F401) # noqa\ny  # FINDING(E402)\nSYNTAX\n")
+        (notice,) = self.ruff()
+        self.assertIn("::warning title=Ruff suppressions::1 `# noqa` suppressions (F401) and no "
+                      ".airia/ruff-baseline.json", notice)
+        self.assertIn("--onboard", notice)
+
+    def test_the_baseline_is_written_sorted_and_may_only_fall(self):
+        src = "a  # FINDING(F401) # noqa\nb  # FINDING(F401) # noqa\nc  # FINDING(E402) # noqa: E402\n"
+        self.project(TEMPLATE_RUFF, src__a_py=src)
+        (wrote,) = self.ruff(write=True)
+        self.assertIn("wrote .airia/ruff-baseline.json: 3 suppressions (E402, F401)", wrote)
+        baseline = self.root / tc.BASELINE
+        self.assertEqual(baseline.read_text(), '{\n  "E402": 1,\n  "F401": 2\n}\n')
+        self.assertEqual(self.ruff(), [], "at the baseline: green, nothing to say")
+        (self.root / "src/a.py").write_text(src + "d  # FINDING(F401) # noqa\ne  # FINDING(UP031) # noqa\n")
+        reasons = self.refused()
+        self.assertEqual([r.split(" ")[0] for r in reasons], ["F401", "UP031"])
+        self.assertIn("F401 is suppressed 3 times, above the 2 in .airia/ruff-baseline.json", reasons[0])
+        (self.root / "src/a.py").write_text("a  # FINDING(F401) # noqa\nc  # FINDING(E402)\n")
+        (notice,) = self.ruff()
+        self.assertIn("::notice title=Ruff suppressions::fewer suppressions", notice)
+        self.ruff(write=True)
+        self.assertEqual(json.loads(baseline.read_text()), {"F401": 1}, "the documented command lowers it")
+
+    def test_the_paths_input_bounds_the_count(self):
+        self.project(TEMPLATE_RUFF, src__a_py="a  # FINDING(F401) # noqa\n")
+        self.assertEqual(self.ruff(PATHS="src"), self.ruff(PATHS=""))
+
+    def test_a_warning_floor_reports_without_refusing(self):
+        self.project("")
+        pins = {**PINS, "standard": {**PINS["standard"], "ruff-floor": "warning"}}
+        (notice,) = self.ruff(pins=pins)
+        self.assertTrue(notice.startswith("::warning title=AIRIA standard (ruff floor)::pyproject.toml: ruff does "
+                                          "not enable"))
+
+    def test_a_ruff_that_fails_or_cannot_be_read_is_refused(self):
+        self.project(TEMPLATE_RUFF)
+        self.assertIn("--show-settings", self.refused(FAKE_RUFF_FAIL="--show-settings")[0])
+        self.assertIn("listed no enabled rules", self.refused(FAKE_RUFF_EMPTY="1")[0])
+        self.assertIn("`ruff check` failed: fake ruff: failing --output-format", self.refused(
+            FAKE_RUFF_FAIL="--output-format")[0])
+
+    def test_outside_a_git_checkout_the_root_configurations_are_read(self):
+        root = self.r.tmp / "plain"
+        root.mkdir()
+        (root / "ruff.toml").write_text("[lint]\nselect = ['F']\n")
+        with mock.patch.dict(os.environ, self.r.env()):
+            self.assertEqual([p.name for p in tc.ruff_configs(root)], ["ruff.toml"])
+
+    def test_main_runs_it_and_writes_the_baseline_on_request(self):
+        self.project(TEMPLATE_RUFF, src__a_py="a  # FINDING(F401) # noqa\n")
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.r.env()), mock.patch.object(tc.Path, "cwd", return_value=self.root), \
+                mock.patch.object(sys, "stdout", out):
+            self.assertEqual(tc.main(["ruff", "--write-baseline"]), 0)
+            self.assertEqual(tc.main(["ruff"]), 0)
+        self.assertIn("ruff: checked the floor and the suppressions", out.getvalue())
+        self.assertTrue((self.root / tc.BASELINE).is_file())
 
 
 class Fixture(unittest.TestCase):

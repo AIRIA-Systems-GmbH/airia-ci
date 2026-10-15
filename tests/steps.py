@@ -144,6 +144,58 @@ FAKE_GH = textwrap.dedent(
     """
 )
 
+# A fake `ruff`, enough of it for the floor and the ratchet. Its rules are the
+# codes below; a selector enables every code it prefixes, as ruff's do.
+# `--show-settings CONFIG` prints the real layout (`name (CODE),` lines in
+# `linter.rules.enabled` and in each per-file ignore's `data`); `check
+# --output-format json` reports one finding per `FINDING(CODE)` in a .py file,
+# unless that line carries a noqa comment (or `--ignore-noqa` is given); a `SYNTAX` line
+# is a finding with no code. FAKE_RUFF_FAIL=<subcommand flag> makes that call fail.
+FAKE_RUFF = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import json, os, pathlib, re, sys, tomllib
+    args = sys.argv[1:]
+    fail = os.environ.get("FAKE_RUFF_FAIL")
+    if fail and fail in args:
+        print(f"fake ruff: failing {fail}", file=sys.stderr); sys.exit(2)
+    RULES = ["B006", "B008", "C401", "E401", "E402", "E501", "E711", "F401", "F811", "I001", "RUF012",
+             "SIM108", "UP031", "W291"]
+    def expand(selectors):
+        return {r for r in RULES for s in selectors if s == "ALL" or r.startswith(s)}
+    def lines(codes):
+        return "".join(f"\\tsome-rule ({c}),\\n" for c in sorted(codes))
+    if "--show-settings" in args:
+        if os.environ.get("FAKE_RUFF_EMPTY"):
+            print("linter.rules.enabled = [\\n]"); sys.exit(0)
+        config = pathlib.Path(args[-1])
+        data = tomllib.loads(config.read_text())
+        ruff = data if config.name != "pyproject.toml" else data.get("tool", {}).get("ruff", {})
+        lint = ruff.get("lint", {})
+        enabled = expand(lint.get("select", ["E4", "E7", "E9", "F"]) + lint.get("extend-select", []))
+        enabled -= expand(lint.get("ignore", []) + lint.get("extend-ignore", []))
+        per_file = {**lint.get("per-file-ignores", {}), **lint.get("extend-per-file-ignores", {})}
+        out = f'Resolved settings for: "{config}"\\nlinter.rules.enabled = [\\n{lines(enabled)}]\\n'
+        out += f"linter.rules.should_fix = [\\n{lines(RULES)}]\\nlinter.per_file_ignores = {{\\n"
+        for pattern, codes in per_file.items():
+            negated = pattern.startswith("!")
+            out += (f'\\tabsolute_matcher = "{config.parent}/{pattern.lstrip("!")}"\\n'
+                    f'basename_matcher = "{pattern.lstrip("!")}"\\nnegated = {str(negated).lower()}\\n'
+                    f"data = [\\n{lines(expand(codes))}]\\n\\n")
+        print(out + "}\\nlinter.per_file_target_version = {}")
+        sys.exit(0)
+    found = []
+    for path in sorted(pathlib.Path(".").rglob("*.py")):
+        for line in path.read_text().splitlines():
+            if "SYNTAX" in line:
+                found.append({"code": None, "filename": str(path)})
+            for code in re.findall(r"FINDING\\((\\w+)\\)", line):
+                if "--ignore-noqa" in args or "# noqa" not in line:
+                    found.append({"code": code, "filename": str(path)})
+    print(json.dumps(found))
+    """
+)
+
 
 class Runner:
     """A scratch directory with a fake `gh` (and any other fake tools) first on PATH."""

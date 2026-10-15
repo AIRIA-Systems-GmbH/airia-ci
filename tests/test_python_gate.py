@@ -162,6 +162,16 @@ class Steps(unittest.TestCase):
     def test_ruff_passes_when_both_pass(self):
         self.assertEqual(self.run_step("Ruff", PATHS=".").returncode, 0)
 
+    def test_the_ruff_floor_step_runs_the_toolchains_check_on_the_paths(self):
+        # The python-toolchain action exports AIRIA_TOOLCHAIN; its `ruff` command is tested with the action.
+        fake = self.r.tmp / "toolchain.py"
+        fake.write_text('import os, sys\nprint("toolchain", *sys.argv[1:], os.environ["PATHS"])\n'
+                        'sys.exit(int(os.environ.get("FAKE_FLOOR_EXIT", "0")))\n')
+        p = self.run_step("Ruff floor and suppressions", PATHS="src tests", AIRIA_TOOLCHAIN=str(fake))
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, "toolchain ruff src tests"))
+        p = self.run_step("Ruff floor and suppressions", PATHS=".", AIRIA_TOOLCHAIN=str(fake), FAKE_FLOOR_EXIT="1")
+        self.assertEqual(p.returncode, 1)
+
     def test_pyright_checks_against_the_project_environment(self):
         p = self.run_step("Type check", PATHS="src", TYPE_CHECKER="pyright")
         self.assertEqual(p.returncode, 0)
