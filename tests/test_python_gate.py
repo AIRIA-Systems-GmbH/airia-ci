@@ -366,7 +366,8 @@ class Changes(unittest.TestCase):
     def test_some_paths_are_never_docs_whatever_the_patterns_say(self):
         # `.airia/` is read by suites; workflows, tests and tool configuration change what the gates do.
         for path in (".airia/notes.md", ".github/workflows/ci.yml", "tests/data/case.md", "src/tests/case.json", "pyproject.toml",
-                     "uv.lock", ".python-version", "docs/conf.py", "pytest.ini"):
+                     "uv.lock", ".python-version", "docs/conf.py", "pytest.ini", "ruff.toml", ".coveragerc",
+                     "requirements-dev.txt", "docker/Dockerfile"):
             with self.subTest(path=path):
                 git(self.repo, "reset", "-q", "--hard", self.base)
                 git(self.repo, "branch", "-qD", "pr") if "pr" in git(self.repo, "branch") else None

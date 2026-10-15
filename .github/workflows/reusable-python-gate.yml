@@ -67,8 +67,9 @@ name: AIRIA Python gate (shared)
 # but a pull request (a push to the default branch) runs everything. Some paths
 # are never docs, whatever the patterns say: `.airia/` (suites read it),
 # `.github/`, any `tests/` or `test/` directory, Python sources, and the files
-# that configure the tools (`pyproject.toml`, `uv.lock`, `.python-version`,
-# `setup.cfg`, `*.ini`, `.importlinter`).
+# that configure the tools or the build (any `*.toml`, `uv.lock`,
+# `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`,
+# `requirements*.txt`, `Dockerfile*`).
 # Then the automatic Claude review, chained after `gate` and run even when it
 # is red (a red gate is review input). On a PR it never skips silently: no
 # Claude credential fails it with the reason.
@@ -220,8 +221,9 @@ jobs:
             done
             not_docs="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- . "${excluded[@]}")"
             # Never docs, whatever docs-paths says.
-            always_code=(.airia .github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/pyproject.toml' '**/uv.lock'
-              '**/.python-version' '**/setup.cfg' '**/*.ini' '**/.importlinter')
+            always_code=(.airia .github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/*.toml' '**/uv.lock'
+              '**/.python-version' '**/setup.cfg' '**/*.ini' '**/.importlinter' '**/.coveragerc'
+              '**/requirements*.txt' '**/Dockerfile*')
             never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
             if [ -z "$changed" ]; then
               echo "Every gate runs: the pull request changes no file."
