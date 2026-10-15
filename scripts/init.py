@@ -513,7 +513,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", default=".", help="the repository's checkout (default: here)")
     ap.add_argument("--runner", default=THOR,
                     help=f"runs-on labels as a JSON array (default: the AIRIA Thor pool, {THOR}); "
-                         "'[\"ubuntu-latest\"]' for GitHub's runners")
+                         "'[\"ubuntu-24.04\"]' for GitHub's runners, which a public repository "
+                         "or one outside AIRIA-Systems-GmbH needs")
     ap.add_argument("--yes", action="store_true", help="answer yes to every question")
     args = ap.parse_args(argv)
     root = Path(args.dir).resolve()

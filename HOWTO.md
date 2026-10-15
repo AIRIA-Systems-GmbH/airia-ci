@@ -16,6 +16,8 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
    ```
 
    It writes `.github/workflows/ci.yml` (the gate: it calls [`reusable-python-gate.yml`](.github/workflows/reusable-python-gate.yml), which runs the review too), `.github/workflows/claude.yml` (`@claude`) and `.github/claude-review.md` (your review rules); adds the standard's blocks to `pyproject.toml`; sets the `CLAUDE_CODE_OAUTH_TOKEN` secret; and offers the ruleset. It never overwrites a file, a table or a dependency it finds, and says so for each. It writes `ci.yml` only when no workflow runs on `pull_request`: if one does, it is not the standard (init.py says so in its last lines), so delete it, or move its other jobs into `ci.yml` through [`extra-jobs`](#extend-it), and run init.py again. It commits nothing, and ends with the steps below, numbered.
+
+   **Which runner:** The Thor pool (`[self-hosted, linux, x64, thor]`, the default) serves only AIRIA-Systems-GmbH's private repositories. A public repository, and any repository outside the organization (every `tumma72/*` one, private or not), passes `runner: '["ubuntu-24.04"]'` (GitHub's runners; a private repository spends its owner's Actions minutes), unless it has a self-hosted runner of its own registered with those four labels, as `tumma72/CryptoStudio` does. For init.py that is `--runner '["ubuntu-24.04"]'`; it writes the value into `ci.yml` and `claude.yml`.
 2. **Bring the repository up to the standard.** `pyproject.toml` needs the blocks of [`templates/python/pyproject.toml`](templates/python/pyproject.toml): `[tool.ruff]`, `[tool.pyright]`, `[tool.pytest.ini_options]` with `--cov=<package>` and `-n auto`, `[tool.coverage]` and the dev group with ruff, pyright, pytest, pytest-cov, pytest-xdist and coverage at the [pins](pins.toml). init.py added the missing ones; compare the ones it kept with the template yourself. Then:
    - `uv lock`, and commit `uv.lock` (the gate runs `uv sync --locked`);
    - commit `.python-version`, one of `pins.toml`'s `[python] allowed`;
@@ -36,7 +38,7 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
    python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw') protect
    ```
 
-   It writes the standard ruleset with those two checks required. GitHub refuses rulesets on a private repository of a Free-plan organization or personal account, and init.py says so: upgrade to Team (organization) or Pro (personal), make the repository public, or leave it unprotected and say so in its README. The gate then still runs and reports, but nothing stops a merge past it.
+   It writes the standard ruleset with those two checks required. GitHub refuses rulesets on a private repository of a Free-plan organization or personal account (AIRIA-Systems-GmbH is on Team and `tumma72` on Pro, so both can), and init.py says so: upgrade to Team (organization) or Pro (personal), make the repository public, or leave it unprotected and say so in its README. The gate then still runs and reports, but nothing stops a merge past it.
 
 **What the gate enforces, and what you may change:**
 
@@ -45,6 +47,59 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
 - Yours to add: a higher floor, more Pythons, your own jobs, review rules and the docs-only fast path, through the inputs under [Extend it](#extend-it).
 - Never yours to weaken: the floor, a gate, the type checker, a pin or the ruleset ([May add, may not weaken](#may-add-may-not-weaken)); the weekly conformance scan opens an issue when one drifts.
 - Not a Python repository: only the review applies, so run step 1, open the PR and stop ([Wire a repository](#wire-a-repository)).
+
+### Ruff: whose rules, and a repository with many findings
+
+> **Proposed default, pending Andrea's ruling (2026-10-15).** Until he rules, this is how the gate behaves, not a decided policy.
+
+The gate runs `ruff check` under **your** configuration, so an explicit `[tool.ruff.lint] select` is honored, a narrower one included. The template's `select` is the recommended baseline, not a floor: the standard is that `ruff check` and `ruff format --check` pass, not a fixed rule set. A repository with **no** `select` gets ruff's own default set, and that set grew in ruff 0.16: UP and RUF rules (UP031, RUF012, …) fire where 0.15 found nothing. The first adopter, agile42-TCC, went from 0 findings to 1,847 on the move to the 0.17.0 pin. An explicit `select` (init.py adds the template's) keeps a pin bump from changing your rules under you.
+
+To onboard a repository with many findings, do this once, in its adoption PR:
+
+1. Keep or add an explicit `select`. The template's set is the baseline; a narrower one passes the gate, so say why in the PR.
+2. `uv run ruff check --fix . && uv run ruff format .` clears what ruff can fix safely.
+3. `uv run ruff check --add-noqa .` marks each remaining finding in place. The gate goes green, and the debt stays visible line by line.
+4. Then ratchet: remove a `# noqa` when you touch its line, and never add one without a reason after it. `grep -rc '# noqa' --include='*.py' . | awk -F: '{s+=$2} END {print s}'` is the count, and it only falls. airia-ci has no automatic ratchet yet.
+
+### Django
+
+The gate has nothing Django-specific. The template needs three additions:
+
+```toml
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "<project>.settings"   # pytest-django reads it
+addopts = "-ra --strict-markers -n auto --cov=<package>"
+
+[dependency-groups]
+dev = [
+    # …the template's six, plus your own pins of:
+    "pytest-django==<version>",
+    "django-types==<version>",   # stubs written for pyright
+]
+```
+
+- **The database.** Start Postgres in the test job and hand its address to your settings through the job environment:
+
+  ```yaml
+      with:
+        postgres-image: postgres:17
+        job-env: |
+          DATABASE_URL=$CI_POSTGRES_DSN
+  ```
+
+  Your settings read `DATABASE_URL`, for example with `dj-database-url`. The user is `postgres`, so pytest-django can create one test database per xdist worker.
+- **Pyright.** `django-stubs` relies on a mypy plugin for what Django adds at runtime (`objects`, `id`, reverse relations), and pyright runs no plugins. On a Django tree without stubs it reports those attributes as errors; agile42-TCC had 554, 428 of them in tests. Use `django-types`, and declare whatever is still missing on the model, such as `id: int` or `objects: ClassVar[models.Manager[Self]]`. `mypy-strict` with the plugin is accepted only where `pins.toml` allows it.
+
+airia-ci ships no separate Django template: these are the only differences.
+
+### Secrets in test fixtures
+
+gitleaks scans the whole tree, fixtures included. A key that exists only for a test is better generated at test time. One that must be committed is allowed in one of two ways:
+
+- `.gitleaksignore` at the root: one fingerprint per line, in the form `path:rule:line` (e.g. `tests/fixtures/cfg.py:aws-access-token:1`). The gate's log only counts the leaks; `gitleaks dir --redact -v .` at the pin prints each one's `Fingerprint:`. An entry stops matching when its line moves, so keep the fixture stable.
+- `# gitleaks:allow` at the end of the line, for a single string in source code.
+
+Either one is reviewed like code: say in the PR that the value is not a real secret.
 
 ## About this guide
 
@@ -65,7 +120,7 @@ It writes only the files that are missing:
 - otherwise the `claude-review` job at the end of your pull-request workflow; with no such workflow, `.github/workflows/merge-gate.yml`, whose placeholder gate fails until you put your real gates in it; with several, it prints the job for you to add to the one that gates merges;
 - `.github/claude-review.md`, your review rules, to fill in.
 
-Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variable, or by running `claude setup-token`) and offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for it. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool; `--yes` answers every question yes.
+Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variable, or by running `claude setup-token`) and offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for it. `--runner '["ubuntu-24.04"]'` uses GitHub's runners instead of the Thor pool (see [Run on GitHub's runners](#run-on-githubs-runners) for who must); `--yes` answers every question yes.
 
 The script is fetched from `main` and writes the pin it names (today `@ci-v5`). It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
 
@@ -155,7 +210,7 @@ uvx zizmor@<pin> --offline .github
 | `paths` | what ruff and the type checker read | |
 | `postgres-image`, `qdrant-image`, `job-env` | service containers for the tests; `CI_POSTGRES_DSN` / `CI_QDRANT_URL` mapped onto your names | |
 | `extra-jobs` | your own gate jobs, counted by `ci / gate` | see below |
-| `runner` | GitHub's runners for a public repository (`'["ubuntu-24.04"]'`) | |
+| `runner` | GitHub's runners (`'["ubuntu-24.04"]'`) for a public repository or one outside AIRIA-Systems-GmbH | |
 | `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
 | `docs-paths` | the docs-only fast path, see below | some paths are never docs |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
@@ -229,7 +284,7 @@ Put the tools in a dev dependency group with an exact version (`uv add --dev ty=
 
 ## Run on GitHub's runners
 
-Both workflows default to the Thor pool (`[self-hosted, linux, x64, thor]`). A public repository cannot use it. Pass `runner: '["ubuntu-latest"]'` (a JSON array of `runs-on` labels) to both callers.
+The Thor pool (`[self-hosted, linux, x64, thor]`, the default) serves only AIRIA-Systems-GmbH's private repositories. A public repository, and any repository outside the organization (every `tumma72/*` one, private or not), passes `runner: '["ubuntu-24.04"]'` (GitHub's runners; a private repository spends its owner's Actions minutes), unless it has a self-hosted runner of its own registered with those four labels, as `tumma72/CryptoStudio` does. Pass the same `runner:` (a JSON array of `runs-on` labels) to both callers.
 
 ## Use @claude
 

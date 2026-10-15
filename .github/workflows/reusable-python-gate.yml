@@ -144,8 +144,9 @@ on:
         default: ""
       runner:
         description: >-
-          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool;
-          a public repository passes '["ubuntu-24.04"]'.
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool,
+          which serves only the organization's private repositories; a public one,
+          or any outside the organization, passes '["ubuntu-24.04"]'.
         required: false
         type: string
         default: '["self-hosted","linux","x64","thor"]'
