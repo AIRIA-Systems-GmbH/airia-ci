@@ -17,7 +17,7 @@ import os
 import unittest
 from unittest import mock
 
-from steps import ROOT, Runner
+from steps import FAKE_RUFF, ROOT, Runner
 
 SCRIPT = ROOT / "scripts/consumers.py"
 spec = importlib.util.spec_from_file_location("consumers", SCRIPT)
@@ -31,6 +31,7 @@ CALLER = "uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-re
 class Scan(unittest.TestCase):
     def run_main(self, rules, *owners):
         r = Runner(self, rules)
+        r.tool("ruff", FAKE_RUFF)
         out, err = io.StringIO(), io.StringIO()
         consumers.workflows.cache_clear()
         with mock.patch.dict(os.environ, r.env()), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -99,14 +100,15 @@ jobs:
   ci:
     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v10
 """
-PYPROJECT = "[project]\nname = 'app'\n[tool.pytest.ini_options]\naddopts = '--cov=app'\n"
+PYPROJECT = ("[project]\nname = 'app'\n[tool.pytest.ini_options]\naddopts = '--cov=app'\n"
+             "[tool.ruff.lint]\nselect = ['E', 'W', 'F', 'I', 'B', 'C4', 'UP', 'SIM']\nignore = ['E501']\n")
 LOCK = "".join(f'[[package]]\nname = "{n}"\nversion = "{T[n]}"\n' for n in ("pytest", "pytest-cov", "coverage"))
 RULESET = {"name": "Restrict Direct Merge on Main", "bypass_actors": [], "rules": [
     {"type": "required_status_checks", "parameters": {"required_status_checks": [
         {"context": "ci / gate"}, {"context": "ci / claude-review / claude-review"}]}}]}
 
 
-def consumer(ci=STANDARD_CI, pyproject=PYPROJECT, lock=LOCK, ruleset=RULESET, issues=(), extra=()):
+def consumer(ci=STANDARD_CI, pyproject=PYPROJECT, lock=LOCK, ruleset=RULESET, issues=(), extra=(), ruff=None):
     """The fake `gh` of one consumer, o/app; None for a file it does not have."""
     def file(path, text):
         return [f"o/app/contents/{path} ", {"exit": 1, "stderr": "gh: Not Found (HTTP 404)"} if text is None
@@ -119,6 +121,8 @@ def consumer(ci=STANDARD_CI, pyproject=PYPROJECT, lock=LOCK, ruleset=RULESET, is
         file(".github/workflows/ci.yml", ci),
         file("pyproject.toml", pyproject),
         file("uv.lock", lock),
+        file("ruff.toml", ruff),
+        file(".ruff.toml", None),
         ["o/app/rulesets --jq", {"json": [{"name": "Restrict Direct Merge on Main", "id": 7}] if ruleset else []}],
         ["o/app/rulesets/7", {"json": ruleset}],
         ["issue list", {"json": [{"number": n, "title": t} for n, t in issues]}],
@@ -176,6 +180,20 @@ class Conformance(Scan):
             with self.subTest(expected=expected):
                 self.assertIn(expected, body)
         self.assertIn("o/app\t11 drift\topened https://github.com/o/app/issues/12", out)
+
+    def test_a_narrowed_ruff_floor_drifts(self):
+        # The root configuration, as the gate reads it: a ruff.toml wins over pyproject.toml.
+        code, out, _, r = self.scan(ruff="[lint]\nselect = ['E', 'F']\n[lint.per-file-ignores]\n'src/*' = ['F401']\n")
+        self.assertEqual(code, 1)
+        body = self.issue_calls(r, "create")[0][-1]
+        self.assertIn("ruff floor: ruff.toml: ruff does not enable the floor's B006, B008, C401", body)
+        self.assertIn("ruff floor: ruff.toml: per-file-ignores 'src/*' switches off the floor's F401", body)
+
+    def test_a_ruff_that_cannot_check_the_floor_is_reported_as_drift(self):
+        with mock.patch.dict(os.environ, {"FAKE_RUFF_FAIL": "--show-settings"}):
+            code, _, _, r = self.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("ruff floor not checked: `ruff check --show-settings", self.issue_calls(r, "create")[0][-1])
 
     def test_an_open_drift_issue_is_rewritten_not_duplicated(self):
         code, out, _, r = self.scan(ruleset=None, issues=[(3, consumers.TITLE)])
@@ -244,7 +262,7 @@ class Conformance(Scan):
             ["o/bad/rulesets --jq", {"exit": 1, "stderr": "HTTP 403"}],
             ["o/bad/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
             ["o/bad/contents/.github/workflows/ci.yml ", {"text": STANDARD_CI}],
-            ["o/bad/contents/(pyproject.toml|uv.lock) ", {"exit": 1, "stderr": "Not Found"}],
+            ["o/bad/contents/(pyproject.toml|uv.lock|\\.?ruff.toml) ", {"exit": 1, "stderr": "Not Found"}],
             *consumer(),
         ]
         rules[rules.index(["repo list o", {"json": [{"nameWithOwner": "o/app"}]}])] = \
@@ -265,12 +283,13 @@ class Conformance(Scan):
 
     def test_the_scheduled_scan_fails_on_drift_through_its_pipe(self):
         r = Runner(self)
-        (r.tmp / "pins.toml").write_text('[harness]\npyyaml = "6.0.3"\n')
+        (r.tmp / "pins.toml").write_text('[harness]\npyyaml = "6.0.3"\n[tools]\nruff = "0.17.0"\n')
         (r.tmp / "scripts").mkdir()
         r.tool("uv", '#!/bin/sh\necho "uv $*" > "$(dirname "$0")/uv-args"\necho "1 of 1 consumers drift"\nexit 1\n')
         p = r.run(ROOT / ".github/workflows/conformance.yml", "Scan every consumer and keep its drift issue")
         self.assertEqual(p.returncode, 1)
-        self.assertIn("--with pyyaml==6.0.3 python3 scripts/consumers.py --conformance AIRIA-Systems-GmbH tumma72",
+        self.assertIn("--with pyyaml==6.0.3 --with ruff==0.17.0 python3 scripts/consumers.py --conformance "
+                      "AIRIA-Systems-GmbH tumma72",
                       (r.bin / "uv-args").read_text())
         self.assertIn("1 of 1 consumers drift", r.summary.read_text())
 

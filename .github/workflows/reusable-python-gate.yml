@@ -41,9 +41,12 @@ name: AIRIA Python gate (shared)
 # THE GATES, each a job on the caller's runner, each from a clean checkout
 # through the python-toolchain action (uv and Python from `.python-version`,
 # `uv sync --locked`, uv.lock and every workflow step checked against the pins):
-#   lint      ruff check, ruff format --check, the type checker (pyright, or
-#             mypy --strict where pins.toml allows it), and import-linter when
-#             pyproject.toml has [tool.importlinter];
+#   lint      ruff check, ruff format --check, the ruff floor (the template's
+#             `select`, which a project may extend, never narrow) and its
+#             `# noqa` baseline (.airia/ruff-baseline.json, which may only
+#             fall), the type checker (pyright, or mypy --strict where
+#             pins.toml allows it), and import-linter when pyproject.toml has
+#             [tool.importlinter];
 #   test      pytest, once per Python, with the project's own `--cov=…`; the
 #             JSON report must exist and reach `coverage-floor` (a `--no-cov`
 #             in addopts writes none, and fails); it always prints the
@@ -265,6 +268,10 @@ jobs:
           ruff check "${paths[@]}" || status=1
           ruff format --check "${paths[@]}" || status=1
           exit "$status"
+      - name: Ruff floor and suppressions
+        env:
+          PATHS: ${{ inputs.paths }}
+        run: python3 "$AIRIA_TOOLCHAIN" ruff
       - name: Type check
         env:
           PATHS: ${{ inputs.paths }}

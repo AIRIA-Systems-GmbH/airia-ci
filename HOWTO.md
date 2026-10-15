@@ -23,6 +23,7 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
    - commit `.python-version`, one of `pins.toml`'s `[python] allowed`;
    - `uv run ruff format .`;
    - give every file REUSE licence information, until `uvx reuse@<pin> lint` passes;
+   - hold the [ruff floor](#ruff-the-floor-and-the-suppression-baseline): the first time, run step 3's command with `--onboard`. It fixes what ruff can, marks the remaining findings `# noqa` and records them in `.airia/ruff-baseline.json`, which may only fall from then on;
    - pin every action in `.github/` to a commit SHA (only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
 3. **Run the gate's lint and test jobs locally,** with the gate's commands and your locked tools, pytest on at most 4 workers (`AIRIA_XDIST_WORKERS`):
 
@@ -43,23 +44,41 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
 **What the gate enforces, and what you may change:**
 
 - Always enforced: every gate under [What runs](#what-runs), at the tool versions in [`pins.toml`](pins.toml) (you may lock newer, never older), coverage of your `--cov` package at 90 % or more, and the Claude review.
-- Yours to change: the ruff rules, the pyright settings and the pytest options of the template, as long as `--cov=<package>` stays in `addopts`.
+- Yours to change: the pyright settings and the pytest options of the template, as long as `--cov=<package>` stays in `addopts`; ruff's rules only upward (the template's `select` is the [floor](#ruff-the-floor-and-the-suppression-baseline)).
 - Yours to add: a higher floor, more Pythons, your own jobs, review rules and the docs-only fast path, through the inputs under [Extend it](#extend-it).
-- Never yours to weaken: the floor, a gate, the type checker, a pin or the ruleset ([May add, may not weaken](#may-add-may-not-weaken)); the weekly conformance scan opens an issue when one drifts.
+- Never yours to weaken: the coverage floor, the ruff floor, the `# noqa` baseline, a gate, the type checker, a pin or the ruleset ([May add, may not weaken](#may-add-may-not-weaken)); the weekly conformance scan opens an issue when one drifts.
 - Not a Python repository: only the review applies, so run step 1, open the PR and stop ([Wire a repository](#wire-a-repository)).
 
-### Ruff: whose rules, and a repository with many findings
+### Ruff: the floor and the suppression baseline
 
-> **Proposed default, pending Andrea's ruling (2026-10-15).** Until he rules, this is how the gate behaves, not a decided policy.
+Andrea's ruling (2026-10-15): the floor, with a ratchet. The gate's lint job enforces both, through `toolchain.py ruff`. `ci-local.sh` runs the same check.
 
-The gate runs `ruff check` under **your** configuration, so an explicit `[tool.ruff.lint] select` is honored, a narrower one included. The template's `select` is the recommended baseline, not a floor: the standard is that `ruff check` and `ruff format --check` pass, not a fixed rule set. A repository with **no** `select` gets ruff's own default set, and that set grew in ruff 0.16: UP and RUF rules (UP031, RUF012, …) fire where 0.15 found nothing. The first adopter, agile42-TCC, went from 0 findings to 1,847 on the move to the 0.17.0 pin. An explicit `select` (init.py adds the template's) keeps a pin bump from changing your rules under you.
+- **The floor** is the `select` of [`templates/python/pyproject.toml`](templates/python/pyproject.toml): E, W, F, I, B, C4, UP and SIM, without E501 (the width is `ruff format`'s job). Every ruff configuration in the repository must enable every rule that select enables, as ruff itself resolves them. That covers the root `pyproject.toml`, every tracked `pyproject.toml` with `[tool.ruff]`, and every `ruff.toml`, except those under test directories. **Extending is free:** `extend-select`, or a `select` that adds `RUF`, `S` or `ALL`. **Narrowing is refused:** a narrower `select`; no `select` at all, which means ruff's default set, a different one in every ruff release; or an `ignore`/`extend-ignore` of a floor rule.
+- **Per-file ignores** _(proposed, pending Andrea)_. A `per-file-ignores` entry may switch floor rules off only for test paths: `tests/`, `test/`, `conftest.py`, `test_*.py` and `*_test.py`. Tests legitimately import after a `sys.path` change (E402) and re-import fixtures (F401, F811). Anywhere else, mark the line `# noqa: <rule>`, so the baseline below counts it. For `__init__.py` re-exports, `import x as x` or `__all__` satisfies F401 without a suppression.
+- **The baseline.** `.airia/ruff-baseline.json` records the `# noqa` suppressions per rule: what ruff finds with `--ignore-noqa`, minus what it finds without. A rule suppressed more often than its baseline fails the lint job, so fix the finding instead of adding a `# noqa`. A count below its baseline passes, with a notice that it can fall: `ci-local.sh --write-baseline` lowers it, and you commit the file. With no baseline file, suppressions are only warned about, until you record one.
+- **What is not machine-checked.** Raising the baseline by hand is visible in the PR's diff, and the review reads it. The gate compares counts with the file, not with the base branch. `exclude`/`extend-exclude`, and the gate's `paths` input, also narrow what ruff reads, and the floor does not check them yet.
 
-To onboard a repository with many findings, do this once, in its adoption PR:
+**Onboarding a repository with many findings,** once, in its adoption PR:
 
-1. Keep or add an explicit `select`. The template's set is the baseline; a narrower one passes the gate, so say why in the PR.
-2. `uv run ruff check --fix . && uv run ruff format .` clears what ruff can fix safely.
-3. `uv run ruff check --add-noqa .` marks each remaining finding in place. The gate goes green, and the debt stays visible line by line.
-4. Then ratchet: remove a `# noqa` when you touch its line, and never add one without a reason after it. `grep -rc '# noqa' --include='*.py' . | awk -F: '{s+=$2} END {print s}'` is the count, and it only falls. airia-ci has no automatic ratchet yet.
+```bash
+bash <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/templates/python/ci-local.sh -H 'Accept: application/vnd.github.raw') --onboard
+```
+
+It runs `ruff check --fix` (the safe fixes), `ruff format`, `ruff check --add-noqa` (it marks every remaining finding in place), then writes `.airia/ruff-baseline.json` and runs the gate's lint and test. Commit the result. From then on, the count only falls.
+
+Measured on 2026-10-15, ruff 0.17.0, each repository's default branch:
+
+| Repository | Floor today | Findings under the floor (safe fixes) |
+|---|---|---|
+| CookieGusto | holds | 1 (0) |
+| Portfolio-Dashboard | refused: no W, C4; ignores UP036, SIM108 | 10 (1) |
+| CryptoStudio | refused: no W, C4 | 81 (22) |
+| AIRIA-process | refused: no SIM | 202 (91) |
+| AIRIA-DevTools | refused: no explicit select | 462 (330) |
+| AIRIA-SiteBuilder | refused: narrow select | 620 (199) |
+| AIRIA-framework | refused: no explicit select (root and every package) | 964 (700) |
+
+`pins.toml`'s `[standard] ruff-floor` is `"error"`. Set to `"warning"`, the gate reports a narrowed floor without failing, so a release can reach callers before they have onboarded.
 
 ### Django
 
@@ -180,7 +199,7 @@ What the gate expects of the repository. It fails, and says what is missing, whe
 
 | Check | What it runs | Required |
 |---|---|---|
-| `ci / lint` | ruff check, ruff format --check, the type checker, import-linter (when configured) | |
+| `ci / lint` | ruff check, ruff format --check, the [ruff floor and the `# noqa` baseline](#ruff-the-floor-and-the-suppression-baseline), the type checker, import-linter (when configured) | |
 | `ci / changes` | whether the PR touched anything but `docs-paths`; with that input empty, always yes | |
 | `ci / test …` | pytest per Python, at the coverage floor, listing the slowest tests (`--durations`) | |
 | `ci / security` | reuse lint, pip-audit over the locked requirements, gitleaks over the tree, zizmor over `.github/` | |
@@ -248,8 +267,8 @@ jobs:
 
 ### May add, may not weaken
 
-- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin.
-- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check.
+- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin; enable more ruff rules than the floor; switch floor rules off per file for test paths _(proposed)_; lower `.airia/ruff-baseline.json`.
+- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check; enable fewer ruff rules than the floor (a narrower `select`, no `select`, or a global `ignore` of a floor rule); switch a floor rule off per file outside tests; suppress a rule with `# noqa` more often than `.airia/ruff-baseline.json` records.
 
 The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
 

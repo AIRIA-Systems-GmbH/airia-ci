@@ -46,5 +46,7 @@ jobs:
         run: |
           set -o pipefail  # drift exits 1, and the scan must not go green through tee
           pyyaml="$(python3 -c 'import tomllib; print(tomllib.load(open("pins.toml", "rb"))["harness"]["pyyaml"])')"
-          uv run --no-project --with "pyyaml==${pyyaml}" python3 scripts/consumers.py --conformance \
+          ruff="$(python3 -c 'import tomllib; print(tomllib.load(open("pins.toml", "rb"))["tools"]["ruff"])')"
+          # ruff on PATH: the ruff floor is checked with the ruff the gate pins.
+          uv run --no-project --with "pyyaml==${pyyaml}" --with "ruff==${ruff}" python3 scripts/consumers.py --conformance \
             AIRIA-Systems-GmbH tumma72 | tee -a "$GITHUB_STEP_SUMMARY"

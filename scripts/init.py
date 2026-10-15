@@ -557,7 +557,9 @@ def main(argv: list[str] | None = None) -> int:
     steps += [*notes,
               "uv lock (pyproject.toml changed), and commit .python-version and uv.lock",
               "format the tree (uv run ruff format .) and give every file REUSE licence information (reuse lint)",
-              "run the gate's lint and test here: bash <(" + FETCH.format(path=f"{TEMPLATES}/ci-local.sh") + ")",
+              "run the gate's lint and test here: bash <(" + FETCH.format(path=f"{TEMPLATES}/ci-local.sh") + ")"
+              " --onboard the first time (it fixes what ruff can, marks the rest `# noqa` and records "
+              ".airia/ruff-baseline.json), then without it",
               "commit on a branch, open a pull request, merge it when ci / gate and the Claude review are green",
               "protect the branch: python3 <(" + FETCH.format(
                   path="repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py") + ") protect"]
