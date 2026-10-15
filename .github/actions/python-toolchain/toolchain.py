@@ -40,6 +40,12 @@ that touches the baseline always runs the lint job. The count is held to the
 file, not to the base branch's copy: a baseline raised in a PR (by hand or by
 `--write-baseline`) passes the gate and is caught in the diff and the review.
 
+The cut-over. Until pins.toml's `[standard] ruff-floor-error-from` (a date,
+UTC), a narrowed floor or a risen count is a `::warning` and a line in the job
+summary, and the job stays green; from that date on it fails. A project opts
+into failing early with `[tool.airia] ruff-floor = "error"` in its root
+pyproject.toml.
+
 `standard` and `ruff` use only the standard library: `standard` runs before uv
 is installed, and `ruff` runs with ruff on PATH and nothing else.
 `check` needs PyYAML (the action runs it through `uv run --with pyyaml==<pin>`).
@@ -48,6 +54,7 @@ is installed, and `ruff` runs with ruff on PATH and nothing else.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -409,14 +416,21 @@ def suppressions(root: Path, paths: list[str]) -> dict[str, int]:
     return {code: n - shown.get(code, 0) for code, n in sorted(every.items()) if n > shown.get(code, 0)}
 
 
-def ruff(pins: dict, env: dict, root: Path, write: bool) -> list[str]:
+def ruff_strict(pins: dict, root: Path, at: datetime.datetime) -> bool:
+    """Whether the floor and the ratchet fail: from the cut-over day (UTC), or earlier where the project opts in."""
+    pyproject = root / "pyproject.toml"
+    opted = tomllib.loads(pyproject.read_text()).get("tool", {}).get("airia", {}) if pyproject.is_file() else {}
+    if "ruff-floor" in opted and opted["ruff-floor"] != "error":
+        raise Refused(f'[tool.airia] ruff-floor = {opted["ruff-floor"]!r}: the only value is "error", to fail '
+                      f'before {pins["standard"]["ruff-floor-error-from"]}; remove it to warn until then')
+    return "ruff-floor" in opted or at.astimezone(datetime.UTC).date() >= pins["standard"]["ruff-floor-error-from"]
+
+
+def ruff(pins: dict, env: dict, root: Path, write: bool, at: datetime.datetime | None = None) -> list[str]:
     """Hold the project to the ruff floor and its suppression baseline; return the notices to print."""
+    strict = ruff_strict(pins, root, at or datetime.datetime.now(datetime.UTC))
     errors = floor_problems(root, ruff_floor())
-    if errors and pins["standard"].get("ruff-floor") == "warning":
-        notices = [f"::warning title=AIRIA standard (ruff floor)::{e}" for e in errors]
-        errors = []
-    else:
-        notices = []
+    notices: list[str] = []
     now = suppressions(root, shlex.split(env.get("PATHS", "")) or ["."])
     total = sum(now.values())
     baseline = root / BASELINE
@@ -437,8 +451,17 @@ def ruff(pins: dict, env: dict, root: Path, write: bool) -> list[str]:
         if any(now.get(code, 0) < n for code, n in recorded.items()):
             notices.append(f"::notice title=Ruff suppressions::fewer suppressions than {BASELINE} records: lower it "
                            "with `ci-local.sh --write-baseline` and commit it")
-    if errors:
+    if errors and strict:
         raise Refused(*errors)
+    if errors:
+        cutover = pins["standard"]["ruff-floor-error-from"]
+        notices = [f"::warning title=AIRIA standard (ruff floor; an error from {cutover})::{e}" for e in errors] + notices
+        if summary := env.get("GITHUB_STEP_SUMMARY"):
+            with open(summary, "a") as fh:
+                fh.write(f"### Ruff floor: {len(errors)} problems, warnings until {cutover} (UTC), errors from then\n\n"
+                         + "".join(f"- {e}\n" for e in errors)
+                         + f"\nOnboard once: {ONBOARD}. Fail early with `[tool.airia] ruff-floor = \"error\"` "
+                         "in pyproject.toml.\n")
     return notices
 
 

@@ -17,12 +17,16 @@ a global ignore of a floor rule is refused, a wider one is free, and only a
 test path may switch a floor rule off per file. The ratchet: `# noqa`
 suppressions per rule may not rise above `.airia/ruff-baseline.json`; with no
 baseline they are only warned about; `--write-baseline` records them.
+Until pins.toml's cut-over day (UTC) both only warn, in the log and the job
+summary, so the release reaches callers before they have onboarded; from it,
+or earlier where a project opts in, they fail.
 
 Run: python3 -m unittest discover -s tests
 """
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import importlib.util
 import io
@@ -46,6 +50,17 @@ tc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tc)
 PINS = tc.load_pins(ROOT / "pins.toml")
 T = PINS["tools"]
+CUTOVER = PINS["standard"]["ruff-floor-error-from"]
+UTC = datetime.UTC
+
+
+def instant(day: datetime.date, clock: str, offset: int = 0) -> datetime.datetime:
+    """`clock` on `day`, at UTC+`offset` hours."""
+    h, m = map(int, clock.split(":"))
+    return datetime.datetime(day.year, day.month, day.day, h, m, tzinfo=datetime.timezone(datetime.timedelta(hours=offset)))
+
+
+AFTER = instant(CUTOVER, "12:00")
 
 
 def lock(**packages: str) -> str:
@@ -457,10 +472,11 @@ class RuffFloor(unittest.TestCase):
             path.write_text(text)
         subprocess.run(["git", "-C", str(self.root), "add", "-A"], check=True)
 
-    def ruff(self, write: bool = False, pins: dict = PINS, **env) -> list[str]:
+    def ruff(self, write: bool = False, at: datetime.datetime = AFTER, **env) -> list[str]:
+        """The check at `at`: by default after the cut-over, where it fails as the standard means it to."""
         env = self.r.env(**env)
         with mock.patch.dict(os.environ, env):
-            return tc.ruff(pins, env, self.root, write)
+            return tc.ruff(PINS, env, self.root, write, at)
 
     def refused(self, **kw) -> list[str]:
         with self.assertRaises(tc.Refused) as cm:
@@ -558,12 +574,65 @@ class RuffFloor(unittest.TestCase):
         self.project(TEMPLATE_RUFF, src__a_py="a  # FINDING(F401) # noqa\n")
         self.assertEqual(self.ruff(PATHS="src"), self.ruff(PATHS=""))
 
-    def test_a_warning_floor_reports_without_refusing(self):
+    def test_the_cut_over_is_one_date_in_pins(self):
+        self.assertIsInstance(CUTOVER, datetime.date, "a bare TOML date, so no string can mean another day")
+        self.assertNotIsInstance(CUTOVER, datetime.datetime)
+
+    def test_before_the_cut_over_a_narrowed_floor_and_a_risen_count_warn_and_stay_green(self):
+        # Released on 2026-10-15 as an error, it would have turned two consumers red at once.
+        self.project("", src__a_py="a  # FINDING(F401) # noqa\nb  # FINDING(F401) # noqa\n")
+        (self.root / tc.BASELINE).parent.mkdir()
+        (self.root / tc.BASELINE).write_text('{"F401": 1}\n')
+        floor, risen = self.ruff(at=instant(CUTOVER - datetime.timedelta(days=1), "23:59"))
+        title = f"::warning title=AIRIA standard (ruff floor; an error from {CUTOVER})::"
+        self.assertTrue(floor.startswith(title + "pyproject.toml: ruff does not enable"), floor)
+        self.assertTrue(risen.startswith(title + "F401 is suppressed 2 times, above the 1"), risen)
+        summary = self.r.summary.read_text()
+        self.assertIn(f"### Ruff floor: 2 problems, warnings until {CUTOVER} (UTC), errors from then", summary)
+        self.assertIn("- F401 is suppressed 2 times", summary)
+        self.assertIn("ruff check --fix, ruff format, ruff check --add-noqa, then the baseline", summary,
+                      "the summary names how to get there")
+
+    def test_from_the_cut_over_day_on_it_fails(self):
         self.project("")
-        pins = {**PINS, "standard": {**PINS["standard"], "ruff-floor": "warning"}}
-        (notice,) = self.ruff(pins=pins)
-        self.assertTrue(notice.startswith("::warning title=AIRIA standard (ruff floor)::pyproject.toml: ruff does "
-                                          "not enable"))
+        for at in (instant(CUTOVER, "00:00"), instant(CUTOVER + datetime.timedelta(days=30), "09:00")):
+            self.assertIn("does not enable the floor's", self.refused(at=at)[0])
+        self.assertFalse(self.r.summary.exists() and self.r.summary.read_text(), "a failure is not also a warning")
+
+    def test_the_day_is_the_utc_day(self):
+        self.project("")
+        # 23:30 at UTC-2 on the eve is already the cut-over day in UTC; 00:30 at UTC+2 on the day is still the eve.
+        self.refused(at=instant(CUTOVER - datetime.timedelta(days=1), "23:30", -2))
+        self.assertEqual(len(self.ruff(at=instant(CUTOVER, "00:30", 2))), 1)
+
+    def test_a_project_may_opt_into_failing_early_and_nothing_else(self):
+        before = instant(CUTOVER - datetime.timedelta(days=7), "12:00")
+        self.project('[tool.airia]\nruff-floor = "error"\n')
+        self.assertIn("does not enable the floor's", self.refused(at=before)[0])
+        self.project(TEMPLATE_RUFF + '[tool.airia]\nruff-floor = "error"\n')
+        self.assertEqual(self.ruff(at=before), [], "opting in costs a project on the floor nothing")
+        self.project(TEMPLATE_RUFF + '[tool.airia]\nruff-floor = "warning"\n')
+        (reason,) = self.refused(at=AFTER)
+        self.assertIn("[tool.airia] ruff-floor = 'warning': the only value is \"error\"", reason,
+                      "after the cut-over there is no way back to warnings")
+
+    def test_on_a_laptop_there_is_no_summary_to_write(self):
+        self.project("")
+        env = {k: v for k, v in self.r.env().items() if k != "GITHUB_STEP_SUMMARY"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            (notice,) = tc.ruff(PINS, env, self.root, False, instant(CUTOVER - datetime.timedelta(days=1), "12:00"))
+        self.assertIn("ruff does not enable", notice)
+
+    def test_without_a_clock_it_reads_the_current_utc_time(self):
+        self.project("")
+        env = self.r.env()
+        clock = mock.Mock(wraps=datetime, UTC=UTC)
+        with mock.patch.dict(os.environ, env), mock.patch.object(tc, "datetime", clock):
+            clock.datetime.now.return_value = instant(CUTOVER, "00:30", 2)
+            self.assertEqual(len(tc.ruff(PINS, env, self.root, False)), 1)
+            clock.datetime.now.return_value = AFTER
+            self.assertRaises(tc.Refused, tc.ruff, PINS, env, self.root, False)
+        clock.datetime.now.assert_called_with(UTC)
 
     def test_a_ruff_that_fails_or_cannot_be_read_is_refused(self):
         self.project(TEMPLATE_RUFF)

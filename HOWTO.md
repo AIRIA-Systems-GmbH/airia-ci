@@ -23,7 +23,7 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
    - commit `.python-version`, one of `pins.toml`'s `[python] allowed`;
    - `uv run ruff format .`;
    - give every file REUSE licence information, until `uvx reuse@<pin> lint` passes;
-   - hold the [ruff floor](#ruff-the-floor-and-the-suppression-baseline): the first time, run step 3's command with `--onboard`. It fixes what ruff can, marks the remaining findings `# noqa` and records them in `.airia/ruff-baseline.json`, which may only fall from then on;
+   - hold the [ruff floor](#ruff-the-floor-and-the-suppression-baseline): the first time, run step 3's command with `--onboard`. It runs `ruff check --fix`, `ruff format` and `ruff check --add-noqa`, then records the remaining suppressions in `.airia/ruff-baseline.json`, which may only fall from then on. Until **2026-10-22** (UTC) a narrowed floor or a risen count is only a warning, in the lint job's log and summary; from that day on it fails the lint job;
    - pin every action in `.github/` to a commit SHA (only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
 3. **Run the gate's lint and test jobs locally,** with the gate's commands and your locked tools, pytest on at most 4 workers (`AIRIA_XDIST_WORKERS`):
 
@@ -78,7 +78,14 @@ Measured on 2026-10-15, ruff 0.17.0, each repository's default branch:
 | AIRIA-SiteBuilder | refused: narrow select | 620 (199) |
 | AIRIA-framework | refused: no explicit select (root and every package) | 964 (700) |
 
-`pins.toml`'s `[standard] ruff-floor` is `"error"`. Set to `"warning"`, the gate reports a narrowed floor without failing, so a release can reach callers before they have onboarded.
+**The cut-over: 2026-10-22 (UTC).** Andrea's choice (2026-10-15): the floor and the baseline reach every caller first as warnings, for one week. Until `pins.toml`'s `[standard] ruff-floor-error-from` day, a narrowed floor or a count above the baseline is a `::warning` annotation and a section in the lint job's summary that names each gap and the onboarding command, and the job stays green. From that day on, in UTC, it fails the lint job. To fail earlier, which is what keeps an onboarded repository on the floor, add to the root `pyproject.toml`:
+
+```toml
+[tool.airia]
+ruff-floor = "error"
+```
+
+`"error"` is its only value: no repository can stay on warnings past the cut-over.
 
 ### Django
 
@@ -267,8 +274,8 @@ jobs:
 
 ### May add, may not weaken
 
-- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin; enable more ruff rules than the floor; switch floor rules off per file for test paths _(proposed)_; lower `.airia/ruff-baseline.json`.
-- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check; enable fewer ruff rules than the floor (a narrower `select`, no `select`, or a global `ignore` of a floor rule); switch a floor rule off per file outside tests; suppress a rule with `# noqa` more often than `.airia/ruff-baseline.json` records.
+- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin; enable more ruff rules than the floor; switch floor rules off per file for test paths _(proposed)_; lower `.airia/ruff-baseline.json`; fail on the ruff floor before the 2026-10-22 cut-over (`[tool.airia] ruff-floor = "error"`).
+- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check; enable fewer ruff rules than the floor (a narrower `select`, no `select`, or a global `ignore` of a floor rule); switch a floor rule off per file outside tests; suppress a rule with `# noqa` more often than `.airia/ruff-baseline.json` records. Until 2026-10-22 (UTC) the last three only warn; from that day on they fail the lint job, so onboard first: `ruff check --fix`, `ruff format`, `ruff check --add-noqa`, then record the baseline, all in one `ci-local.sh --onboard`.
 
 The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
 
