@@ -46,11 +46,29 @@ name: AIRIA Python gate (shared)
 #             pyproject.toml has [tool.importlinter];
 #   test      pytest, once per Python, with the project's own `--cov=…`; the
 #             JSON report must exist and reach `coverage-floor` (a `--no-cov`
-#             in addopts writes none, and fails);
+#             in addopts writes none, and fails); it always prints the
+#             `durations` slowest tests (25 by default; 0 prints all), so a
+#             slow suite can be profiled from its CI log;
 #   security  reuse lint, pip-audit over the locked requirements, gitleaks over
 #             the tree, zizmor over .github/ (offline, the standard's policy);
 #   gate      needs every one of them and the caller's `extra-jobs`; red unless
-#             each one succeeded. A skipped gate is a failed gate.
+#             each one succeeded. A skipped gate is a failed gate, with one
+#             exception, below.
+#
+# THE DOCS-ONLY FAST PATH, opt-in. `changes` decides whether a PR touched
+# code. With `docs-paths` empty (the default) the answer is always yes and
+# every gate runs, as before. With it set (git glob pathspecs, one per line or
+# space-separated, e.g. `docs/**` and `**/*.md`), a pull request whose every
+# changed path matches one is docs-only: `lint` and `test` are skipped, and
+# `gate` accepts exactly those two skips because `changes` said `code` is
+# `false`. `security` still runs (REUSE, gitleaks: a doc needs its licence
+# and must not leak a secret), and so does every extra job. A rename counts
+# both its old and its new path, an empty diff counts as code, and any event
+# but a pull request (a push to the default branch) runs everything. Some paths
+# are never docs, whatever the patterns say: `.airia/` (suites read it),
+# `.github/`, any `tests/` or `test/` directory, Python sources, and the files
+# that configure the tools (`pyproject.toml`, `uv.lock`, `.python-version`,
+# `setup.cfg`, `*.ini`, `.importlinter`).
 # Then the automatic Claude review, chained after `gate` and run even when it
 # is red (a red gate is review input). On a PR it never skips silently: no
 # Claude credential fails it with the reason.
@@ -130,6 +148,21 @@ on:
         required: false
         type: string
         default: '["self-hosted","linux","x64","thor"]'
+      durations:
+        description: >-
+          How many of the slowest tests pytest lists after every run
+          (`--durations=N`; 0 lists all). The report is always printed.
+        required: false
+        type: number
+        default: 25
+      docs-paths:
+        description: >-
+          Git glob pathspecs (one per line or space-separated) of documentation.
+          A pull request that changes only these skips lint and test, and `gate`
+          passes on the rest. Empty (the default): every gate always runs.
+        required: false
+        type: string
+        default: ""
       extra-allow:
         description: The review's extra permission-allow rules (see reusable-claude-review.yml).
         required: false
@@ -152,7 +185,61 @@ on:
 permissions: {}
 
 jobs:
+  changes:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - if: github.event_name == 'pull_request' && inputs.docs-paths != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's merge commit and its first parent, the base it merges into.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Did the change touch code
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          DOCS_PATHS: ${{ inputs.docs-paths }}
+        run: |
+          code=true
+          read -ra patterns <<< "$(tr '\n' ' ' <<< "$DOCS_PATHS")"
+          if [ "$EVENT" != pull_request ] || [ "${#patterns[@]}" -eq 0 ]; then
+            echo "Every gate runs: no docs-paths, or not a pull request ($EVENT)."
+          elif ! git rev-parse -q --verify 'HEAD^2' > /dev/null; then
+            echo "::notice title=Every gate runs::the checkout is not the PR's merge commit, so its change cannot be read"
+          else
+            # --no-renames: a moved file counts at its old path and at its new one.
+            changed="$(git diff --no-renames --name-only 'HEAD^1' HEAD)"
+            excluded=()
+            for p in "${patterns[@]}"; do
+              excluded+=(":(glob,exclude)$p")
+            done
+            not_docs="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- . "${excluded[@]}")"
+            # Never docs, whatever docs-paths says.
+            always_code=(.airia .github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/pyproject.toml' '**/uv.lock'
+              '**/.python-version' '**/setup.cfg' '**/*.ini' '**/.importlinter')
+            never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
+            if [ -z "$changed" ]; then
+              echo "Every gate runs: the pull request changes no file."
+            elif [ -n "$not_docs$never" ]; then
+              echo "Every gate runs: these changed paths are not docs:"
+              printf '%s\n' "$not_docs" "$never" | sort -u | sed '/^$/d; s/^/  /'
+            else
+              code=false
+              echo "Docs only: lint and test are skipped. Changed:"
+              while IFS= read -r f; do echo "  $f"; done <<< "$changed"
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code changed: $code" >> "$GITHUB_STEP_SUMMARY"
+
   lint:
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 20
     permissions:
@@ -196,6 +283,8 @@ jobs:
 
   test:
     name: test ${{ matrix.python || '(.python-version)' }}
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 60
     permissions:
@@ -236,10 +325,15 @@ jobs:
       - name: Pytest at the coverage floor
         env:
           FLOOR: ${{ inputs.coverage-floor }}
+          DURATIONS: ${{ inputs.durations }}
         run: |
+          if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
+            echo "::error title=durations::durations must be a whole number of tests to list (0 lists all), not '$DURATIONS'"
+            exit 1
+          fi
           report="$RUNNER_TEMP/coverage.json"
           rm -f "$report"
-          pytest --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+          pytest "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
             exit 1
@@ -273,7 +367,7 @@ jobs:
         run: zizmor --offline --config "$ZIZMOR_CONFIG" .github
 
   gate:
-    needs: [lint, test, security]
+    needs: [changes, lint, test, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
     timeout-minutes: 5
@@ -283,6 +377,7 @@ jobs:
         env:
           OWN: ${{ toJSON(needs) }}
           EXTRA: ${{ inputs.extra-jobs }}
+          CODE: ${{ needs.changes.outputs.code }}
         run: |
           if ! jq -e 'type == "object"' <<< "$EXTRA" > /dev/null 2>&1; then
             echo "::error title=extra-jobs::extra-jobs must be toJSON(needs) of the call job, a JSON object; got: $EXTRA"
@@ -291,7 +386,16 @@ jobs:
           # The caller's jobs are prefixed, so one called `lint` cannot hide this workflow's.
           all="$(jq -n --argjson own "$OWN" --argjson extra "$EXTRA" '$own + ($extra | with_entries(.key |= "extra: " + .))')"
           jq -r 'to_entries[] | "- \(.key): \(.value.result)"' <<< "$all" | tee -a "$GITHUB_STEP_SUMMARY"
-          failed="$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$all")"
+          # Docs only (changes said so, and changes itself succeeded): lint and
+          # test were skipped on purpose. Any other skip, and any failure, fails.
+          skippable='[]'
+          if [ "$CODE" = false ]; then
+            skippable='["lint", "test"]'
+            echo "Docs only: lint and test were not run." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          failed="$(jq -r --argjson skip "$skippable" 'to_entries[]
+            | select(.value.result != "success" and (.value.result == "skipped" and (.key | IN($skip[]))) == false)
+            | "\(.key): \(.value.result)"' <<< "$all")"
           if [ -n "$failed" ]; then
             while IFS= read -r line; do
               echo "::error title=Gate not passed::$line"
