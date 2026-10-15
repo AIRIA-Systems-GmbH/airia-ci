@@ -66,9 +66,9 @@ on:
     inputs:
       runner:
         description: >-
-          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool;
-          a repository that cannot use it (a public one: the pool's runner group
-          refuses public repositories) passes '["ubuntu-latest"]'.
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor pool,
+          which serves only the organization's private repositories; a public one,
+          or any outside the organization, passes '["ubuntu-24.04"]'.
         required: false
         type: string
         default: '["self-hosted","linux","x64","thor"]'

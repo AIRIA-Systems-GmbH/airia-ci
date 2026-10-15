@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # airia-ci
 
-> **This README is for airia-ci's maintainers.** If you are adopting airia-ci in a repository, read the **[Quick start guide → HOWTO.md](HOWTO.md#quick-start-adopt-the-standard-in-a-python-repository)**: five steps, in order, each a command.
+> **This README is for airia-ci's maintainers.** If you are adopting airia-ci in a repository, read the **[Quick start guide → HOWTO.md](HOWTO.md#quick-start-adopt-the-standard-in-a-python-repository)**: five steps, in order, each a command. Read it on GitHub (`main`), not in an old local checkout: one from before `ci-v5` has no Python gate in it at all.
+
+**For a Python repository, airia-ci is `reusable-python-gate.yml`, the whole merge gate** (lint, types, tests at a 90 % coverage floor, licences, vulnerabilities, secrets, workflow security), which ends with the Claude review. The two Claude workflows below are the parts it calls, and the whole of what a repository in another language uses.
 
 The shared CI harness for AIRIA repositories, and the distribution channel of the AIRIA quality standard. It has three reusable workflows and six composite actions, consumed at the moving tag `@ci-v5`.
 
@@ -41,7 +43,7 @@ The call contract is the header of `reusable-claude-review.yml`; read it before 
 
 - adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v5`;
 - has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
-- runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-latest"]'`);
+- runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-24.04"]'`, which a public repository or one outside AIRIA-Systems-GmbH must pass);
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
 
 Both workflows also write `ci-results/harness.md`, which names the airia-ci workflow and commit the job runs. The review's copy also records the inputs the caller passed.
