@@ -64,7 +64,7 @@ Andrea's ruling (2026-10-15): the floor, with a ratchet. The gate's lint job enf
 bash <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/templates/python/ci-local.sh -H 'Accept: application/vnd.github.raw') --onboard
 ```
 
-It runs `ruff check --fix` (the safe fixes), `ruff format`, `ruff check --add-noqa` (it marks every remaining finding in place), then writes `.airia/ruff-baseline.json` and runs the gate's lint and test. Commit the result. From then on, the count only falls.
+It runs `ruff check --fix` (the safe fixes), `ruff format`, `ruff check --add-noqa` (it marks every remaining finding in place), then writes `.airia/ruff-baseline.json` and runs the gate's lint and test. Commit the result. From then on, the count only falls. `ci-local.sh` fetches the check from airia-ci's `main`, as it fetches itself, so between a merge and the next `ci-v5` move a laptop can run a newer check than the gate.
 
 Measured on 2026-10-15, ruff 0.17.0, each repository's default branch:
 

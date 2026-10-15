@@ -36,7 +36,9 @@ rule (findings with `--ignore-noqa` minus findings without). A count above its
 baseline is refused; with no baseline file every suppression is only warned
 about, until `--write-baseline` records it. A count below its baseline passes,
 with a notice that the baseline can fall. `.airia/` is never docs, so a PR
-that touches the baseline always runs the lint job.
+that touches the baseline always runs the lint job. The count is held to the
+file, not to the base branch's copy: a baseline raised in a PR (by hand or by
+`--write-baseline`) passes the gate and is caught in the diff and the review.
 
 `standard` and `ruff` use only the standard library: `standard` runs before uv
 is installed, and `ruff` runs with ruff on PATH and nothing else.
