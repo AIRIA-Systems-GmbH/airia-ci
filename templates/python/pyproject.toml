@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# The pyproject.toml blocks of the AIRIA quality standard, for a repository
+# whose merge gate is reusable-python-gate.yml. Copy each table you do not
+# have; `scripts/init.py` adds the missing ones and never touches a table you
+# already have. Replace <package> with the import name of your package.
+#
+# The versions are pins.toml's (a test holds them equal). A newer one is
+# allowed, an older one is refused by the gate. Change any setting here except
+# the floor; HOWTO.md's "May add, may not weaken" says what is fixed.
+
+# The portfolio baseline, the union of the strictest generic rule sets in use
+# (2026-10-15): AIRIA-process (E, W, F, I, B, C4, UP) and Portfolio-Dashboard
+# (adds SIM), at the 100-column width most repositories use. AIRIA-framework's
+# extra rules (D214, TID251) are about its own docs and its crypto owner, so
+# they stay there.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "SIM"]
+ignore = ["E501"]  # the width is ruff format's job
+
+# Pyright's `standard` mode, as every consumer runs it (AIRIA-framework
+# measured `strict` and did not adopt it). venvPath/venv make it resolve the
+# project's own environment; pythonVersion stops it inferring the language
+# level from whatever python is first on PATH.
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+
+# `--cov=<package>` gives the gate its figure: without it the test job fails.
+# `-n auto` runs the suite on pytest-xdist workers: one per CPU in CI. On a
+# laptop, airia-ci's ci-local.sh caps it at 4 (AIRIA_XDIST_WORKERS); a bare
+# `uv run pytest` takes PYTEST_XDIST_AUTO_NUM_WORKERS, else every CPU.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -n auto --cov=<package>"
+
+# Branches count, as in AIRIA-framework: the floor is over statements and branches.
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+
+# The tools that run inside the project's environment, locked at the pins, so
+# `uv run ruff` on a laptop is the ruff the gate runs.
+[dependency-groups]
+dev = [
+    "ruff==0.17.0",
+    "pyright[nodejs]==1.1.414",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "pytest-xdist==3.8.0",
+    "coverage==7.16.2",
+]

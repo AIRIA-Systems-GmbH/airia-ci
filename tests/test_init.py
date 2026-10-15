@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import os
+import tomllib
 import unittest
 from unittest import mock
 
@@ -35,6 +36,8 @@ NO_RULESET = [r"rulesets --jq", {"json": []}]
 HAS_RULESET = [r"rulesets --jq", {"json": [{"name": init.RULESET, "id": 7}]}]
 CREATE = ["-X POST .*rulesets", {"text": "{}"}]
 UPDATE = ["-X PUT .*rulesets/7", {"text": "{}"}]
+TEMPLATE = ["contents/templates/python/pyproject.toml",
+            {"text": (ROOT / "templates/python/pyproject.toml").read_text()}]
 OLD_RULESET = [r"^api repos/o/app/rulesets/7$", {"json": {"rules": [
     {"type": "deletion"},
     {"type": "required_status_checks", "parameters": {"required_status_checks": [
@@ -288,7 +291,7 @@ class Init(unittest.TestCase):
 
     def test_a_python_repository_gets_the_standard_gate_and_its_two_required_checks(self):
         (self.repo / "pyproject.toml").write_text("[project]\nname = 'app'\n")
-        code, out, _ = self.run_main([VIEW, HAS_SECRET, NO_RULESET, CREATE], "--yes")
+        code, out, _ = self.run_main([VIEW, HAS_SECRET, TEMPLATE, NO_RULESET, CREATE], "--yes")
         self.assertEqual(code, 0, out)
         ci = yaml.safe_load(self.file(".github/workflows/ci.yml"))
         self.assertEqual(ci["jobs"]["ci"]["uses"], f"{init.HARNESS}/reusable-python-gate.yml@{init.TAG}")
@@ -375,6 +378,144 @@ class Init(unittest.TestCase):
         code, _, err = self.run_main([VIEW], "--runner", "ubuntu-latest")
         self.assertEqual(code, 2)
         self.assertEqual(self.r.calls(), [])
+
+
+class Pyproject(unittest.TestCase):
+    """The standard's pyproject.toml blocks: added when missing, never over what the project has."""
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.repo = self.r.tmp / "app"
+        (self.repo / ".github/workflows").mkdir(parents=True)
+        (self.repo / "src/my_app").mkdir(parents=True)
+        self.template = tomllib.loads(TEMPLATE[1]["text"])
+
+    def wire(self, pyproject: str, rules=(TEMPLATE,)):
+        (self.repo / "pyproject.toml").write_text(pyproject)
+        self.r.rules([VIEW, HAS_SECRET, *rules, HAS_RULESET, UPDATE])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.dict(os.environ, self.r.env()), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = init.main(["--dir", str(self.repo), "--yes"])
+        self.text = (self.repo / "pyproject.toml").read_text()
+        return code, out.getvalue() + err.getvalue()
+
+    def dev(self) -> list[str]:
+        return tomllib.loads(self.text)["dependency-groups"]["dev"]
+
+    def test_an_empty_pyproject_gets_every_block_and_the_steps_that_remain(self):
+        code, out = self.wire("[project]\nname = 'my-app'\n")
+        self.assertEqual(code, 0, out)
+        got = tomllib.loads(self.text)
+        self.assertEqual(got["project"], {"name": "my-app"})
+        for tool in ("ruff", "pyright", "pytest", "coverage"):
+            with self.subTest(tool=tool):
+                self.assertIn(tool, got["tool"])
+        # The gate's figure: the package in the tree, never the placeholder.
+        self.assertIn("--cov=my_app", got["tool"]["pytest"]["ini_options"]["addopts"].split())
+        self.assertEqual(got["tool"]["ruff"], self.template["tool"]["ruff"])
+        self.assertEqual(self.dev(), self.template["dependency-groups"]["dev"])
+        steps = out.split("\nNext:\n")[1]
+        # uv.lock is stale after the edit: the gate's `uv sync --locked` fails until it is relocked.
+        self.assertLess(steps.index("uv lock"), steps.index("ci-local.sh"))
+        self.assertLess(steps.index("ci-local.sh"), steps.index(") protect"))
+        self.assertIn("contents/scripts/init.py -H 'Accept: application/vnd.github.raw') protect", steps)
+        self.assertNotIn("<package>", out)
+
+    def test_an_existing_table_is_kept_byte_for_byte_and_named(self):
+        mine = "[project]\nname = 'my-app'\n\n[tool.ruff]\nline-length = 88  # ours\n\n[tool.ruff.lint]\nselect = ['E']\n"
+        code, out = self.wire(mine)
+        self.assertEqual(code, 0, out)
+        self.assertTrue(self.text.startswith(mine))
+        self.assertEqual(tomllib.loads(self.text)["tool"]["ruff"], {"line-length": 88, "lint": {"select": ["E"]}})
+        self.assertEqual(self.text.count("[tool.ruff"), 2, "no second [tool.ruff] table: TOML refuses duplicates")
+        self.assertIn("kept      [tool.ruff] in pyproject.toml (exists)", out)
+        self.assertIn("added     [tool.pyright]", out)
+
+    def test_the_dev_group_is_merged_without_lowering_a_pin(self):
+        code, out = self.wire(
+            "[project]\nname = 'my-app'\n\n[dependency-groups]\ndev = [\n"
+            "    # our own\n    \"httpx>=0.27\",\n    \"ruff==0.99.0\",\n    \"pytest==9.0.0\",\n]\n\n"
+            "[tool.uv]\ndev = 'not the group'\n")
+        self.assertEqual(code, 0, out)
+        dev = self.dev()
+        self.assertIn("ruff==0.99.0", dev, "a newer pin is the project's to keep")
+        self.assertIn("pytest==9.0.0", dev, "an older one is reported, not rewritten")
+        self.assertIn("httpx>=0.27", dev)
+        self.assertNotIn("ruff==0.17.0", dev)
+        for spec in ("pyright[nodejs]==1.1.414", "pytest-cov==7.1.0", "pytest-xdist==3.8.0", "coverage==7.16.2"):
+            self.assertIn(spec, dev)
+        self.assertIn("warning: the dev group has pytest==9.0.0, below the standard's pytest==9.1.1", out)
+        self.assertIn("kept      ruff==0.99.0 in the dev group (exists)", out)
+        self.assertEqual(tomllib.loads(self.text)["tool"]["uv"], {"dev": "not the group"})
+
+    def test_a_second_run_changes_nothing(self):
+        code, _ = self.wire("[project]\nname = 'my-app'\n\n[dependency-groups]\ndev = [\"httpx\"]\n")
+        self.assertEqual(code, 0)
+        first = self.text
+        self.assertEqual(self.dev()[-1], "httpx", "a one-line group takes the new entries before its own")
+        code, out = self.wire(first)
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.text, first)
+        self.assertNotIn("added", out)
+
+    def test_a_group_table_without_dev_gets_one(self):
+        code, out = self.wire("[project]\nname = 'x'\n\n[dependency-groups]\ndocs = ['mkdocs']\n")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.dev(), self.template["dependency-groups"]["dev"])
+        self.assertEqual(tomllib.loads(self.text)["dependency-groups"]["docs"], ["mkdocs"])
+
+    def test_no_package_in_the_tree_leaves_the_placeholder_and_says_so(self):
+        code, out = self.wire("[project]\nname = 'elsewhere'\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn("--cov=<package>", self.text)
+        self.assertIn("replace <package> in pyproject.toml's addopts", out)
+
+    def test_a_tools_own_file_wins_so_no_table_is_added_beside_it(self):
+        (self.repo / "ruff.toml").write_text("line-length = 120\n")
+        code, out = self.wire("[project]\nname = 'my-app'\n")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("ruff", tomllib.loads(self.text)["tool"])
+        self.assertIn("kept      ruff.toml (ruff's own file, which wins over [tool.ruff])", out)
+
+    def test_pytest_without_a_coverage_target_is_named_in_the_steps(self):
+        code, out = self.wire("[project]\nname = 'my-app'\n\n[tool.pytest.ini_options]\naddopts = '-q'\n")
+        self.assertEqual(code, 0, out)
+        self.assertIn('add "--cov=<package>" to addopts', out.split("\nNext:\n")[1])
+
+    def test_a_pull_request_workflow_that_is_not_the_standard_is_named_in_the_steps(self):
+        (self.repo / ".github/workflows/ci.yml").write_text(CI)
+        code, out = self.wire("[project]\nname = 'my-app'\n", rules=(TEMPLATE, NO_RULESET, CREATE))
+        self.assertEqual(code, 0, out)
+        self.assertIn("your pull-request workflow is not the standard", out.split("\nNext:\n")[1])
+
+    def test_a_dev_group_it_cannot_edit_is_left_alone_with_the_reason(self):
+        dotted = "dependency-groups.dev = ['httpx']\n[project]\nname = 'my-app'\n"
+        code, out = self.wire(dotted)
+        self.assertEqual(code, 2)
+        self.assertEqual(self.text, dotted)
+        self.assertIn("add ruff==0.17.0, pyright[nodejs]==1.1.414", out)
+
+    def test_a_dev_key_outside_its_table_is_not_taken_for_the_group(self):
+        code, out = self.wire("[dependency-groups]\ndev = { include-group = 'x' }\n\n[tool.x]\ndev = [1]\n")
+        self.assertEqual(code, 2)
+        self.assertIn("not under its [dependency-groups] header", out)
+
+    def test_an_unreadable_pyproject_or_template_stops_with_the_reason(self):
+        code, out = self.wire("[project\n")
+        self.assertEqual(code, 2)
+        code, out = self.wire("[project]\nname = 'x'\n", rules=([TEMPLATE[0], {"stderr": "HTTP 404", "exit": 1}],))
+        self.assertEqual(code, 2)
+        self.assertIn("could not fetch templates/python/pyproject.toml: HTTP 404", out)
+        self.assertEqual(self.text, "[project]\nname = 'x'\n")
+
+    def test_a_repository_without_pyproject_gets_the_short_next_step(self):
+        self.r.rules([VIEW, HAS_SECRET, HAS_RULESET])
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, self.r.env()), contextlib.redirect_stdout(out):
+            self.assertEqual(init.main(["--dir", str(self.repo), "--yes"]), 0)
+        self.assertIn("Next: install the Claude GitHub App", out.getvalue())
+        self.assertEqual([c for c in self.r.calls() if "templates" in " ".join(c["args"])], [])
 
 
 if __name__ == "__main__":

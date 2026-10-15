@@ -5,6 +5,49 @@ SPDX-License-Identifier: Apache-2.0
 
 # Using airia-ci in your repository
 
+## Quick start: adopt the standard in a Python repository
+
+airia-ci is a Python repository's whole merge gate (lint, types, tests at the coverage floor, licences, vulnerabilities, secrets, workflow security), then the Claude review: not only the review. Follow these steps in order, from the root of the repository's checkout, logged in with `gh`, with `uv` installed. Each one is a command or a check you can run.
+
+1. **Run `init.py`:**
+
+   ```bash
+   python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw')
+   ```
+
+   It writes `.github/workflows/ci.yml` (the gate: it calls [`reusable-python-gate.yml`](.github/workflows/reusable-python-gate.yml), which runs the review too), `.github/workflows/claude.yml` (`@claude`) and `.github/claude-review.md` (your review rules); adds the standard's blocks to `pyproject.toml`; sets the `CLAUDE_CODE_OAUTH_TOKEN` secret; and offers the ruleset. It never overwrites a file, a table or a dependency it finds, and says so for each. It writes `ci.yml` only when no workflow runs on `pull_request`: if one does, it is not the standard (init.py says so in its last lines), so delete it, or move its other jobs into `ci.yml` through [`extra-jobs`](#extend-it), and run init.py again. It commits nothing, and ends with the steps below, numbered.
+2. **Bring the repository up to the standard.** `pyproject.toml` needs the blocks of [`templates/python/pyproject.toml`](templates/python/pyproject.toml): `[tool.ruff]`, `[tool.pyright]`, `[tool.pytest.ini_options]` with `--cov=<package>` and `-n auto`, `[tool.coverage]` and the dev group with ruff, pyright, pytest, pytest-cov, pytest-xdist and coverage at the [pins](pins.toml). init.py added the missing ones; compare the ones it kept with the template yourself. Then:
+   - `uv lock`, and commit `uv.lock` (the gate runs `uv sync --locked`);
+   - commit `.python-version`, one of `pins.toml`'s `[python] allowed`;
+   - `uv run ruff format .`;
+   - give every file REUSE licence information, until `uvx reuse@<pin> lint` passes;
+   - pin every action in `.github/` to a commit SHA (only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
+3. **Run the gate's lint and test jobs locally,** with the gate's commands and your locked tools, pytest on at most 4 workers (`AIRIA_XDIST_WORKERS`):
+
+   ```bash
+   bash <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/templates/python/ci-local.sh -H 'Accept: application/vnd.github.raw')
+   ```
+
+   Repeat until it ends with `lint and test pass as the gate runs them`. The `security` job runs in CI; its commands are under [What runs](#what-runs).
+4. **Open a pull request and merge it green.** Install the [Claude GitHub App](https://github.com/apps/claude) on the repository if it is not, commit on a branch and open the PR. It merges when `ci / gate` and `ci / claude-review / claude-review` succeed.
+5. **Protect the branch:**
+
+   ```bash
+   python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H 'Accept: application/vnd.github.raw') protect
+   ```
+
+   It writes the standard ruleset with those two checks required. GitHub refuses rulesets on a private repository of a Free-plan organization or personal account, and init.py says so: upgrade to Team (organization) or Pro (personal), make the repository public, or leave it unprotected and say so in its README. The gate then still runs and reports, but nothing stops a merge past it.
+
+**What the gate enforces, and what you may change:**
+
+- Always enforced: every gate under [What runs](#what-runs), at the tool versions in [`pins.toml`](pins.toml) (you may lock newer, never older), coverage of your `--cov` package at 90 % or more, and the Claude review.
+- Yours to change: the ruff rules, the pyright settings and the pytest options of the template, as long as `--cov=<package>` stays in `addopts`.
+- Yours to add: a higher floor, more Pythons, your own jobs, review rules and the docs-only fast path, through the inputs under [Extend it](#extend-it).
+- Never yours to weaken: the floor, a gate, the type checker, a pin or the ruleset ([May add, may not weaken](#may-add-may-not-weaken)); the weekly conformance scan opens an issue when one drifts.
+- Not a Python repository: only the review applies, so run step 1, open the PR and stop ([Wire a repository](#wire-a-repository)).
+
+## About this guide
+
 Tasks for a repository that calls airia-ci. What each piece is lives in the [README](README.md); the call contracts are the headers of [`reusable-claude-review.yml`](.github/workflows/reusable-claude-review.yml) and [`reusable-claude-respond.yml`](.github/workflows/reusable-claude-respond.yml), and they win over this page.
 
 ## Wire a repository
@@ -18,7 +61,8 @@ python3 <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/scripts/init.py -H '
 It writes only the files that are missing:
 
 - `.github/workflows/claude.yml`, the `@claude` caller;
-- the `claude-review` job at the end of your pull-request workflow; with no such workflow, `.github/workflows/merge-gate.yml`, whose placeholder gate fails until you put your real gates in it; with several, it prints the job for you to add to the one that gates merges;
+- in a Python repository with no pull-request workflow, `.github/workflows/ci.yml`, the [standard](#adopt-the-standard) gate, which runs the review itself; and the missing blocks of [`templates/python/pyproject.toml`](templates/python/pyproject.toml) in its `pyproject.toml`;
+- otherwise the `claude-review` job at the end of your pull-request workflow; with no such workflow, `.github/workflows/merge-gate.yml`, whose placeholder gate fails until you put your real gates in it; with several, it prints the job for you to add to the one that gates merges;
 - `.github/claude-review.md`, your review rules, to fill in.
 
 Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variable, or by running `claude setup-token`) and offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for it. `--runner '["ubuntu-latest"]'` uses GitHub's runners instead of the Thor pool; `--yes` answers every question yes.
@@ -88,7 +132,7 @@ What the gate expects of the repository. It fails, and says what is missing, whe
 | **`ci / gate`** | red unless every job above, and every extra job, succeeded; a skipped job is not a pass, except `lint` and `test` on a docs-only PR | required |
 | **`ci / claude-review / claude-review`** | the automatic review, after `gate`, even a red one; with no Claude credential it fails, and says why | required |
 
-The same gates on a laptop, at the versions in `pins.toml`:
+The same gates on a laptop, at the versions in `pins.toml`; `ci-local.sh` ([Quick start](#quick-start-adopt-the-standard-in-a-python-repository), step 3) runs the first four for you:
 
 ```
 uv sync --locked
