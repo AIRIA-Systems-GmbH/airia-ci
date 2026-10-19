@@ -33,6 +33,8 @@ TIME_CAP = [
     {"annotation_level": "failure", "message": "The operation was canceled."},
 ]
 CANCELLED = [{"annotation_level": "failure", "message": "The operation was canceled."}]
+BAD_GATEWAY = {"stderr": "gh: Server Error (HTTP 502)\n", "exit": 1}
+FAKE_SLEEP = '#!/bin/sh\necho "$1" >> "$(dirname "$0")/../sleeps"\n'
 
 
 def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None, annotations=None):
@@ -51,15 +53,25 @@ def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None, annota
 
 
 class Collect(unittest.TestCase):
-    def collect(self, jobs, logs, **kw):
+    def collect(self, jobs, logs, env=None, **kw):
         r = Runner(self, rules({"json": {"jobs": jobs}} if isinstance(jobs, list) else jobs, logs, **kw))
-        p = r.run(ACTION, STEP, RUN_ID="42", OUT=str(r.tmp / "ci"))
+        # No real backoff between retries of a failed gh call: a test that answers an error must stay fast.
+        # The fake `sleep` records each pause instead, so the backoff itself is asserted.
+        r.tool("sleep", FAKE_SLEEP)
+        p = r.run(ACTION, STEP, RUN_ID="42", OUT=str(r.tmp / "ci"), **(env or {}))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.r = r
         return r.outputs(), (r.tmp / "ci/jobs.md").read_text()
 
     def log(self, id_):
         return (self.r.tmp / f"ci/logs/{id_}.log").read_text()
+
+    def calls_to(self, pattern):
+        return len([c for c in self.r.calls() if pattern in " ".join(c["args"])])
+
+    def sleeps(self):
+        f = self.r.tmp / "sleeps"
+        return f.read_text().split() if f.exists() else []
 
 
 KILLED = [{"name": "Set up job", "conclusion": "success"}, {"name": "Run tests", "conclusion": "cancelled"},
@@ -149,12 +161,14 @@ class CollectNeverFailsTheJob(Collect):
         self.assertIn("**The run's jobs could not be listed**", md)
         self.assertIn("HTTP 403: Resource not accessible", md, "the reviewer must see why")
         self.assertIn("could not be listed", self.r.summary.read_text())
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 1, "only a 5xx is worth asking again")
 
     def test_a_failed_head_sha_lookup_counts_as_a_failed_listing(self):
         out, md = self.collect([job(1, "Lint", "success", RAN)], {1: "ok\n"},
                                run={"stderr": "HTTP 502\n", "exit": 1})
         self.assertEqual(out, {"collected": "0"})
         self.assertIn("HTTP 502", md)
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3, "a 5xx on the head_sha read retries the whole listing")
 
     def test_an_unreadable_or_empty_log_is_counted_and_says_why(self):
         jobs = [job(1, "Lint", "success", RAN), job(2, "Tests", "failure",
@@ -185,6 +199,63 @@ class CollectNeverFailsTheJob(Collect):
         out, md = self.collect([job(1, "Lint", "success", RAN), running], {1: "ok\n"})
         self.assertEqual(out["collected"], "1")
         self.assertNotIn("Slow", md)
+
+
+class CollectRetriesATransientServerError(Collect):
+    """Issue #54: one `gh: Server Error (HTTP 502)` while listing the jobs lost the whole CI evidence."""
+
+    def test_iss_54_a_502_on_the_first_job_listing_is_retried(self):
+        listing = {"json": {"jobs": [job(1, "Lint", "success", RAN)]}, "first": 1, "before": BAD_GATEWAY}
+        out, md = self.collect(listing, {1: "ok\n"})
+        self.assertNotIn("could not be listed", md, "a transient 502 is not a run whose jobs cannot be listed")
+        self.assertEqual(out["collected"], "1")
+        self.assertIn("Commit: abc123.", md)
+        listings = [c for c in self.r.calls() if "actions/runs/42/jobs" in " ".join(c["args"])]
+        self.assertEqual(len(listings), 2, "the failed listing is asked once more, and only once")
+
+    def test_the_third_attempt_is_still_made(self):
+        listing = {"json": {"jobs": [job(1, "Lint", "success", RAN)]}, "first": 2, "before": BAD_GATEWAY}
+        out, md = self.collect(listing, {1: "ok\n"})
+        self.assertEqual(out["collected"], "1")
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3)
+
+    def test_a_502_that_persists_gives_up_after_three_attempts_and_says_why(self):
+        out, md = self.collect(BAD_GATEWAY, {})
+        self.assertEqual(out, {"collected": "0"})
+        self.assertIn("**The run's jobs could not be listed**", md)
+        self.assertIn("HTTP 502", md, "the reviewer must see the last attempt's error")
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3, "bounded: a dead API is not asked forever")
+        self.assertEqual(md.count("HTTP 502"), 1, "each attempt starts a fresh jobs.err")
+        self.assertEqual(self.sleeps(), ["10", "20"], "the default pause, growing with each attempt")
+
+    def test_a_knob_that_is_not_a_number_takes_its_default(self):
+        # `three` must not retry forever, and `1s` must not end the step in an arithmetic error.
+        out, md = self.collect(BAD_GATEWAY, {}, env={"CI_RESULTS_ATTEMPTS": "three", "CI_RESULTS_RETRY_SLEEP": "1s"})
+        self.assertEqual(out, {"collected": "0"})
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3)
+        self.assertEqual(self.sleeps(), ["10", "20"])
+
+    def test_a_transient_502_on_the_head_sha_read_is_retried(self):
+        out, md = self.collect([job(1, "Lint", "success", RAN)], {1: "ok\n"},
+                               run={"json": {"head_sha": "abc123"}, "first": 1, "before": BAD_GATEWAY})
+        self.assertEqual(out["collected"], "1")
+        self.assertIn("Commit: abc123.", md)
+        self.assertEqual(self.calls_to("actions/runs/42 "), 2)
+
+    def test_rows_a_failed_attempt_wrote_are_not_listed_twice(self):
+        # --paginate can print the pages it got before a later page fails with a 5xx.
+        jobs = {"jobs": [job(1, "Lint", "success", RAN), job(2, "Docs", "success", RAN)]}
+        listing = {"json": jobs, "first": 1, "before": {"json": jobs, **BAD_GATEWAY}}
+        out, md = self.collect(listing, {1: "ok\n", 2: "ok\n"})
+        self.assertEqual(out["collected"], "2")
+        self.assertEqual(md.count("| Lint |"), 1)
+        self.assertEqual(md.count("| Docs |"), 1)
+
+    def test_ci_results_attempts_bounds_the_attempts(self):
+        listing = {"json": {"jobs": [job(1, "Lint", "success", RAN)]}, "first": 1, "before": BAD_GATEWAY}
+        out, md = self.collect(listing, {1: "ok\n"}, env={"CI_RESULTS_ATTEMPTS": "1"})
+        self.assertIn("could not be listed", md)
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 1)
 
 
 if __name__ == "__main__":

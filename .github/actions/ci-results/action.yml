@@ -64,10 +64,18 @@ runs:
           exit 0
         fi
         run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$RUN_ID"
-        # This step is context for a Claude job, never a gate: if it fails, every
-        # later step of the caller's job is skipped and the Claude run silently
-        # never happens. So a failed lookup still writes jobs.md, saying why.
-        if ! gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
+        # A 5xx is GitHub's, not the run's: one `HTTP 502` on the listing lost a
+        # whole run's results (Issue #54). So a 5xx is asked again, with a growing
+        # pause, CI_RESULTS_ATTEMPTS times in all; any other error is final at once.
+        # Each attempt's `>` empties jobs.tsv and jobs.err: --paginate can have
+        # written some pages before it failed, and the head_sha read appends.
+        # A knob that is not a plain number takes its default: `three` would retry
+        # forever, and `1s` would end the step in an arithmetic error.
+        list_jobs() {
+          local attempt=1 attempts="${CI_RESULTS_ATTEMPTS:-}" backoff="${CI_RESULTS_RETRY_SLEEP:-}"
+          case "$attempts" in ''|*[!0-9]*) attempts=3 ;; esac
+          case "$backoff" in ''|*[!0-9]*) backoff=10 ;; esac
+          until gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
                --jq '.jobs[] | select(.status == "completed")
                      | [.id, .name,
                         # No step ever started: no runner picked the job up, or it was
@@ -86,7 +94,18 @@ runs:
                           | .name + (if .conclusion == "cancelled" then " (cancelled)" else "" end)]
                          | join("; "))]
                      | @tsv' > "$OUT/jobs.tsv" 2> "$OUT/jobs.err" \
-           || ! head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; then
+             && head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; do
+            if [ "$attempt" -ge "$attempts" ] || ! grep -q 'HTTP 5[0-9][0-9]' "$OUT/jobs.err"; then
+              return 1
+            fi
+            sleep $((10#$backoff * attempt))
+            attempt=$((attempt + 1))
+          done
+        }
+        # This step is context for a Claude job, never a gate: if it fails, every
+        # later step of the caller's job is skipped and the Claude run silently
+        # never happens. So a failed lookup still writes jobs.md, saying why.
+        if ! list_jobs; then
           {
             echo "# CI results — run $run_url"
             echo
