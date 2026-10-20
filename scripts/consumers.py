@@ -115,7 +115,7 @@ def ruleset(repo: str) -> dict | None:
 
 def drift(repo: str) -> list[str]:
     """What in this consumer falls short of the standard; empty when nothing does."""
-    found = sorted({f"{path} calls airia-ci at `{ref}`, a frozen tag: call `@{CURRENT}`"
+    found = sorted({f"{path} calls airia-ci at `{ref}`, not `@{CURRENT}`"
                     for path, _, ref in pins(repo) if ref != CURRENT})
     floor = PINS["standard"]["coverage-floor"]
     with tempfile.TemporaryDirectory() as tmp:
@@ -233,14 +233,14 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    behind = 0
+    pinned = 0
     for repo, path, called, ref in rows:
-        state = "current" if ref == CURRENT else f"PINNED (call @{CURRENT})"
-        behind += ref != CURRENT
+        state = "current" if ref == CURRENT else f"PINNED (not @{CURRENT})"
+        pinned += ref != CURRENT
         print(f"{repo}\t{path}\t{called.rsplit('/', 1)[-1]}@{ref}\t{state}")
-    print(f"{len({r[0] for r in rows})} consumers, {len(rows)} pins, {behind} not on @{CURRENT}")
+    print(f"{len({r[0] for r in rows})} consumers, {len(rows)} pins, {pinned} not on @{CURRENT}")
     if not args.conformance:
-        return 1 if behind else 0
+        return 1 if pinned else 0
     drifting, failed = 0, 0
     # One consumer the token cannot read must not blind the scan of the others.
     for repo in sorted({r[0] for r in rows}):
@@ -253,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {repo}: {exc}", file=sys.stderr)
     print(f"{drifting} of {len({r[0] for r in rows})} consumers drift from the standard"
           + (f"; {failed} could not be scanned" if failed else ""))
-    return 2 if failed else 1 if behind or drifting else 0
+    return 2 if failed else 1 if pinned or drifting else 0
 
 
 if __name__ == "__main__":

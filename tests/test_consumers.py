@@ -47,7 +47,7 @@ class Consumers(Scan):
         ])
         self.assertEqual(code, 1)
         self.assertIn("o/new\t.github/workflows/ci.yml\treusable-claude-review.yml@main\tcurrent", out)
-        self.assertIn("o/old\t.github/workflows/ci.yml\treusable-claude-review.yml@ci-v2\tPINNED (call @main)", out)
+        self.assertIn("o/old\t.github/workflows/ci.yml\treusable-claude-review.yml@ci-v2\tPINNED (not @main)", out)
         self.assertIn("2 consumers, 2 pins, 1 not on @main", out)
 
     def test_all_current_passes_and_skips_repos_without_workflows_and_airia_ci_itself(self):
@@ -152,7 +152,7 @@ class Conformance(Scan):
         (create,) = self.issue_calls(r, "create")
         self.assertEqual(create[create.index("--title") + 1], consumers.TITLE)
         body = create[create.index("--body") + 1]
-        for expected in ("calls airia-ci at `ci-v2`, a frozen tag: call `@main`",
+        for expected in ("calls airia-ci at `ci-v2`, not `@main`",
                          "runs ruff unpinned",
                          "uv.lock resolves ruff 0.1.0, below the pinned",
                          "fail_under is 70, under the standard's 90",
