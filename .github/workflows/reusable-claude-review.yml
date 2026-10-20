@@ -28,7 +28,7 @@ name: Claude Code Review (shared)
 #     needs: [<every gate job>]
 #     if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
 #     permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
-#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v5
+#     uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@main
 #     with:
 #       pr-number: ${{ github.event.pull_request.number }}
 #       extra-allow: |          # optional: this repo's own gates, if not covered
@@ -50,8 +50,15 @@ name: Claude Code Review (shared)
 #       the repo's own review rules (how its gates are invoked, its traps). The
 #       reviewer reads it before anything else.
 #
-# VERSIONING. Consumers pin `@ci-v5`. A compatible change moves the tag; a
-# change to the call contract above is the next major (`ci-v6`). `ci-v5` began
+# VERSIONING. Consumers call `@main`, never a pinned tag (Andrea, 2026-10-20):
+# a fix lands once and reaches every caller on its next run. A red build is
+# fixed here, in airia-ci, never pinned back to a tag in the consumer. A change
+# to the call contract above is announced before it merges, because no tag
+# shields a caller from it.
+#
+# The `ci-vN` tags stay as history and no longer move: a caller still on one
+# is frozen at its tag, whose workflows call their actions at that same tag,
+# so moving one past this paragraph would hand it main's actions. `ci-v5` began
 # with the AIRIA quality standard: reusable-python-gate.yml calls this review
 # after its `gate` check, and both are required checks; this workflow's own
 # contract only gained the optional `extra-prompt`. `ci-v4` began
@@ -66,8 +73,8 @@ name: Claude Code Review (shared)
 # its reviewer never reads the gate results; `ci-v1` is frozen. From `ci-v3` on,
 # a run warns, and the review notes, when a newer major exists (HARNESS_MAJOR,
 # bumped with each new major). The actions this workflow uses
-# are pinned to the same tag, because `./` inside a called workflow is the
-# CALLER's checkout, not this repository.
+# are called `@main` too, by full path, because `./` inside a called workflow
+# is the CALLER's checkout, not this repository.
 #
 # WHEN. After the merge gate, never beside it. Until 2026-09-25 each repo fired
 # its review on `opened` in parallel with CI and re-ran the gates itself: every
@@ -252,7 +259,7 @@ jobs:
       - name: Collect the merge gate's results
         id: results
         if: steps.once.outputs.review == 'true' || steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@ci-v5
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/ci-results@main
         with:
           # A called workflow shares its caller's run, so this IS the gate run.
           run-id: ${{ github.run_id }}
@@ -281,7 +288,7 @@ jobs:
       # this attempt's gate table in the existing comment.
       - name: Refresh the review's gate results
         if: steps.once.outputs.refresh == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@ci-v5
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-refresh@main
         with:
           comment-id: ${{ steps.once.outputs.comment-id }}
           jobs-md: ${{ github.workspace }}/ci-results/jobs.md
@@ -341,7 +348,7 @@ jobs:
       - name: Resolve the cached Claude Code
         id: claude-cli
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@ci-v5
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-cli@main
 
       # The review's Claude Code settings: the shared policy's read-only
       # `review` profile plus the caller's extra-allow / extra-deny. The policy
@@ -349,7 +356,7 @@ jobs:
       - name: Compose the review settings
         id: settings
         if: steps.once.outputs.review == 'true'
-        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@ci-v5
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-settings@main
         with:
           profile: review
           extra-allow: ${{ inputs.extra-allow }}
