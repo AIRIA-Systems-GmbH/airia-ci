@@ -80,14 +80,17 @@ name: Claude Code Review (shared)
 # its review on `opened` in parallel with CI and re-ran the gates itself: every
 # PR paid for its tests twice (AIRIA-framework PR #741 moved it).
 #
-# ONCE PER PR. The first step looks for an earlier automatic review (the
-# footer this workflow writes, unchanged from the per-repo copies so their
-# reviews count) and stops if there is one. That check, not the event type,
-# is what makes it once: a gate run cancelled by a new push takes its review
-# job with it, and the next push's run then reviews instead. Deliberately
-# never a re-roll on every push: a stateless reviewer re-rolling manufactures
-# an endless ping-pong (AIRIA-framework PR #405 ran eight rounds that way).
-# Later reviews are `@claude`.
+# ONCE PER HEAD. The first step finds the newest automatic review (the footer
+# this workflow writes, unchanged from the per-repo copies so their reviews
+# count) and the head its run was for. That head, not the event type, decides:
+# the same head is skipped (ready_for_review, a re-opened PR), and a newer head
+# is reviewed again, so the required check is never green on a head no review
+# covered. Until 2026-10-20 (UTC) it was once per PR, and every push after the first
+# review passed in seconds unreviewed (CryptoStudio #430, airia-ci#60). The
+# re-review is not a stateless re-roll, which manufactures an endless ping-pong
+# (AIRIA-framework PR #405 ran eight rounds that way): it gets the earlier
+# review as ci-results/previous-review.md and reports only what is new or
+# still open. Questions in between are `@claude`.
 #
 # A RE-RUN REFRESHES, IT DOES NOT RE-REVIEW. When the earlier review was
 # written by this same run (`gh run rerun --failed` on the same commit, usually
@@ -197,26 +200,43 @@ jobs:
           PR: ${{ inputs.pr-number }}
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # The third field: was the prior review written by THIS run? Its footer
-          # links the run; the closing paren keeps run 42 from matching run 4200.
+          # Every automatic review, oldest first: its comment id, its URL and the
+          # run its footer links (the closing paren keeps run 42 from matching 4200).
           # shellcheck disable=SC2016  # the backticks are literal text in the footer
-          prior="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+          reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]")
                       | select(.body | contains("_Automatic review by `claude-code-review.yml`"))
-                      | [.id, .html_url, (.body | contains("/actions/runs/'"${RUN_ID}"')"))] | @tsv' | head -1)"
-          if [ -z "${prior}" ]; then
+                      | [.id, .html_url, ([.body | scan("/actions/runs/([0-9]+)\\)")] | last // [""] | .[0])] | @tsv')"
+          if [ -z "${reviews}" ]; then
             echo "review=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          IFS=$'\t' read -r comment_id url same_run <<< "${prior}"
-          echo "PR #${PR} already has its automatic review: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "review=false" >> "$GITHUB_OUTPUT"
-          if [ "${ATTEMPT}" -gt 1 ] && [ "${same_run}" = "true" ]; then
+          same="$(awk -F'\t' -v run="${RUN_ID}" '$3 == run' <<< "${reviews}" | tail -n 1)"
+          if [ -n "${same}" ] && [ "${ATTEMPT}" -gt 1 ]; then
+            IFS=$'\t' read -r comment_id url _ <<< "${same}"
+            echo "PR #${PR} already has its automatic review: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "It was written by an earlier attempt of this run, so its gate table is refreshed instead." | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "refresh=true" >> "$GITHUB_OUTPUT"
-            echo "comment-id=${comment_id}" >> "$GITHUB_OUTPUT"
+            { echo "review=false"; echo "refresh=true"; echo "comment-id=${comment_id}"; } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          # Once per head, not once per PR: a review covers the head its run was
+          # for, and a newer head is reviewed again (airia-ci#60). A run that
+          # cannot be read counts as another head; never green on "could not tell".
+          head="${HEAD_SHA:-$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha || true)}"
+          IFS=$'\t' read -r comment_id url run <<< "$(tail -n 1 <<< "${reviews}")"
+          reviewed=""
+          if [ -n "${run}" ]; then
+            reviewed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq '.head_sha // empty' 2>/dev/null || true)"
+          fi
+          if [ -n "${head}" ] && [ "${reviewed}" = "${head}" ]; then
+            echo "PR #${PR} already has its automatic review of ${head}: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "review=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "The automatic review ${url} covered ${reviewed:-an unknown head}, not ${head:-this head}: reviewing again." | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "review=true"; echo "prior-comment-id=${comment_id}"; echo "prior-head=${reviewed:-unknown}"; } >> "$GITHUB_OUTPUT"
 
       # Without it the only symptom is claude-code-action's "Environment variable
       # validation failed" and the post step's advice to retry with `@claude`,
@@ -327,8 +347,20 @@ jobs:
           HARNESS_REF: ${{ job.workflow_ref }}
           HARNESS_SHA: ${{ job.workflow_sha }}
           CALLER_INPUTS: ${{ toJSON(inputs) }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRIOR_COMMENT_ID: ${{ steps.once.outputs.prior-comment-id }}
+          PRIOR_HEAD: ${{ steps.once.outputs.prior-head }}
         run: |
           mkdir -p "$GITHUB_WORKSPACE/ci-results"
+          # A re-review's memory: the earlier review, so it reports what is new or
+          # still open instead of re-rolling (AIRIA-framework #405 ran eight rounds).
+          # Without its footer: the reviewer copied it into its own body (#61's live run).
+          if [ -n "${PRIOR_COMMENT_ID:-}" ] \
+             && body="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PRIOR_COMMENT_ID}" \
+                         --jq '.body | split("\n---\n_Automatic review by") | .[0]')"; then
+            printf '# The earlier automatic review, of head %s\n\n%s\n' "${PRIOR_HEAD}" "${body}" \
+              > "$GITHUB_WORKSPACE/ci-results/previous-review.md"
+          fi
           if [ -f "$RUNNER_TEMP/claude-toolchain-status.md" ]; then
             cp "$RUNNER_TEMP/claude-toolchain-status.md" "$GITHUB_WORKSPACE/ci-results/"
           fi
@@ -375,8 +407,12 @@ jobs:
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ inputs.pr-number }}
 
-            You are the automatic review of this pull request. It runs ONCE, after the merge gate
-            has finished on this commit. Later reviews are requested by commenting `@claude` on the PR.
+            You are the automatic review of this pull request. It runs once per head commit, after
+            the merge gate has finished on this commit. Questions in between go to `@claude`.
+            - If `ci-results/previous-review.md` exists, an earlier automatic review covered an
+              older head of this PR (its first line names it). Review the whole current head, but
+              report only what is new or still open, say which of its findings are now resolved,
+              and do not re-raise a point the author answered in the PR's comments.
 
             HOW THIS JOB IS SET UP — read this before you start
             - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own

@@ -37,9 +37,23 @@ def review(run_id: int, comment_id: int = 7) -> dict:
 
 
 class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
-    def once(self, comments, run_id="42", attempt="2"):
-        r = Runner(self, [[r"issues/9/comments", {"json": comments}]])
-        p = r.run(WORKFLOW, "Skip if this PR already has its automatic review", PR="9", RUN_ID=run_id, ATTEMPT=attempt)
+    """Once per head, not once per PR: the check is never green on a head no review covered (airia-ci#60)."""
+
+    HEAD = "b" * 40
+
+    def once(self, comments, run_id="42", attempt="2", heads=None, head=HEAD, pr_head=None):
+        # `heads` maps a review's run id to the PR head that run was for; a missing id is an unreadable run.
+        rules = [[r"issues/9/comments", {"json": comments}]]
+        for rid, sha in (heads or {}).items():
+            rules.append([rf"actions/runs/{rid}( |$)", {"json": {"id": rid, "head_sha": sha}}])
+        rules.append([r"actions/runs/\d+( |$)", {"exit": 1, "stderr": "HTTP 404: Not Found"}])
+        # `actions/runs/` with no id lists runs, as the real API does: `.head_sha` of the list is null.
+        rules.append([r"actions/runs/( |$)", {"json": {"total_count": 0, "workflow_runs": []}}])
+        if pr_head:
+            rules.append([r"pulls/9( |$)", {"json": {"head": {"sha": pr_head}}}])
+        r = Runner(self, rules)
+        p = r.run(WORKFLOW, "Skip if this PR already has its automatic review", PR="9", RUN_ID=run_id,
+                  ATTEMPT=attempt, HEAD_SHA=head)
         self.assertEqual(p.returncode, 0, p.stderr)
         return r.outputs()
 
@@ -49,13 +63,46 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     def test_a_rerun_of_the_reviewing_run_refreshes(self):
         self.assertEqual(self.once([review(42)]), {"review": "false", "refresh": "true", "comment-id": "7"})
 
-    def test_a_new_push_still_only_skips(self):
-        # A new commit is a new run: the once-per-PR rule is unchanged.
-        self.assertEqual(self.once([review(41)], run_id="42", attempt="1"), {"review": "false"})
-        self.assertEqual(self.once([review(41)], run_id="42", attempt="2"), {"review": "false"})
+    def test_a_push_after_the_review_reviews_the_new_head(self):
+        # CryptoStudio#430: three commits after the review, and the check passed in 8 s on 250cdad9.
+        old = "a" * 40
+        expected = {"review": "true", "prior-comment-id": "7", "prior-head": old}
+        self.assertEqual(self.once([review(41)], run_id="42", attempt="1", heads={41: old}), expected)
+        self.assertEqual(self.once([review(41)], run_id="42", attempt="2", heads={41: old}), expected)
+
+    def test_a_head_already_reviewed_by_another_run_is_skipped(self):
+        # ready_for_review or a re-opened PR runs the gate again on the same head.
+        self.assertEqual(self.once([review(41)], attempt="1", heads={41: self.HEAD}), {"review": "false"})
+
+    def test_the_newest_review_is_the_one_compared(self):
+        old, mid = "a" * 40, "c" * 40
+        comments = [review(40, comment_id=5), review(41, comment_id=7)]
+        self.assertEqual(self.once(comments, attempt="1", heads={40: old, 41: self.HEAD}), {"review": "false"})
+        self.assertEqual(self.once(comments, attempt="1", heads={40: self.HEAD, 41: mid}),
+                         {"review": "true", "prior-comment-id": "7", "prior-head": mid})
+
+    def test_a_review_whose_run_cannot_be_read_reviews_again(self):
+        # Never green on "could not tell": a deleted or unreadable run counts as another head.
+        self.assertEqual(self.once([review(41)], attempt="1"),
+                         {"review": "true", "prior-comment-id": "7", "prior-head": "unknown"})
+
+    def test_a_footer_without_its_run_link_reviews_again(self):
+        # An edited footer: no run to ask, so the head it covered is unknown, never "null".
+        edited = {**review(41), "body": review(41)["body"].replace("/actions/runs/41)", ")")}
+        self.assertEqual(self.once([edited], attempt="1", heads={41: self.HEAD}),
+                         {"review": "true", "prior-comment-id": "7", "prior-head": "unknown"})
+
+    def test_a_copied_footer_in_the_body_does_not_hide_the_real_run(self):
+        # The review body may quote an earlier footer with its run link; the real one comes last.
+        quoting = {**review(42), "body": "Quoted: [run log](https://github.com/o/r/actions/runs/41)\n" + review(42)["body"]}
+        self.assertEqual(self.once([quoting]), {"review": "false", "refresh": "true", "comment-id": "7"})
+
+    def test_without_the_event_head_the_prs_head_is_read(self):
+        self.assertEqual(self.once([review(41)], attempt="1", heads={41: self.HEAD}, head="", pr_head=self.HEAD),
+                         {"review": "false"})
 
     def test_a_run_id_that_is_a_prefix_does_not_match(self):
-        self.assertEqual(self.once([review(4200)], run_id="42"), {"review": "false"})
+        self.assertEqual(self.once([review(4200)], run_id="42", heads={4200: self.HEAD}), {"review": "false"})
 
     def test_someone_elses_comment_is_not_a_review(self):
         other = {**review(42), "user": {"login": "a-human"}}
@@ -161,6 +208,28 @@ class StagingForClaude(unittest.TestCase):
         self.assertIn("reusable-claude-review.yml@refs/tags/ci-v3", harness)
         self.assertIn("- Commit: ab7b0e6", harness)
         self.assertIn('{"pr-number": 20}', harness)
+
+    def test_a_re_review_gets_the_earlier_review_as_its_memory(self):
+        # A stateless re-roll on every push is the ping-pong of AIRIA-framework #405; with the
+        # earlier review in hand, the next one reports only what is new or still open.
+        r = Runner(self, [[r"issues/comments/7( |$)", {"json": review(41)}]])
+        repo = self.checkout(r)
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
+                  PRIOR_COMMENT_ID="7", PRIOR_HEAD="a" * 40)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        prior = (repo / "ci-results/previous-review.md").read_text()
+        self.assertTrue(prior.startswith(f"# The earlier automatic review, of head {'a' * 40}\n"), prior)
+        self.assertIn("Nothing blocking.", prior)
+        self.assertNotIn(FOOTER, prior, "a reviewer shown the footer copies it into its own body")
+        self.assertIn("ci-results/previous-review.md", WORKFLOW.read_text(), "the prompt points the reviewer at it")
+
+    def test_an_unreadable_earlier_review_still_lets_the_review_run(self):
+        r = Runner(self, [[r"issues/comments/7( |$)", {"exit": 1, "stderr": "HTTP 404"}]])
+        repo = self.checkout(r)
+        p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
+                  PRIOR_COMMENT_ID="7", PRIOR_HEAD="unknown")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse((repo / "ci-results/previous-review.md").exists())
 
     def test_a_runner_without_the_job_workflow_context_says_unknown(self):
         r = Runner(self)

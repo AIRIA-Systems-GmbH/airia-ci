@@ -16,7 +16,7 @@ The shared CI harness for AIRIA repositories, and the distribution channel of th
 | Path | What it is |
 |---|---|
 | `.github/workflows/reusable-python-gate.yml` | The AIRIA quality standard for a Python repository. It runs `lint` (ruff check and format, pyright or mypy --strict, import-linter), `test` (pytest per Python at the coverage floor), `security` (reuse, pip-audit, gitleaks, zizmor), then `gate`: red unless every one of them, and every caller's extra job, succeeded. Then the Claude review. Its call contract is its own header. |
-| `.github/workflows/reusable-claude-review.yml` | The automatic Claude review. It runs once per PR, as the last job of the caller's merge-gate workflow, and reads the gate results instead of re-running them. |
+| `.github/workflows/reusable-claude-review.yml` | The automatic Claude review. It runs once per head commit (a push after its review is reviewed again, with the earlier review as its memory), as the last job of the caller's merge-gate workflow, and reads the gate results instead of re-running them. |
 | `.github/workflows/reusable-claude-respond.yml` | The `@claude` responder. Only an OWNER, MEMBER or COLLABORATOR can start it; it can edit, commit and push, and it reads the PR's gate results. Its call contract is its own header. |
 | `.github/actions/claude-settings` | The one Claude Code permission policy both workflows use: an explicit Bash allowlist (never a bare `Bash`), in a read-only `review` profile and a `respond` profile that can also write and commit. |
 | `.github/actions/ci-results` | Downloads every completed job of a workflow run (its conclusion, failed steps and full log) for a Claude job to read. A job that was cancelled before any step started is labelled `cancelled (never ran)`: it has no log and is not a result. One that hit its `timeout-minutes` is labelled `cancelled (time cap)`, read from the check run's annotations (the token needs `checks: read`); if they cannot be read it is `cancelled (time cap unchecked, ran …)`. |
@@ -68,7 +68,7 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 
 ## Versioning
 
-Callers pin `@ci-v5`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-PR check keys) is the next major, `ci-v6`, and the older tag is frozen.
+Callers pin `@ci-v5`. It moves on every compatible change, so a caller runs each one on its next job; a change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-head check keys) is the next major, `ci-v6`, and the older tag is frozen.
 
 - **Every move is a GitHub Release** (`ci-v5.N`) listing the commits callers now run. *Watch → Custom → Releases* on this repository to hear of them.
 - **A frozen pin hears of a newer major from its own run.** Both workflows look up this repository's `ci-vN` tags; when one is newer than the major they belong to (`HARNESS_MAJOR` in the step *Look for a newer airia-ci major*), the job warns and the automatic review ends with a note. A lookup that fails only leaves a notice. This began in `ci-v3`; `ci-v1` and `ci-v2` callers do not get it.
