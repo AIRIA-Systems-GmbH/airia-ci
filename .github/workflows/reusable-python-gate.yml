@@ -30,7 +30,7 @@ name: AIRIA Python gate (shared)
 #   jobs:
 #     ci:
 #       permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
-#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
@@ -83,7 +83,7 @@ name: AIRIA Python gate (shared)
 #     ci:
 #       needs: [e2e]
 #       if: always()
-#       uses: …/reusable-python-gate.yml@ci-v5
+#       uses: …/reusable-python-gate.yml@main
 #       with:
 #         extra-jobs: ${{ toJSON(needs) }}
 #
@@ -254,7 +254,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v5
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
@@ -325,7 +325,7 @@ jobs:
           # Full history: a suite may read past commits, and a shallow clone has none.
           fetch-depth: 0
           persist-credentials: false
-      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v5
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
         with:
           python-version: ${{ matrix.python }}
           type-checker: ${{ inputs.type-checker }}
@@ -359,7 +359,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@ci-v5
+      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
@@ -422,7 +422,7 @@ jobs:
       issues: write
       actions: read
       checks: read
-    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@ci-v5
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@main
     with:
       pr-number: ${{ github.event.pull_request.number }}
       runner: ${{ inputs.runner }}

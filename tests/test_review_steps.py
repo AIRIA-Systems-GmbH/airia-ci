@@ -216,8 +216,10 @@ class NewerMajor(unittest.TestCase):
         respond = ROOT / ".github/workflows/reusable-claude-respond.yml"
         gate = ROOT / ".github/workflows/reusable-python-gate.yml"
         self.assertEqual(step(respond, self.STEP)["env"]["HARNESS_MAJOR"], self.MAJOR)
-        pins = set(re.findall(r"airia-ci/\S+@(ci-v\d+)", WORKFLOW.read_text() + respond.read_text() + gate.read_text()))
-        self.assertEqual(pins, {f"ci-v{self.MAJOR}"})
+        # Consumers call @main, so the harness calls itself @main too: one
+        # internal @ci-vN pin and a caller on @main runs a mixed gate.
+        pins = set(re.findall(r"airia-ci/\S+@(\S+)", WORKFLOW.read_text() + respond.read_text() + gate.read_text()))
+        self.assertEqual(pins, {"main"})
         (tag,) = re.findall(r'^TAG = "(ci-v\d+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
         self.assertEqual(tag, f"ci-v{self.MAJOR}")
 
