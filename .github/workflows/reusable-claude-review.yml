@@ -208,7 +208,7 @@ jobs:
           reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
             --jq '.[] | select(.user.login == "github-actions[bot]")
                       | select(.body | contains("_Automatic review by `claude-code-review.yml`"))
-                      | [.id, .html_url, (.body | capture("/actions/runs/(?<r>[0-9]+)\\)").r // "")] | @tsv')"
+                      | [.id, .html_url, ([.body | scan("/actions/runs/([0-9]+)\\)")] | last // [""] | .[0])] | @tsv')"
           if [ -z "${reviews}" ]; then
             echo "review=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -354,8 +354,10 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/ci-results"
           # A re-review's memory: the earlier review, so it reports what is new or
           # still open instead of re-rolling (AIRIA-framework #405 ran eight rounds).
+          # Without its footer: the reviewer copied it into its own body (#61's live run).
           if [ -n "${PRIOR_COMMENT_ID:-}" ] \
-             && body="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PRIOR_COMMENT_ID}" --jq .body)"; then
+             && body="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${PRIOR_COMMENT_ID}" \
+                         --jq '.body | split("\n---\n_Automatic review by") | .[0]')"; then
             printf '# The earlier automatic review, of head %s\n\n%s\n' "${PRIOR_HEAD}" "${body}" \
               > "$GITHUB_WORKSPACE/ci-results/previous-review.md"
           fi

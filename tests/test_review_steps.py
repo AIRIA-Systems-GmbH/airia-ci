@@ -92,6 +92,11 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         self.assertEqual(self.once([edited], attempt="1", heads={41: self.HEAD}),
                          {"review": "true", "prior-comment-id": "7", "prior-head": "unknown"})
 
+    def test_a_copied_footer_in_the_body_does_not_hide_the_real_run(self):
+        # The review body may quote an earlier footer with its run link; the real one comes last.
+        quoting = {**review(42), "body": "Quoted: [run log](https://github.com/o/r/actions/runs/41)\n" + review(42)["body"]}
+        self.assertEqual(self.once([quoting]), {"review": "false", "refresh": "true", "comment-id": "7"})
+
     def test_without_the_event_head_the_prs_head_is_read(self):
         self.assertEqual(self.once([review(41)], attempt="1", heads={41: self.HEAD}, head="", pr_head=self.HEAD),
                          {"review": "false"})
@@ -207,14 +212,15 @@ class StagingForClaude(unittest.TestCase):
     def test_a_re_review_gets_the_earlier_review_as_its_memory(self):
         # A stateless re-roll on every push is the ping-pong of AIRIA-framework #405; with the
         # earlier review in hand, the next one reports only what is new or still open.
-        r = Runner(self, [[r"issues/comments/7( |$)", {"json": {"body": "1. **A finding.**"}}]])
+        r = Runner(self, [[r"issues/comments/7( |$)", {"json": review(41)}]])
         repo = self.checkout(r)
         p = r.run(WORKFLOW, "Stage the toolchain status for Claude", cwd=repo, GITHUB_WORKSPACE=str(repo),
                   PRIOR_COMMENT_ID="7", PRIOR_HEAD="a" * 40)
         self.assertEqual(p.returncode, 0, p.stderr)
         prior = (repo / "ci-results/previous-review.md").read_text()
         self.assertTrue(prior.startswith(f"# The earlier automatic review, of head {'a' * 40}\n"), prior)
-        self.assertIn("1. **A finding.**", prior)
+        self.assertIn("Nothing blocking.", prior)
+        self.assertNotIn(FOOTER, prior, "a reviewer shown the footer copies it into its own body")
         self.assertIn("ci-results/previous-review.md", WORKFLOW.read_text(), "the prompt points the reviewer at it")
 
     def test_an_unreadable_earlier_review_still_lets_the_review_run(self):
