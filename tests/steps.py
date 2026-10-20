@@ -114,7 +114,8 @@ def run_block(path: Path, step_name: str, env: dict, cwd: Path) -> subprocess.Co
 FAKE_GH = textwrap.dedent(
     """\
     #!/usr/bin/env python3
-    # A fake `gh`: the first rule whose pattern matches the joined argv answers.
+    # A fake `gh`: the first rule whose pattern matches the joined argv answers. A reply with
+    # "first": N answers its "before" reply instead to the first N calls that match its pattern.
     import json, os, re, subprocess, sys
     args = sys.argv[1:]
     joined = " ".join(args)
@@ -133,6 +134,10 @@ FAKE_GH = textwrap.dedent(
             break
     else:
         print(f"fake gh: no rule for {joined}", file=sys.stderr); sys.exit(97)
+    if "first" in reply:
+        logged = [json.loads(line)["args"] for line in open(os.environ["FAKE_GH_LOG"])]
+        earlier = sum(bool(re.search(pattern, " ".join(a))) for a in logged) - 1
+        reply = reply["before"] if earlier < reply["first"] else reply
     sys.stderr.write(reply.get("stderr", ""))
     if "json" in reply:
         jq = args[args.index("--jq") + 1] if "--jq" in args else "."
