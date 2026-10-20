@@ -24,7 +24,7 @@ airia-ci is a Python repository's whole merge gate (lint, types, tests at the co
    - `uv run ruff format .`;
    - give every file REUSE licence information, until `uvx reuse@<pin> lint` passes;
    - hold the [ruff floor](#ruff-the-floor-and-the-suppression-baseline): the first time, run step 3's command with `--onboard`. It runs `ruff check --fix`, `ruff format` and `ruff check --add-noqa`, then records the remaining suppressions in `.airia/ruff-baseline.json`, which may only fall from then on. Until **2026-10-22** (UTC) a narrowed floor or a risen count is only a warning, in the lint job's log and summary; from that day on it fails the lint job;
-   - pin every action in `.github/` to a commit SHA (only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
+   - pin every action in `.github/` to a commit SHA (only `AIRIA-Systems-GmbH/airia-ci/*` follows a branch, `@main`).
 3. **Run the gate's lint and test jobs locally,** with the gate's commands and your locked tools, pytest on at most 4 workers (`AIRIA_XDIST_WORKERS`):
 
    ```bash
@@ -65,7 +65,7 @@ Andrea's ruling (2026-10-15): the floor, with a ratchet. The gate's lint job enf
 bash <(gh api repos/AIRIA-Systems-GmbH/airia-ci/contents/templates/python/ci-local.sh -H 'Accept: application/vnd.github.raw') --onboard
 ```
 
-It runs `ruff check --fix` (the safe fixes), `ruff format`, `ruff check --add-noqa` (it marks every remaining finding in place), then writes `.airia/ruff-baseline.json` and runs the gate's lint and test. Commit the result. From then on, the count only falls. `ci-local.sh` fetches the check from airia-ci's `main`, as it fetches itself, so between a merge and the next `ci-v5` move a laptop can run a newer check than the gate.
+It runs `ruff check --fix` (the safe fixes), `ruff format`, `ruff check --add-noqa` (it marks every remaining finding in place), then writes `.airia/ruff-baseline.json` and runs the gate's lint and test. Commit the result. From then on, the count only falls. `ci-local.sh` fetches the check from airia-ci's `main`, as it fetches itself, so a laptop runs the same check as the gate.
 
 Measured on 2026-10-15, ruff 0.17.0, each repository's default branch:
 
@@ -149,7 +149,7 @@ It writes only the files that are missing:
 
 Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from that environment variable, or by running `claude setup-token`) and offers a ruleset on the default branch: changes only by pull request, with the gate jobs required and every commit signed and verified, no force-push or deletion. A private repository needs GitHub Pro (personal) or Team (organization) for it. `--runner '["ubuntu-24.04"]'` uses GitHub's runners instead of the Thor pool (see [Run on GitHub's runners](#run-on-githubs-runners) for who must); `--yes` answers every question yes.
 
-The script is fetched from `main` and writes the pin it names (today `@ci-v5`). It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
+The script is fetched from `main` and writes `@main`. It commits nothing: commit the files on a branch and open a PR. That PR's own gate run is the first review.
 
 ## Adopt the standard
 
@@ -176,7 +176,7 @@ From `ci-v5` on, a Python repository's merge gate is the AIRIA quality standard,
          issues: write
          actions: read
          checks: read
-       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
        secrets:
          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
    ```
@@ -200,7 +200,7 @@ What the gate expects of the repository. It fails, and says what is missing, whe
 - `uv.lock` is committed, and `uv sync --locked` works.
 - pytest, pytest-cov and coverage are in a dev group, at or above their pins (`uv add --dev pytest==<pin> pytest-cov==<pin> coverage==<pin>`). The same goes for mypy under `mypy-strict`, and for import-linter when `[tool.importlinter]` exists. They run inside your environment, at your locked versions.
 - pytest measures your package: `addopts = "--cov=<package>"` under `[tool.pytest.ini_options]`. With no coverage report, or with `--no-cov`, the test job fails, because there is no figure to hold to the floor.
-- The tree is `ruff format`ted, every file carries REUSE licence information, and every action in `.github/` is pinned to a commit (zizmor, with the standard policy; only `AIRIA-Systems-GmbH/airia-ci/*` may follow a tag).
+- The tree is `ruff format`ted, every file carries REUSE licence information, and every action in `.github/` is pinned to a commit (zizmor, with the standard policy; only `AIRIA-Systems-GmbH/airia-ci/*` follows a branch, `@main`).
 - No workflow step runs a tool unpinned: `uvx ruff`, `uv run --with ty`, `uv tool run x` and `pipx run x` are refused. Pin it (`uvx ruff@0.17.0`, `--with ty==0.0.20`), or lock it and call it with `uv run`.
 
 ### What runs
@@ -266,7 +266,7 @@ jobs:
     needs: [e2e]
     if: always()          # without it a red e2e skips the whole gate, and `ci / gate` never reports
     permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
-    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v5
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
     with:
       extra-jobs: ${{ toJSON(needs) }}
     secrets:
@@ -331,21 +331,21 @@ Re-running the gate on the same commit (`gh run rerun --failed`) does not post a
 
 ## Stay current
 
-- **Within a major** there is nothing to do: `@ci-v5` moves, and your next run uses it. Every move is a GitHub Release (`ci-v5.N`) listing what changed. To hear of them, choose *Watch → Custom → Releases* on this repository.
+- **Call `@main`, never a pinned tag** (Andrea, 2026-10-20). Every fix that merges here reaches your next run; there is nothing to do. A build that turns red because of airia-ci is fixed here, in airia-ci: file it ([CONTRIBUTING.md](CONTRIBUTING.md)) and never pin back to a tag.
+- **The `ci-vN` tags are history** and no longer move. A caller on one is frozen: no fix reaches it. Move it to `@main` (next section).
 - **Which harness ran** is in every job's `ci-results/harness.md`: the airia-ci workflow, ref and commit (the review's copy also has the inputs you passed).
-- **A new major** never reaches you on its own: your pin is frozen. From `ci-v3` on, both workflows look up airia-ci's tags on every run; when a newer `ci-vN` exists, the job shows a *Newer airia-ci major* warning and the automatic review ends with a note naming it. Then follow the next section.
+- **A change to the call contract** (an input, a secret, an output or the review footer) is announced in an issue on this repository before it merges, because no tag shields a caller from it. That is a promise of the maintainers, not something a check enforces.
 
 ## Upgrade to a new major
 
-A new major means the call contract changed: an input, a secret, an output or the review footer.
+Every `ci-vN` is frozen, so leaving one means moving to `@main`:
 
-1. Read the major's Release notes and the entry for it below: they say what a caller must change.
-2. In `.github/workflows/claude.yml` and in your gate workflow, change every `AIRIA-Systems-GmbH/airia-ci/…@ci-vN` to the new tag, and make the change the notes call for.
-3. Open a PR. Its gate run is reviewed by the new major: check the review's `harness.md` names the new ref.
+1. In `.github/workflows/claude.yml` and in your gate workflow, change every `AIRIA-Systems-GmbH/airia-ci/…@ci-vN` to `@main`, and make the change the table below names for your tag and each newer one.
+2. Open a PR. Check that the review's `harness.md` names `refs/heads/main`.
 
 | Major | What a caller must change |
 |---|---|
-| `ci-v5` | Change every `@ci-v4` to `@ci-v5`; no input, secret or output a ci-v4 caller passes changed. A Python repository then [adopts the standard](#adopt-the-standard): its gate jobs and its `claude-review` job give way to the one-file caller of `reusable-python-gate.yml`, and `init.py protect` makes `ci / gate` and the Claude review the required checks. Any other repository stops after the pin change. |
+| `ci-v5` | Frozen at `62b3606` (`ci-v5.4`); move to `@main`. From `ci-v4`: no input, secret or output a ci-v4 caller passes changed. A Python repository then [adopts the standard](#adopt-the-standard): its gate jobs and its `claude-review` job give way to the one-file caller of `reusable-python-gate.yml`, and `init.py protect` makes `ci / gate` and the Claude review the required checks. Any other repository stops after the pin change. |
 | `ci-v4` | Frozen; move off it. Add `checks: read` to the `permissions:` of both calling jobs (`claude-review` in your gate workflow, `claude` in `claude.yml`): without it the run fails at startup. With it, a gate that hit its `timeout-minutes` is reported as `cancelled (time cap)`, not as infrastructure. |
 | `ci-v3` | Frozen; move off it. Drop the `FRAMEWORK_READ_TOKEN` secret from both callers: passing it fails with an undefined-secret error. Gate results are staged in `ci-results/` inside the checkout. |
 | `ci-v2` | Frozen at `9ed10a6`; move off it. Its reviewer never sees the gate results (its prompt names `$RUNNER_TEMP` in a command Bash refuses). It replaced the bare `Bash` permission with the allowlist: gates outside it go in `extra-allow`. |

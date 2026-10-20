@@ -3,7 +3,7 @@
 #
 # The standard's zizmor policy, used in place of any the project has: every
 # action is pinned to a commit, except this harness, which callers follow at
-# its moving ci-vN tag on purpose (a tag move is how they receive its fixes).
+# `@main` on purpose (Andrea, 2026-10-20: a fix lands once and reaches them).
 rules:
   unpinned-uses:
     config:
