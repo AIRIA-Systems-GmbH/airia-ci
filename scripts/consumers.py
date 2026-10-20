@@ -1,21 +1,22 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
-"""Every repository that calls airia-ci, and whether its pin is the newest major.
+"""Every repository that calls airia-ci, and whether it calls `@main`.
 
     python3 scripts/consumers.py AIRIA-Systems-GmbH tumma72
     python3 scripts/consumers.py --conformance [--dry-run] AIRIA-Systems-GmbH tumma72
 
 Run it with your own `gh` login at release time: it reads private repositories
-of every owner given, which no token in this repository can. A pin older than
-the newest `ci-vN` is frozen, so moving the tag never reaches it; such a
-repository is listed as BEHIND and the exit code is 1. AIRIA-DevTools and
-AIRIA-process sat on the frozen `ci-v2` unnoticed until 2026-10-05.
+of every owner given, which no token in this repository can. Consumers call
+`@main` (Andrea, 2026-10-20); the `ci-vN` tags are frozen history, so a fix
+never reaches a caller pinned to one. Such a repository is listed as PINNED and
+the exit code is 1. AIRIA-DevTools and AIRIA-process sat on the frozen `ci-v2`
+unnoticed until 2026-10-05.
 
 `--conformance` also reads each consumer's workflows, pyproject.toml, uv.lock
 and default-branch ruleset against the AIRIA standard (pins.toml), and keeps
 ONE issue per consumer, titled "airia-ci standard drift", saying what drifts:
 it is opened, rewritten by every scan, and closed once nothing drifts. What
-counts: a pin on an older major; no workflow calling reusable-python-gate.yml;
+counts: a pin on a `ci-vN` tag instead of `@main`; no workflow calling reusable-python-gate.yml;
 `<job> / gate` or the Claude review missing from the required checks; a
 bypass actor; a coverage floor under the standard's, or `--no-cov`; a gate
 tool run unpinned or locked below its pin; a type checker the standard does
@@ -40,7 +41,7 @@ from pathlib import Path
 
 HARNESS = "AIRIA-Systems-GmbH/airia-ci"
 USES = re.compile(re.escape(HARNESS) + r"/(\S+?)@(\S+)")
-MAJOR = re.compile(r"^ci-v(\d+)$")
+CURRENT = "main"
 HERE = Path(__file__).resolve().parent
 TITLE = "airia-ci standard drift"
 
@@ -60,16 +61,6 @@ PINS = toolchain.load_pins(toolchain.PINS)
 
 def gh(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
-
-
-def newest_major() -> str:
-    p = gh("api", f"repos/{HARNESS}/tags", "--paginate", "--jq", ".[].name")
-    if p.returncode:
-        raise RuntimeError(f"cannot list {HARNESS} tags: {p.stderr.strip()}")
-    majors = [int(m.group(1)) for m in map(MAJOR.match, p.stdout.split()) if m]
-    if not majors:
-        raise RuntimeError(f"{HARNESS} has no ci-vN tag")
-    return f"ci-v{max(majors)}"
 
 
 def repositories(owner: str) -> list[str]:
@@ -122,10 +113,10 @@ def ruleset(repo: str) -> dict | None:
     return json.loads(d.stdout)
 
 
-def drift(repo: str, newest: str) -> list[str]:
+def drift(repo: str) -> list[str]:
     """What in this consumer falls short of the standard; empty when nothing does."""
-    found = sorted({f"{path} calls airia-ci at `{ref}`, not the current `{newest}`"
-                    for path, _, ref in pins(repo) if ref != newest})
+    found = sorted({f"{path} calls airia-ci at `{ref}`, a frozen tag: call `@{CURRENT}`"
+                    for path, _, ref in pins(repo) if ref != CURRENT})
     floor = PINS["standard"]["coverage-floor"]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -237,7 +228,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="with --conformance: print each issue, write none")
     args = ap.parse_args(argv)
     try:
-        newest = newest_major()
         rows = [(repo, *pin) for owner in args.owners for repo in repositories(owner)
                 if repo != HARNESS for pin in pins(repo)]
     except RuntimeError as exc:
@@ -245,17 +235,17 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     behind = 0
     for repo, path, called, ref in rows:
-        state = "current" if ref == newest else f"BEHIND (newest is {newest})"
-        behind += ref != newest
+        state = "current" if ref == CURRENT else f"PINNED (call @{CURRENT})"
+        behind += ref != CURRENT
         print(f"{repo}\t{path}\t{called.rsplit('/', 1)[-1]}@{ref}\t{state}")
-    print(f"{len({r[0] for r in rows})} consumers, {len(rows)} pins, {behind} behind {newest}")
+    print(f"{len({r[0] for r in rows})} consumers, {len(rows)} pins, {behind} not on @{CURRENT}")
     if not args.conformance:
         return 1 if behind else 0
     drifting, failed = 0, 0
     # One consumer the token cannot read must not blind the scan of the others.
     for repo in sorted({r[0] for r in rows}):
         try:
-            reasons = drift(repo, newest)
+            reasons = drift(repo)
             drifting += bool(reasons)
             print(f"{repo}\t{len(reasons)} drift\t{file_issue(repo, reasons, args.dry_run)}")
         except RuntimeError as exc:

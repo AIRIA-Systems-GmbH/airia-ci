@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """scripts/consumers.py against a fake `gh`.
 
-What these tests hold: a pin older than the newest ci-vN is reported BEHIND
-and fails the run, because moving the tag never reaches it; the newest major
-is found by number, not by spelling; a lookup that fails is an error, never
-an empty "all current".
+What these tests hold: consumers call @main (2026-10-20), so a pin on any
+ci-vN tag is reported PINNED and fails the run, because a fix never reaches a
+frozen tag; a lookup that fails is an error, never an empty "all current".
 
 Run: python3 -m unittest discover -s tests
 """
@@ -24,7 +23,6 @@ spec = importlib.util.spec_from_file_location("consumers", SCRIPT)
 consumers = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(consumers)
 
-TAGS = [r"airia-ci/tags", {"json": [{"name": n} for n in ("ci-v2", "ci-v10", "ci-v3", "ci-vnext", "ci-v10.1")]}]
 CALLER = "uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@{}\n"
 
 
@@ -40,56 +38,45 @@ class Scan(unittest.TestCase):
 
 
 class Consumers(Scan):
-    def test_a_frozen_pin_is_behind_and_fails_the_run(self):
+    def test_a_pin_on_any_tag_is_flagged_and_fails_the_run(self):
         code, out, _, _ = self.run_main([
-            TAGS,
             ["repo list o", {"json": [{"nameWithOwner": "o/new"}, {"nameWithOwner": "o/old"}]}],
             ["o/(new|old)/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
-            ["o/new/contents/.github/workflows/ci.yml", {"text": CALLER.format("ci-v10")}],
+            ["o/new/contents/.github/workflows/ci.yml", {"text": CALLER.format("main")}],
             ["o/old/contents/.github/workflows/ci.yml", {"text": CALLER.format("ci-v2")}],
         ])
         self.assertEqual(code, 1)
-        self.assertIn("o/new\t.github/workflows/ci.yml\treusable-claude-review.yml@ci-v10\tcurrent", out)
-        self.assertIn("o/old\t.github/workflows/ci.yml\treusable-claude-review.yml@ci-v2\tBEHIND (newest is ci-v10)", out)
-        self.assertIn("2 consumers, 2 pins, 1 behind ci-v10", out)
+        self.assertIn("o/new\t.github/workflows/ci.yml\treusable-claude-review.yml@main\tcurrent", out)
+        self.assertIn("o/old\t.github/workflows/ci.yml\treusable-claude-review.yml@ci-v2\tPINNED (call @main)", out)
+        self.assertIn("2 consumers, 2 pins, 1 not on @main", out)
 
     def test_all_current_passes_and_skips_repos_without_workflows_and_airia_ci_itself(self):
         code, out, _, r = self.run_main([
-            TAGS,
             ["repo list o", {"json": [{"nameWithOwner": n} for n in
                                       ("o/a", "o/empty", "AIRIA-Systems-GmbH/airia-ci")]}],
             ["o/empty/contents", {"exit": 1, "stderr": "Not Found"}],
             ["o/a/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
-            ["o/a/contents/.github/workflows/ci.yml", {"text": CALLER.format("ci-v10")}],
+            ["o/a/contents/.github/workflows/ci.yml", {"text": CALLER.format("main")}],
         ])
         self.assertEqual(code, 0)
-        self.assertIn("1 consumers, 1 pins, 0 behind ci-v10", out)
+        self.assertIn("1 consumers, 1 pins, 0 not on @main", out)
         self.assertFalse([c for c in r.calls() if "airia-ci/contents" in " ".join(c["args"])],
                          "airia-ci's own workflows are not a consumer")
 
     def test_an_unreadable_owner_is_an_error_not_an_empty_list(self):
-        code, out, err, _ = self.run_main([TAGS, ["repo list", {"exit": 1, "stderr": "HTTP 401"}]])
+        code, out, err, _ = self.run_main([["repo list", {"exit": 1, "stderr": "HTTP 401"}]])
         self.assertEqual(code, 2)
         self.assertIn("cannot list o's repositories: HTTP 401", err)
         self.assertEqual(out, "")
 
     def test_an_unreadable_workflow_is_an_error(self):
         code, _, err, _ = self.run_main([
-            TAGS,
             ["repo list o", {"json": [{"nameWithOwner": "o/a"}]}],
             ["o/a/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
             ["o/a/contents/.github/workflows/ci.yml", {"exit": 1, "stderr": "HTTP 403"}],
         ])
         self.assertEqual(code, 2)
         self.assertIn("cannot read o/a/.github/workflows/ci.yml: HTTP 403", err)
-
-    def test_no_release_tag_or_no_tag_list_is_an_error(self):
-        code, _, err, _ = self.run_main([[r"airia-ci/tags", {"json": [{"name": "ci-vnext"}]}]])
-        self.assertEqual(code, 2)
-        self.assertIn("has no ci-vN tag", err)
-        code, _, err, _ = self.run_main([[r"airia-ci/tags", {"exit": 1, "stderr": "HTTP 502"}]])
-        self.assertEqual(code, 2)
-        self.assertIn("cannot list AIRIA-Systems-GmbH/airia-ci tags: HTTP 502", err)
 
 
 T = consumers.PINS["tools"]
@@ -98,7 +85,7 @@ on:
   pull_request:
 jobs:
   ci:
-    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@ci-v10
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
 """
 PYPROJECT = ("[project]\nname = 'app'\n[tool.pytest.ini_options]\naddopts = '--cov=app'\n"
              "[tool.ruff.lint]\nselect = ['E', 'W', 'F', 'I', 'B', 'C4', 'UP', 'SIM']\nignore = ['E501']\n")
@@ -115,7 +102,6 @@ def consumer(ci=STANDARD_CI, pyproject=PYPROJECT, lock=LOCK, ruleset=RULESET, is
                 else {"text": text}]
     return [
         *extra,
-        TAGS,
         ["repo list o", {"json": [{"nameWithOwner": "o/app"}]}],
         ["o/app/contents/.github/workflows --jq", {"json": [{"path": ".github/workflows/ci.yml"}]}],
         file(".github/workflows/ci.yml", ci),
@@ -152,7 +138,7 @@ class Conformance(Scan):
         self.assertIn("0 of 1 consumers drift from the standard", out)
 
     def test_every_kind_of_drift_lands_in_one_new_issue(self):
-        ci = STANDARD_CI.replace("@ci-v10", "@ci-v2") + (
+        ci = STANDARD_CI.replace("@main", "@ci-v2") + (
             "    with:\n      coverage-floor: 85\n      type-checker: ty\n"
             "  lint:\n    runs-on: x\n    steps:\n      - run: uvx ruff check\n")
         pyproject = PYPROJECT.replace("'--cov=app'", "'--cov=app --no-cov --cov-fail-under=80'") + (
@@ -166,7 +152,7 @@ class Conformance(Scan):
         (create,) = self.issue_calls(r, "create")
         self.assertEqual(create[create.index("--title") + 1], consumers.TITLE)
         body = create[create.index("--body") + 1]
-        for expected in ("calls airia-ci at `ci-v2`, not the current `ci-v10`",
+        for expected in ("calls airia-ci at `ci-v2`, a frozen tag: call `@main`",
                          "runs ruff unpinned",
                          "uv.lock resolves ruff 0.1.0, below the pinned",
                          "fail_under is 70, under the standard's 90",
@@ -206,7 +192,7 @@ class Conformance(Scan):
 
     def test_a_repository_with_its_own_gates_is_not_on_the_standard(self):
         own = "on:\n  pull_request:\njobs:\n  review:\n    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/" \
-              "reusable-claude-review.yml@ci-v10\n"
+              "reusable-claude-review.yml@main\n"
         code, out, _, _ = self.scan("--dry-run", ci=own, lock=None)
         self.assertEqual(code, 1)
         self.assertIn("no pull-request workflow calls `reusable-python-gate.yml`", out)

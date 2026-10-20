@@ -72,7 +72,7 @@ jobs:
           for f in .github/workflows/reusable-claude-review.yml .github/workflows/reusable-claude-respond.yml; do
             have="$(git show "${SHA}:${f}" | sed -n 's/^ *HARNESS_MAJOR: "\([0-9]*\)"$/\1/p')"
             if [ "${have}" != "${tag#ci-v}" ]; then
-              echo "::error title=Wrong HARNESS_MAJOR::${f} says HARNESS_MAJOR '${have}' but this release is ${tag}; set it (and TAG in scripts/init.py, and the @ci-vN pins) to ${tag#ci-v} first"
+              echo "::error title=Wrong HARNESS_MAJOR::${f} says HARNESS_MAJOR '${have}' but this release is ${tag}; set it to ${tag#ci-v} first"
               exit 1
             fi
           done

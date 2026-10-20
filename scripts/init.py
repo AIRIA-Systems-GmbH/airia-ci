@@ -57,7 +57,8 @@ import sys
 import tomllib
 from pathlib import Path
 
-TAG = "ci-v5"
+# Consumers call @main, never a pinned tag (Andrea, 2026-10-20): a fix lands once and reaches them.
+TAG = "main"
 HARNESS = "AIRIA-Systems-GmbH/airia-ci/.github/workflows"
 RULESET = "Restrict Direct Merge on Main"
 THOR = '["self-hosted","linux","x64","thor"]'
