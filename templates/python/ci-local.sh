@@ -39,6 +39,8 @@ checker="${AIRIA_TYPE_CHECKER:-pyright}"
 durations="${AIRIA_DURATIONS:-25}"
 workers="${AIRIA_XDIST_WORKERS:-4}"
 read -ra paths <<< "${AIRIA_PATHS:-.}"
+# migrations/ is generated code ruff never checks, as in the gate (toolchain.py RUFF_SKIP).
+skip=(--extend-exclude migrations --force-exclude)
 if [ "$workers" != auto ]; then
   export PYTEST_XDIST_AUTO_NUM_WORKERS="$workers"
 fi
@@ -68,9 +70,9 @@ for f in .github/actions/python-toolchain/toolchain.py templates/python/pyprojec
 done
 baseline=()
 if [ "$mode" = --onboard ]; then
-  uv run ruff check --fix "${paths[@]}" || true
-  uv run ruff format "${paths[@]}"
-  uv run ruff check --add-noqa "${paths[@]}"
+  uv run ruff check --fix "${skip[@]}" "${paths[@]}" || true
+  uv run ruff format "${skip[@]}" "${paths[@]}"
+  uv run ruff check --add-noqa "${skip[@]}" "${paths[@]}"
 fi
 if [ -n "$mode" ]; then
   baseline=(--write-baseline)
@@ -78,8 +80,8 @@ fi
 
 status=0
 echo "== lint"
-uv run ruff check "${paths[@]}" || status=1
-uv run ruff format --check "${paths[@]}" || status=1
+uv run ruff check "${skip[@]}" "${paths[@]}" || status=1
+uv run ruff format --check "${skip[@]}" "${paths[@]}" || status=1
 PATHS="${paths[*]}" uv run python3 "$harness/.github/actions/python-toolchain/toolchain.py" ruff ${baseline[@]+"${baseline[@]}"} \
   || status=1
 if [ "$checker" = pyright ]; then

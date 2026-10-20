@@ -41,7 +41,8 @@ name: AIRIA Python gate (shared)
 # THE GATES, each a job on the caller's runner, each from a clean checkout
 # through the python-toolchain action (uv and Python from `.python-version`,
 # `uv sync --locked`, uv.lock and every workflow step checked against the pins):
-#   lint      ruff check, ruff format --check, the ruff floor (the template's
+#   lint      ruff check, ruff format --check (both skip the generated
+#             `migrations/` directories), the ruff floor (the template's
 #             `select`, which a project may extend, never narrow) and its
 #             `# noqa` baseline (.airia/ruff-baseline.json, which may only
 #             fall), the type checker (pyright, or mypy --strict where
@@ -264,9 +265,11 @@ jobs:
           PATHS: ${{ inputs.paths }}
         run: |
           read -ra paths <<< "$PATHS"
+          # migrations/ is generated code: toolchain.py's RUFF_SKIP says why.
+          skip=(--extend-exclude migrations --force-exclude)
           status=0
-          ruff check "${paths[@]}" || status=1
-          ruff format --check "${paths[@]}" || status=1
+          ruff check "${skip[@]}" "${paths[@]}" || status=1
+          ruff format --check "${skip[@]}" "${paths[@]}" || status=1
           exit "$status"
       - name: Ruff floor and suppressions
         env:

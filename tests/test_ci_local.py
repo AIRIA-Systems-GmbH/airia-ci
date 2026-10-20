@@ -45,6 +45,10 @@ FETCHED = (".github/actions/python-toolchain/toolchain.py", "templates/python/py
 TOOLCHAIN = re.compile(r"^(/.+)/\.github/actions/python-toolchain/toolchain\.py$")
 
 
+# Generated migrations are skipped, as in the gate (toolchain.py RUFF_SKIP).
+SKIP = ["--extend-exclude", "migrations", "--force-exclude"]
+
+
 class CiLocal(unittest.TestCase):
     def setUp(self):
         self.r = Runner(self, [[f"contents/{f}\\?ref=main ", {"text": (ROOT / f).read_text()}] for f in FETCHED])
@@ -69,8 +73,8 @@ class CiLocal(unittest.TestCase):
         harness = TOOLCHAIN.match(calls[3]["args"][2]).group(1)
         self.assertEqual([c["args"] for c in calls], [
             ["sync", "--locked"],
-            ["run", "ruff", "check", "."],
-            ["run", "ruff", "format", "--check", "."],
+            ["run", "ruff", "check", *SKIP, "."],
+            ["run", "ruff", "format", "--check", *SKIP, "."],
             ["run", "python3", f"{harness}/.github/actions/python-toolchain/toolchain.py", "ruff"],
             ["run", "pyright", "--pythonpath", f"{self.repo.resolve()}/.venv/bin/python", "."],
             ["run", "pytest", "--durations=25", "--cov-report=term-missing", f"--cov-report=json:{report}",
@@ -108,7 +112,7 @@ class CiLocal(unittest.TestCase):
         args = [c["args"] for c in calls]
         self.assertEqual(calls[3]["paths"], "src tests")
         self.assertIn(["run", "mypy", "--strict", "src", "tests"], args)
-        self.assertIn(["run", "ruff", "check", "src", "tests"], args)
+        self.assertIn(["run", "ruff", "check", *SKIP, "src", "tests"], args)
         self.assertIn(["run", "lint-imports"], args)
         self.assertIn("--cov-fail-under=95", args[-1])
         self.assertIn("--durations=0", args[-1])
@@ -136,10 +140,10 @@ class CiLocal(unittest.TestCase):
         p, calls = self.run_it("--onboard", AIRIA_PATHS="src")
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual([c["args"] for c in calls[1:5]], [
-            ["run", "ruff", "check", "--fix", "src"],
-            ["run", "ruff", "format", "src"],  # before the noqa comments, or they could fail format --check
-            ["run", "ruff", "check", "--add-noqa", "src"],
-            ["run", "ruff", "check", "src"],
+            ["run", "ruff", "check", "--fix", *SKIP, "src"],
+            ["run", "ruff", "format", *SKIP, "src"],  # before the noqa comments, or they could fail format --check
+            ["run", "ruff", "check", "--add-noqa", *SKIP, "src"],
+            ["run", "ruff", "check", *SKIP, "src"],
         ])
         self.assertEqual(calls[6]["args"][3:], ["ruff", "--write-baseline"])
 
