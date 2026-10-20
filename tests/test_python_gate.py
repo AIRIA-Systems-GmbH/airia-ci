@@ -157,7 +157,8 @@ class Steps(unittest.TestCase):
     def test_ruff_runs_both_checks_on_every_path_even_when_the_first_fails(self):
         p = self.run_step("Ruff", PATHS="src tests", FAKE_RUFF_EXIT="1")
         self.assertEqual(p.returncode, 1)
-        self.assertEqual(self.calls(), ["ruff check src tests", "ruff format --check src tests"])
+        skip = "--extend-exclude migrations --force-exclude"
+        self.assertEqual(self.calls(), [f"ruff check {skip} src tests", f"ruff format --check {skip} src tests"])
 
     def test_ruff_passes_when_both_pass(self):
         self.assertEqual(self.run_step("Ruff", PATHS=".").returncode, 0)

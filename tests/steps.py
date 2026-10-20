@@ -155,7 +155,8 @@ FAKE_GH = textwrap.dedent(
 # `linter.rules.enabled` and in each per-file ignore's `data`); `check
 # --output-format json` reports one finding per `FINDING(CODE)` in a .py file,
 # unless that line carries a noqa comment (or `--ignore-noqa` is given); a `SYNTAX` line
-# is a finding with no code. FAKE_RUFF_FAIL=<subcommand flag> makes that call fail.
+# is a finding with no code; a directory named by `--extend-exclude` is skipped.
+# FAKE_RUFF_FAIL=<subcommand flag> makes that call fail.
 FAKE_RUFF = textwrap.dedent(
     """\
     #!/usr/bin/env python3
@@ -190,7 +191,10 @@ FAKE_RUFF = textwrap.dedent(
         print(out + "}\\nlinter.per_file_target_version = {}")
         sys.exit(0)
     found = []
+    skip = {args[i + 1] for i, a in enumerate(args) if a == "--extend-exclude"}
     for path in sorted(pathlib.Path(".").rglob("*.py")):
+        if skip & set(path.parts):
+            continue
         for line in path.read_text().splitlines():
             if "SYNTAX" in line:
                 found.append({"code": None, "filename": str(path)})

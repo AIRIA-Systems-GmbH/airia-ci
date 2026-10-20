@@ -28,7 +28,8 @@ floor: every rule it enables (as `ruff --show-settings` resolves it, at the
 ruff that runs) must be enabled by each of the project's ruff configurations.
 A narrower `select`, or a global `ignore`/`extend-ignore` of a floor rule, is
 refused; extending is free. A `per-file-ignores` entry may switch floor rules
-off only for test paths (tests/, test/, conftest.py, test_*.py, *_test.py);
+off only for test paths (tests/, test/, conftest.py, test_*.py, *_test.py) and
+for `migrations/`, the generated code ruff never checks (RUFF_SKIP);
 anywhere else the finding takes a `# noqa`, which the ratchet counts.
 
 The ratchet. `.airia/ruff-baseline.json` records the `# noqa` suppressions per
@@ -83,6 +84,11 @@ BASELINE = ".airia/ruff-baseline.json"
 RULE = re.compile(r"\(([A-Z]+[0-9]+)\)")
 # Where a per-file ignore may switch a floor rule off (proposed, pending Andrea, 2026-10-15).
 TEST_PATH = re.compile(r"(^|/)(tests?|testing)(/|$)|(^|/)conftest\.py$|(^|/)test_[^/]*\.py$|_test\.py$")
+# Generated code ruff never checks (Andrea, 2026-10-20): `migrations/` is what Django's makemigrations
+# writes, so a finding there is nobody's to fix and a suppression comment in it is lost on the next regeneration.
+# The gate's Ruff step and ci-local.sh pass the same flags; --force-exclude holds for a path named directly.
+RUFF_SKIP = ("--extend-exclude", "migrations", "--force-exclude")
+GENERATED_PATH = re.compile(r"(^|/)migrations(/|$)")
 ONBOARD = ("ci-local.sh --onboard (ruff check --fix, ruff format, ruff check --add-noqa, then the baseline; "
            "airia-ci HOWTO.md, Quick start step 2)")
 
@@ -394,8 +400,10 @@ def floor_problems(root: Path, floor: set[str]) -> list[str]:
             off = rules & floor
             shown = "!" * negated + pattern
             message = (f"{where}: per-file-ignores {shown!r} switches off the floor's {codes(off)}: only test "
-                       "paths may; elsewhere mark the line `# noqa: <rule>`, which the suppression baseline counts")
-            if off and (negated or not TEST_PATH.search(pattern)) and message not in errors:
+                       "paths (and migrations, which ruff skips) may; elsewhere mark the line `# noqa: <rule>`, "
+                       "which the suppression baseline counts")
+            free = TEST_PATH.search(pattern) or GENERATED_PATH.search(pattern)
+            if off and (negated or not free) and message not in errors:
                 errors.append(message)
     return errors
 
@@ -403,7 +411,7 @@ def floor_problems(root: Path, floor: set[str]) -> list[str]:
 def suppressions(root: Path, paths: list[str]) -> dict[str, int]:
     """`# noqa` suppressions per rule: what ruff finds when told to ignore them, minus what it finds otherwise."""
     def findings(*extra: str) -> dict[str, int]:
-        p = subprocess.run(["ruff", "check", "--exit-zero", "--output-format", "json", *extra, *paths],
+        p = subprocess.run(["ruff", "check", "--exit-zero", "--output-format", "json", *RUFF_SKIP, *extra, *paths],
                            cwd=root, capture_output=True, text=True, check=False)
         if p.returncode:
             raise Refused(f"`ruff check` failed: {(p.stdout + p.stderr).strip()}")

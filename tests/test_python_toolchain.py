@@ -533,9 +533,30 @@ class RuffFloor(unittest.TestCase):
                      '"!tests/**" = ["E402"]\n"contests/x.py" = ["E401"]\n')
         reasons = self.refused()
         self.assertEqual(len(reasons), 3)
-        self.assertIn("per-file-ignores 'src/pkg/__init__.py' switches off the floor's F401: only test paths may",
+        self.assertIn("per-file-ignores 'src/pkg/__init__.py' switches off the floor's F401: only test paths",
                       reasons[0])
         self.assertIn("'!tests/**' switches off the floor's E402", reasons[1], "a negated test path is everything else")
+
+    def test_migrations_are_generated_code_ruff_never_checks(self):
+        # Django's makemigrations writes them: switching floor rules off there is free, and their
+        # suppression comments are not counted, since ruff skips the directory (Andrea, 2026-10-20).
+        self.project(TEMPLATE_RUFF + '[tool.ruff.lint.per-file-ignores]\n"**/migrations/*" = ["F401", "E741"]\n'
+                     '"app/migrations/*.py" = ["E402"]\n',
+                     app__migrations__0001_initial_py="x  # FINDING(F401) # noqa\ny  # FINDING(E402)\n",
+                     app__models_py="z  # FINDING(F401)\n")
+        self.assertEqual(self.ruff(), [], "no floor problem, and no suppression outside migrations")
+        self.project(TEMPLATE_RUFF, app__models_py="z  # FINDING(F401) # noqa\n")
+        (notice,) = self.ruff()
+        self.assertIn("1 `# noqa` suppressions (F401)", notice, "outside migrations a suppression still counts")
+
+    def test_the_gate_and_ci_local_skip_what_the_toolchain_skips(self):
+        skip = " ".join(tc.RUFF_SKIP)
+        gate = (ROOT / ".github/workflows/reusable-python-gate.yml").read_text()
+        local = (ROOT / "templates/python/ci-local.sh").read_text()
+        self.assertIn(f"skip=({skip})", gate)
+        self.assertIn(f"skip=({skip})", local)
+        self.assertEqual(len(re.findall(r"uv run ruff (?!.*\$\{skip\[@\]\})", local)), 0,
+                         "every ruff call in ci-local.sh skips migrations")
 
     def test_every_tracked_configuration_is_held_except_under_tests(self):
         self.project(TEMPLATE_RUFF, packages__a__pyproject_toml="[tool.ruff.lint]\nselect = ['F']\n",
