@@ -210,18 +210,24 @@ class NewerMajor(unittest.TestCase):
         self.assertIn("::notice title=airia-ci version not checked::", p.stdout)
         self.assertEqual(r.outputs(), {})
 
-    def test_every_pin_this_major_ships_names_the_same_major(self):
+    def test_both_workflows_and_init_name_the_same_major(self):
         # HARNESS_MAJOR is bumped by hand with every ci-vN+1; a stale one would
         # tell ci-v4's own callers to upgrade, or never tell ci-v3's.
         respond = ROOT / ".github/workflows/reusable-claude-respond.yml"
-        gate = ROOT / ".github/workflows/reusable-python-gate.yml"
         self.assertEqual(step(respond, self.STEP)["env"]["HARNESS_MAJOR"], self.MAJOR)
-        # Consumers call @main, so the harness calls itself @main too: one
-        # internal @ci-vN pin and a caller on @main runs a mixed gate.
-        pins = set(re.findall(r"airia-ci/\S+@(\S+)", WORKFLOW.read_text() + respond.read_text() + gate.read_text()))
-        self.assertEqual(pins, {"main"})
         (tag,) = re.findall(r'^TAG = "(ci-v\d+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
         self.assertEqual(tag, f"ci-v{self.MAJOR}")
+
+
+class InternalPins(unittest.TestCase):
+    """Consumers call @main, so airia-ci calls itself @main: one @ci-vN ref and an @main caller runs a mixed gate."""
+
+    def test_every_ref_to_airia_ci_under_github_is_main(self):
+        refs = {f"{f.relative_to(ROOT)}: {m.group(0)}"
+                for f in sorted((ROOT / ".github").rglob("*.yml"))
+                for m in re.finditer(r"AIRIA-Systems-GmbH/airia-ci/\S+@\S+", f.read_text())}
+        self.assertTrue(refs, "the reusable workflows call their actions by full path")
+        self.assertEqual({r for r in refs if not r.endswith("@main")}, set())
 
 
 def execution(result: dict | None, *, denials=()) -> list:

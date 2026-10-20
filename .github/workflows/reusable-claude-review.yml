@@ -56,7 +56,9 @@ name: Claude Code Review (shared)
 # to the call contract above is announced before it merges, because no tag
 # shields a caller from it.
 #
-# The `ci-vN` tags stay as history, and a caller still on one is frozen. `ci-v5` began
+# The `ci-vN` tags stay as history and no longer move: a caller still on one
+# is frozen at its tag, whose workflows call their actions at that same tag,
+# so moving one past this paragraph would hand it main's actions. `ci-v5` began
 # with the AIRIA quality standard: reusable-python-gate.yml calls this review
 # after its `gate` check, and both are required checks; this workflow's own
 # contract only gained the optional `extra-prompt`. `ci-v4` began
