@@ -85,7 +85,7 @@ name: Claude Code Review (shared)
 # count) and the head its run was for. That head, not the event type, decides:
 # the same head is skipped (ready_for_review, a re-opened PR), and a newer head
 # is reviewed again, so the required check is never green on a head no review
-# covered. Until 2026-10-21 it was once per PR, and every push after the first
+# covered. Until 2026-10-20 (UTC) it was once per PR, and every push after the first
 # review passed in seconds unreviewed (CryptoStudio #430, airia-ci#60). The
 # re-review is not a stateless re-roll, which manufactures an endless ping-pong
 # (AIRIA-framework PR #405 ran eight rounds that way): it gets the earlier
@@ -226,7 +226,10 @@ jobs:
           # cannot be read counts as another head; never green on "could not tell".
           head="${HEAD_SHA:-$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq .head.sha || true)}"
           IFS=$'\t' read -r comment_id url run <<< "$(tail -n 1 <<< "${reviews}")"
-          reviewed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq .head_sha 2>/dev/null || true)"
+          reviewed=""
+          if [ -n "${run}" ]; then
+            reviewed="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run}" --jq '.head_sha // empty' 2>/dev/null || true)"
+          fi
           if [ -n "${head}" ] && [ "${reviewed}" = "${head}" ]; then
             echo "PR #${PR} already has its automatic review of ${head}: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "review=false" >> "$GITHUB_OUTPUT"

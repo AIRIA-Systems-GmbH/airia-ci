@@ -47,6 +47,8 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         for rid, sha in (heads or {}).items():
             rules.append([rf"actions/runs/{rid}( |$)", {"json": {"id": rid, "head_sha": sha}}])
         rules.append([r"actions/runs/\d+( |$)", {"exit": 1, "stderr": "HTTP 404: Not Found"}])
+        # `actions/runs/` with no id lists runs, as the real API does: `.head_sha` of the list is null.
+        rules.append([r"actions/runs/( |$)", {"json": {"total_count": 0, "workflow_runs": []}}])
         if pr_head:
             rules.append([r"pulls/9( |$)", {"json": {"head": {"sha": pr_head}}}])
         r = Runner(self, rules)
@@ -82,6 +84,12 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     def test_a_review_whose_run_cannot_be_read_reviews_again(self):
         # Never green on "could not tell": a deleted or unreadable run counts as another head.
         self.assertEqual(self.once([review(41)], attempt="1"),
+                         {"review": "true", "prior-comment-id": "7", "prior-head": "unknown"})
+
+    def test_a_footer_without_its_run_link_reviews_again(self):
+        # An edited footer: no run to ask, so the head it covered is unknown, never "null".
+        edited = {**review(41), "body": review(41)["body"].replace("/actions/runs/41)", ")")}
+        self.assertEqual(self.once([edited], attempt="1", heads={41: self.HEAD}),
                          {"review": "true", "prior-comment-id": "7", "prior-head": "unknown"})
 
     def test_without_the_event_head_the_prs_head_is_read(self):
