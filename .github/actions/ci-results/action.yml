@@ -28,6 +28,14 @@ description: >-
 # on the Thor pool rejects it as an unknown flag. Passing it blind emptied
 # every log on PR #741's first run, and the reviewer caught it — so a log that
 # cannot be fetched now says why, and jobs.md counts it, rather than failing quiet.
+#
+# A job's result is its newest execution, across the run's attempts, and only
+# when that execution has completed. `filter=latest` is not enough: while a
+# `gh run rerun --failed` attempt is in flight, the gates it carries over have
+# no copy in it yet (GitHub adds them when the attempt ends), so the review that
+# re-ran found no finished gate (Issue #54, AIRIA-framework run 39277117770).
+# Listing `filter=all` reads those gates from their last attempt; a job still
+# running in the newest attempt, such as the review itself, is not a result.
 
 inputs:
   run-id:
@@ -75,9 +83,11 @@ runs:
           local attempt=1 attempts="${CI_RESULTS_ATTEMPTS:-}" backoff="${CI_RESULTS_RETRY_SLEEP:-}"
           case "$attempts" in ''|*[!0-9]*) attempts=3 ;; esac
           case "$backoff" in ''|*[!0-9]*) backoff=10 ;; esac
-          until gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=latest" \
-               --jq '.jobs[] | select(.status == "completed")
-                     | [.id, .name,
+          until gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all" \
+               --jq '.jobs[]
+                     # First, to choose the newest execution of each name below:
+                     # --jq runs per page, so the choice cannot be made here.
+                     | [(.run_attempt // 0), .status, .id, .name,
                         # No step ever started: no runner picked the job up, or it was
                         # cancelled while queued. It has no log, and it is not a result.
                         (if .conclusion == "cancelled" and ((.steps // []) | length) == 0
@@ -122,6 +132,13 @@ runs:
           exit 0
         fi
         rm -f "$OUT/jobs.err"
+        # Per name, the newest execution (attempt, then id) is the job's result,
+        # if it completed. Rows keep GitHub's order; the two leading fields go.
+        awk -F'\t' -v OFS='\t' '
+          NR == FNR { if (!($4 in a) || $1 > a[$4] || ($1 == a[$4] && $3 > id[$4])) { a[$4] = $1; id[$4] = $3 } ; next }
+          $3 == id[$4] && $2 == "completed" { $1 = $2 = ""; sub(/^\t\t/, ""); print }
+        ' "$OUT/jobs.tsv" "$OUT/jobs.tsv" > "$OUT/results.tsv"
+        mv "$OUT/results.tsv" "$OUT/jobs.tsv"
         {
           echo "# CI results — run $run_url"
           echo

@@ -19,8 +19,9 @@ STEP = "Collect the run's job results"
 RAN = [{"name": "Run tests", "conclusion": "success"}]
 
 
-def job(id_, name, conclusion, steps):
+def job(id_, name, conclusion, steps, run_attempt=1):
     return {"id": id_, "name": name, "status": "completed", "conclusion": conclusion, "steps": steps,
+            "run_attempt": run_attempt,
             "check_run_url": f"https://api.github.com/repos/o/r/check-runs/{id_}",
             "started_at": "2026-10-13T00:40:51Z", "completed_at": "2026-10-13T01:11:17Z"}
 
@@ -37,8 +38,11 @@ BAD_GATEWAY = {"stderr": "gh: Server Error (HTTP 502)\n", "exit": 1}
 FAKE_SLEEP = '#!/bin/sh\necho "$1" >> "$(dirname "$0")/../sleeps"\n'
 
 
-def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None, annotations=None):
+def rules(jobs, logs, help_text="  --allow-escape-sequences\n", run=None, annotations=None, listings=None):
     out = [[r"^api --help", {"text": help_text}]]
+    # Per-filter answers to the jobs listing, ahead of the catch-all `jobs` rule.
+    for filter_, listed in (listings or {}).items():
+        out.append([rf"actions/runs/42/jobs\?filter={filter_}( |$)", {"json": {"jobs": listed}}])
     for id_, reply in (annotations or {}).items():
         out.append([rf"check-runs/{id_}/annotations ", reply])
     for id_, text in logs.items():
@@ -256,6 +260,49 @@ class CollectRetriesATransientServerError(Collect):
         out, md = self.collect(listing, {1: "ok\n"}, env={"CI_RESULTS_ATTEMPTS": "1"})
         self.assertIn("could not be listed", md)
         self.assertEqual(self.calls_to("actions/runs/42/jobs"), 1)
+
+
+class CollectAPartialReRunInFlight(Collect):
+    """Issue #54, AIRIA-framework run 39277117770: `gh run rerun --failed` re-ran only the review.
+
+    While attempt 2 ran, `filter=latest` reported no completed job: the carried-over
+    gates get their attempt-2 copies only when the attempt ends. Their results are
+    the attempt-1 executions, which `filter=all` lists.
+    """
+
+    REVIEW = "Claude Review / claude-review"
+
+    def collect_rerun(self, all_jobs, latest_jobs, logs):
+        # The fake tells the two listings apart, so the old `filter=latest` query finds nothing to read.
+        return self.collect(all_jobs, logs, listings={"latest": latest_jobs, "all": all_jobs})
+
+    def test_iss_54_carried_over_gates_are_read_from_their_last_execution(self):
+        in_flight = {**job(9, self.REVIEW, None, [], run_attempt=2), "status": "in_progress"}
+        out, md = self.collect_rerun(
+            [job(1, "Lint", "success", RAN), job(2, "Unit Tests", "success", RAN),
+             job(3, self.REVIEW, "failure", RAN), in_flight],
+            [in_flight], {1: "lint ok\n", 2: "tests ok\n"})
+        self.assertEqual(out["collected"], "2", "both gates of attempt 1 are results; the review is not")
+        self.assertIn("| Lint | success | - | logs/1.log |", md)
+        self.assertIn("| Unit Tests | success | - | logs/2.log |", md)
+        self.assertNotIn(self.REVIEW, md, "the review's own failed attempt 1 is not a gate result")
+
+    def test_a_gate_re_run_in_a_later_attempt_is_read_from_that_attempt(self):
+        later = [job(1, "Lint", "success", RAN), job(2, "Unit Tests", "failure", RAN),
+                 job(7, "Unit Tests", "success", RAN, run_attempt=2)]
+        out, md = self.collect_rerun(later, [job(7, "Unit Tests", "success", RAN, run_attempt=2)],
+                                     {1: "lint ok\n", 7: "tests ok\n"})
+        self.assertEqual(out["collected"], "2")
+        self.assertIn("| Unit Tests | success | - | logs/7.log |", md)
+        self.assertNotIn("| Unit Tests | failure |", md, "attempt 1's failure was superseded")
+        self.assertLess(md.index("| Lint |"), md.index("| Unit Tests |"), "rows keep GitHub's order")
+
+    def test_a_finished_run_lists_each_job_once(self):
+        # After the attempt ends, every carried-over gate has an attempt-2 copy: one row, not two.
+        done = [job(1, "Lint", "success", RAN), job(5, "Lint", "success", RAN, run_attempt=2)]
+        out, md = self.collect_rerun(done, done[1:], {5: "lint ok\n"})
+        self.assertEqual(out["collected"], "1")
+        self.assertIn("| Lint | success | - | logs/5.log |", md)
 
 
 if __name__ == "__main__":
