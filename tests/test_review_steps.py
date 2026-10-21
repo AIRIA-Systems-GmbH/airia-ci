@@ -23,7 +23,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from steps import ROOT, Runner, bare, heredoc
+from steps import ROOT, Runner, bare, heredoc, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-review.yml"
 FOOTER = "_Automatic review by `claude-code-review.yml`"
@@ -39,8 +39,10 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     """Once per head, not once per PR: the check is never green on a head no review covered (airia-ci#60)."""
 
     HEAD = "b" * 40
+    STEP = "Skip if this PR already has its automatic review"
+    CAP = step(WORKFLOW, STEP)["env"]["REVIEW_CAP"]
 
-    def once(self, comments, run_id="42", attempt="2", heads=None, head=HEAD, pr_head=None):
+    def once(self, comments, run_id="42", attempt="2", heads=None, head=HEAD, pr_head=None, fails=False):
         # `heads` maps a review's run id to the PR head that run was for; a missing id is an unreadable run.
         rules = [[r"issues/9/comments", {"json": comments}]]
         for rid, sha in (heads or {}).items():
@@ -51,8 +53,11 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         if pr_head:
             rules.append([r"pulls/9( |$)", {"json": {"head": {"sha": pr_head}}}])
         r = Runner(self, rules)
-        p = r.run(WORKFLOW, "Skip if this PR already has its automatic review", PR="9", RUN_ID=run_id,
-                  ATTEMPT=attempt, HEAD_SHA=head)
+        p = r.run(WORKFLOW, self.STEP, PR="9", RUN_ID=run_id, ATTEMPT=attempt, HEAD_SHA=head, REVIEW_CAP=self.CAP)
+        if fails:
+            self.assertEqual(p.returncode, 1, p.stderr)
+            self.assertEqual(r.outputs(), {}, "a capped PR is neither reviewed nor skipped green")
+            return p.stdout + r.summary.read_text()
         self.assertEqual(p.returncode, 0, p.stderr)
         return r.outputs()
 
@@ -102,6 +107,39 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
 
     def test_a_run_id_that_is_a_prefix_does_not_match(self):
         self.assertEqual(self.once([review(4200)], run_id="42", heads={4200: self.HEAD}), {"review": "false"})
+
+    def three_reviews(self, last_head):
+        old = "a" * 40
+        return ([review(39, comment_id=3), review(40, comment_id=5), review(41, comment_id=7)],
+                {39: old, 40: old, 41: last_head})
+
+    def test_the_cap_is_three(self):
+        # Andrea, 2026-10-21: the delegated-merge rule's three rounds, then a human.
+        self.assertEqual(self.CAP, "3")
+
+    def test_a_new_head_after_the_third_review_fails_and_escalates(self):
+        # airia-ci#62: a fourth review is not posted, and the check is never green on the unreviewed head.
+        comments, heads = self.three_reviews("c" * 40)
+        out = self.once(comments, attempt="1", heads=heads, fails=True)
+        self.assertIn("::error title=Automatic review cap reached::PR #9 already has 3 automatic reviews", out)
+        self.assertIn("https://github.com/o/r/pull/9#c7: escalate to a human", out)
+        self.assertIn("open a new one from the same branch", out)
+
+    def test_the_third_reviews_own_head_still_skips_green(self):
+        # ready_for_review on the head the third review covered: nothing new to review, nothing to escalate.
+        comments, heads = self.three_reviews(self.HEAD)
+        self.assertEqual(self.once(comments, attempt="1", heads=heads), {"review": "false"})
+
+    def test_a_rerun_of_the_third_reviewing_run_still_refreshes(self):
+        comments, heads = self.three_reviews(self.HEAD)
+        self.assertEqual(self.once(comments, run_id="41", attempt="2", heads=heads),
+                         {"review": "false", "refresh": "true", "comment-id": "7"})
+
+    def test_a_new_head_after_the_second_review_is_reviewed(self):
+        old = "a" * 40
+        comments = [review(40, comment_id=5), review(41, comment_id=7)]
+        self.assertEqual(self.once(comments, attempt="1", heads={40: old, 41: old}),
+                         {"review": "true", "prior-comment-id": "7", "prior-head": old})
 
     def test_someone_elses_comment_is_not_a_review(self):
         other = {**review(42), "user": {"login": "a-human"}}
