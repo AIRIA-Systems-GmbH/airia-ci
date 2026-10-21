@@ -71,7 +71,7 @@ The `self-test` workflow runs on every pull request, on GitHub-hosted runners:
 Callers call `@main`, never a pinned tag (Andrea, 2026-10-20): a merged fix reaches every caller on its next run, and a red build is fixed here, never pinned back. A change to the call contract (inputs, secrets, outputs, the review footer string `_Automatic review by \`claude-code-review.yml\``, on which the once-per-head check keys) is announced in an issue before it merges, because no tag shields a caller from it.
 
 - **The `ci-vN` tags are frozen history** and no longer move: `ci-v5` stays at `62b3606` (`ci-v5.4`). Inside a tag the workflows call their actions at that same tag, so moving one past #56 would give its callers main's actions under the tag's workflows. A frozen caller moves to `@main` ([HOWTO.md](HOWTO.md#upgrade-to-a-new-major) lists what each tag asks of it).
-- **The tag machinery stays until #63:** `release.yml`, the *Look for a newer airia-ci major* step and `HARNESS_MAJOR`. Do not dispatch `release.yml`.
+- **No tag is cut or moved:** #63 deleted `release.yml` and the *Look for a newer airia-ci major* step. The frozen tags keep their own copy of that step, which only warns once a `ci-v6` exists, and none will.
 
 `conformance.yml` runs `scripts/consumers.py --conformance` weekly. It keeps one "airia-ci standard drift" issue in each consumer that falls short of the standard, and it needs the `CONFORMANCE_TOKEN` secret (see its header).
 
