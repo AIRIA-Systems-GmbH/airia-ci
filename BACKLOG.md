@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 
 The order in which to do the work. Milestones are those of the Roadmap note `Roadmap-airia-ci`, kept in its order. Issues are GitHub issues on AIRIA-Systems-GmbH/airia-ci. Each Issue sits above the milestone it blocks. An Issue that breaks something already released goes at the very top.
 
-2026-10-21: three Issues were filed on 2026-10-20 (22:50Z–23:18Z): #60, fixed by #61 the same night, and #62 and #63, now under Off-roadmap. None of the nine older Issues was closed or has a new comment. #54's entry changed: its retry part (#55) reaches every `@main` caller.
+2026-10-21: three Issues were filed on 2026-10-20 (22:50Z–23:18Z): #60, fixed by #61 the same night; #63, closed on 2026-10-21 by #65; and #62, now under Off-roadmap. None of the nine older Issues was closed or has a new comment. #54's entry changed: its retry part (#55) reaches every `@main` caller.
 
 ## Breaks something released
 
@@ -34,7 +34,6 @@ The order in which to do the work. Milestones are those of the Roadmap note `Roa
 
 ## Off-roadmap
 
-Andrea's order (2026-10-21): #63, then #62, then the Issues above as #54, #37, #53, #50, #35, #27.
+Andrea's order (2026-10-21): #62, then the Issues above as #54, #37, #53, #50, #35, #27. #63 came first and is done: #65 deleted `release.yml`, the newer-major step and `HARNESS_MAJOR` (06f0c8a).
 
-10. #63: retire the tag machinery under the `@main` rule: delete `release.yml`, the "Look for a newer airia-ci major" step and `HARNESS_MAJOR`. Andrea gave the go on 2026-10-21; the day coordinator carries it. Until it merges, nobody dispatches `release.yml`.
-11. #62: cap the automatic reviews per PR. Since #61 every head that passes its gates gets a review, and nothing bounds the count. N = 3 (Andrea, 2026-10-21, the delegated-merge rule's round cap), after which the review fails with "escalate to a human". Built after #63.
+10. #62: cap the automatic reviews per PR. Since #61 every head that passes its gates gets a review, and nothing bounds the count. N = 3 (Andrea, 2026-10-21, the delegated-merge rule's round cap), after which the review fails with "escalate to a human". Next, now that #63 is done.
