@@ -18,8 +18,10 @@ Run: python3 -m unittest discover -s tests
 from __future__ import annotations
 
 import json
+import os
 import re
 import unittest
+from unittest import mock
 
 from steps import ROOT, Runner, step
 
@@ -106,8 +108,11 @@ class CiLocal(unittest.TestCase):
 
     def test_mypy_import_contracts_paths_and_every_cpu_when_asked(self):
         (self.repo / "pyproject.toml").write_text("[tool.importlinter]\nroot_package = 'app'\n")
-        p, calls = self.run_it(AIRIA_TYPE_CHECKER="mypy-strict", AIRIA_PATHS="src tests", AIRIA_XDIST_WORKERS="auto",
-                               AIRIA_COVERAGE_FLOOR="95", AIRIA_DURATIONS="0")
+        # A cap the caller's shell already sets (4 on the maintainer's Mac) is not this test's to inherit.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PYTEST_XDIST_AUTO_NUM_WORKERS", None)
+            p, calls = self.run_it(AIRIA_TYPE_CHECKER="mypy-strict", AIRIA_PATHS="src tests", AIRIA_XDIST_WORKERS="auto",
+                                   AIRIA_COVERAGE_FLOOR="95", AIRIA_DURATIONS="0")
         self.assertEqual(p.returncode, 0, p.stderr)
         args = [c["args"] for c in calls]
         self.assertEqual(calls[3]["paths"], "src tests")
