@@ -327,6 +327,8 @@ Inputs of `reusable-claude-respond.yml` worth knowing:
 
 The automatic review runs once per head commit. A push after it is reviewed again when its gates finish, so the required review check is never green on code no review saw (airia-ci#60). That re-review reads the earlier one and reports only what is new or still open, because a reviewer that re-rolls every push from scratch turns a PR into an endless back-and-forth. For a question in between, comment `@claude`.
 
+A PR gets at most **three** automatic reviews (airia-ci#62). A newer head after the third fails the review check with *Automatic review cap reached: escalate to a human*, because three rounds without convergence are a person's call, not a fourth review's. Same-head re-runs still refresh the third review's gate table. To go on, a person reads the thread, decides, and opens a new PR from the same branch: the count is per PR.
+
 Re-running the gate on the same commit (`gh run rerun --failed`) does not post a second review: it rewrites the existing review's gate-results section with the new attempt's results.
 
 ## Stay current

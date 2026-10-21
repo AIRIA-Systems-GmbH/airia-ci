@@ -91,7 +91,12 @@ name: Claude Code Review (shared)
 # re-review is not a stateless re-roll, which manufactures an endless ping-pong
 # (AIRIA-framework PR #405 ran eight rounds that way): it gets the earlier
 # review as ci-results/previous-review.md and reports only what is new or
-# still open. Questions in between are `@claude`.
+# still open. Questions in between are `@claude`. After three automatic
+# reviews on one PR (airia-ci#62, Andrea 2026-10-21: the delegated-merge
+# rule's round cap) a newer head fails the check with "escalate to a human"
+# instead of a fourth review: failing keeps the check off green on a head no
+# review covered. Every head counts and nothing resets the count; a new PR
+# from the same branch starts at zero.
 #
 # A RE-RUN REFRESHES, IT DOES NOT RE-REVIEW. When the earlier review was
 # written by this same run (`gh run rerun --failed` on the same commit, usually
@@ -202,6 +207,7 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           ATTEMPT: ${{ github.run_attempt }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_CAP: "3"
         run: |
           # Every automatic review, oldest first: its comment id, its URL and the
           # run its footer links (the closing paren keeps run 42 from matching 4200).
@@ -235,6 +241,15 @@ jobs:
             echo "PR #${PR} already has its automatic review of ${head}: ${url}" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "review=false" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          # At most REVIEW_CAP automatic reviews per PR (airia-ci#62): after that a
+          # human decides, so the check fails instead of reviewing again or passing.
+          count="$(wc -l <<< "${reviews}" | tr -d ' ')"
+          if [ "${count}" -ge "${REVIEW_CAP}" ]; then
+            msg="PR #${PR} already has ${count} automatic reviews (the cap is ${REVIEW_CAP}), the newest ${url}: escalate to a human. A person reads the thread and decides; to review again, close this PR and open a new one from the same branch."
+            echo "::error title=Automatic review cap reached::${msg}"
+            echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
           echo "The automatic review ${url} covered ${reviewed:-an unknown head}, not ${head:-this head}: reviewing again." | tee -a "$GITHUB_STEP_SUMMARY"
           { echo "review=true"; echo "prior-comment-id=${comment_id}"; echo "prior-head=${reviewed:-unknown}"; } >> "$GITHUB_OUTPUT"
