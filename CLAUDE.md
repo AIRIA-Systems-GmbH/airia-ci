@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Maintaining airia-ci
 
-Consumers run this repository's YAML at the moving tag `@ci-v5`. Every `run:` block, script and heredoc under `.github/` is shipped code.
+Consumers run this repository's YAML at `@main`. Every `run:` block, script and heredoc under `.github/` is shipped code.
 
 ## Conventions
 
@@ -25,18 +25,16 @@ Consumers run this repository's YAML at the moving tag `@ci-v5`. Every `run:` bl
 
 ## Tags and versioning
 
-- `ci-v5` moves on every compatible change; a change to a call contract (inputs, secrets, outputs, the review footer string) is `ci-vN+1`. Older tags are frozen.
-- Moving a tag is a force-push of a ref other repositories consume. It is done only by dispatching `release.yml` (which checks the SHA's `self-test` and that a move is forward), and only on the maintainer's explicit go-ahead: never dispatch it yourself.
-- A new major also bumps `HARNESS_MAJOR` in both reusable workflows and `TAG` in `scripts/init.py` (a test holds them to the workflows' pins; `release.yml` refuses a release whose `HARNESS_MAJOR` is not the tag's major), and adds its row to HOWTO.md's upgrade table: a frozen caller is sent there.
-- `main` can be ahead of `ci-v5`; a merged fix reaches consumers only when the tag moves.
-- A new major's own PR cannot be reviewed by `self-test`'s `claude-review`: it calls the actions `@ci-vN+1`, which does not exist until the release, so that job fails to start. It is not a required check, and `self-test` on the merge commit skips it. Review that PR with `@claude` (the responder runs from `main`), merge it, then the maintainer dispatches `release.yml` with `new`.
-- After every release, with the maintainer's `gh` login (no token in this repository can read the consumers' private repositories or speak for a person):
-  - `python3 scripts/consumers.py AIRIA-Systems-GmbH tumma72` lists every caller and exits 1 if one still pins an older major. Moving the tag never reaches that caller, so open the upgrade PR there.
+- Consumers call `@main`, never a pinned tag (Andrea, 2026-10-20): a merged fix reaches every caller on its next run, so `main` is released code. A red consumer build caused here is fixed here, never pinned back.
+- A change to a call contract (inputs, secrets, outputs, the review footer string) is announced in an airia-ci issue before it merges: no tag shields a caller from it. That is a promise, not a check.
+- The `ci-vN` tags are frozen history: `ci-v5` stays at `62b3606` (`ci-v5.4`). Never move one: inside a tag the workflows call their actions at that tag, so a move past #56 hands its callers main's actions. `release.yml`, the newer-major step and `HARNESS_MAJOR` stay until #63 retires them; never dispatch `release.yml`.
+- With the maintainer's `gh` login (no token in this repository can read the consumers' private repositories or speak for a person):
+  - `python3 scripts/consumers.py AIRIA-Systems-GmbH tumma72` lists every caller and exits 1 if one is pinned to a `ci-vN` tag. No fix reaches that caller; its own repository moves it to `@main`.
   - `python3 scripts/canary.py --repo <consumer> --pr <open PR>` posts `@claude` and waits for the reply. No PR runs the responder, so this is its only test before real use.
 
 ## Dogfooding
 
-`self-test.yml` ends with `claude-review`, which calls `./.github/workflows/reusable-claude-review.yml` at the PR's commit; `claude.yml` answers `@claude` with the respond workflow from the default branch. Both run on `ubuntu-24.04` via the `runner` input, so `claude-cli` falls back to claude-code-action's own install. The reusable workflows still call the actions `@ci-v5`; the `actions` job is what tests a change to an action.
+`self-test.yml` ends with `claude-review`, which calls `./.github/workflows/reusable-claude-review.yml` at the PR's commit; `claude.yml` answers `@claude` with the respond workflow from the default branch. Both run on `ubuntu-24.04` via the `runner` input, so `claude-cli` falls back to claude-code-action's own install. The reusable workflows call the actions `@main`, so a PR's own review runs main's actions; the `actions` job is what tests a change to an action.
 
 ## Before you finish
 

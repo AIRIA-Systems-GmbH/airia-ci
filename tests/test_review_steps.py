@@ -279,13 +279,14 @@ class NewerMajor(unittest.TestCase):
         self.assertIn("::notice title=airia-ci version not checked::", p.stdout)
         self.assertEqual(r.outputs(), {})
 
-    def test_both_workflows_and_init_name_the_same_major(self):
+    def test_both_workflows_name_the_same_major_and_init_wires_main(self):
         # HARNESS_MAJOR is bumped by hand with every ci-vN+1; a stale one would
         # tell ci-v4's own callers to upgrade, or never tell ci-v3's.
         respond = ROOT / ".github/workflows/reusable-claude-respond.yml"
         self.assertEqual(step(respond, self.STEP)["env"]["HARNESS_MAJOR"], self.MAJOR)
-        (tag,) = re.findall(r'^TAG = "(ci-v\d+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
-        self.assertEqual(tag, f"ci-v{self.MAJOR}")
+        # init.py wires a new consumer to @main, never to a frozen tag.
+        (tag,) = re.findall(r'^TAG = "(.+)"$', (ROOT / "scripts/init.py").read_text(), re.MULTILINE)
+        self.assertEqual(tag, "main")
 
 
 class InternalPins(unittest.TestCase):

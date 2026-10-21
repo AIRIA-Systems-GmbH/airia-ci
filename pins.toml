@@ -3,8 +3,8 @@
 #
 # The AIRIA quality standard: the exact version of every gate tool, and the
 # floors a project may raise but never lower. The python-toolchain action and
-# reusable-python-gate.yml read this file at the tag the caller pins, so a bump
-# here reaches every consumer when the tag moves, as its own change, and never
+# reusable-python-gate.yml read this file at the ref the caller calls (`@main`),
+# so a bump here reaches every consumer when it merges, as its own change, and never
 # because a tool shipped a release last night (airia-ci#37).
 #
 # A tool a project also locks in its own uv.lock runs at the locked version,

@@ -312,7 +312,7 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
     # The later steps of the job run this file's `ruff` command by this name.
     output("AIRIA_TOOLCHAIN", str(HERE / "toolchain.py"), "GITHUB_ENV")
     if "zizmor" in env.get("TOOLS", "").split():
-        # The standard's zizmor policy: hash pins, except this harness's own moving tag.
+        # The standard's zizmor policy: hash pins, except this harness, followed at `@main`.
         output("ZIZMOR_CONFIG", str(HERE / "zizmor.yml"), "GITHUB_ENV")
     # GITHUB_PATH prepends: the project's environment ends up first, so a locked tool wins.
     with open(env["GITHUB_PATH"], "a") as fh:
