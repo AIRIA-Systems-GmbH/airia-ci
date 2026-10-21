@@ -27,7 +27,7 @@ Consumers run this repository's YAML at `@main`. Every `run:` block, script and 
 
 - Consumers call `@main`, never a pinned tag (Andrea, 2026-10-20): a merged fix reaches every caller on its next run, so `main` is released code. A red consumer build caused here is fixed here, never pinned back.
 - A change to a call contract (inputs, secrets, outputs, the review footer string) is announced in an airia-ci issue before it merges: no tag shields a caller from it. That is a promise, not a check.
-- The `ci-vN` tags are frozen history: `ci-v5` stays at `62b3606` (`ci-v5.4`). Never move one: inside a tag the workflows call their actions at that tag, so a move past #56 hands its callers main's actions. `release.yml`, the newer-major step and `HARNESS_MAJOR` stay until #63 retires them; never dispatch `release.yml`.
+- The `ci-vN` tags are frozen history: `ci-v5` stays at `62b3606` (`ci-v5.4`). Never move one and never cut a new one: inside a tag the workflows call their actions at that tag, so a move past #56 hands its callers main's actions. #63 deleted `release.yml` and the newer-major step; the frozen tags keep their own copies.
 - With the maintainer's `gh` login (no token in this repository can read the consumers' private repositories or speak for a person):
   - `python3 scripts/consumers.py AIRIA-Systems-GmbH tumma72` lists every caller and exits 1 if one is pinned to a `ci-vN` tag. No fix reaches that caller; its own repository moves it to `@main`.
   - `python3 scripts/canary.py --repo <consumer> --pr <open PR>` posts `@claude` and waits for the reply. No PR runs the responder, so this is its only test before real use.
