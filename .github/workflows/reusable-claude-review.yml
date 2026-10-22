@@ -93,10 +93,15 @@ name: Claude Code Review (shared)
 # review as ci-results/previous-review.md and reports only what is new or
 # still open. Questions in between are `@claude`. After three automatic
 # reviews on one PR (airia-ci#62, Andrea 2026-10-21: the delegated-merge
-# rule's round cap) a newer head fails the check with "escalate to a human"
-# instead of a fourth review: failing keeps the check off green on a head no
-# review covered. Every head counts and nothing resets the count; a new PR
-# from the same branch starts at zero.
+# rule's round cap) a newer head gets no fourth review. The check passes
+# with a notice, and the PR gets one comment per such head: "review cap
+# reached; no new automatic review" (airia-ci#70). The cap is not a human
+# gate (Andrea, 2026-10-22). The coordinator merges a capped PR when every
+# required check is green, every finding has a reply and the PR fits the
+# Roadmap. Until 2026-10-22 the check failed here and four consumer PRs
+# waited on Andrea. That comment has no review footer, so it is never
+# counted as a review. Every head counts and nothing resets the count; a new
+# PR from the same branch starts at zero.
 #
 # A RE-RUN REFRESHES, IT DOES NOT RE-REVIEW. When the earlier review was
 # written by this same run (`gh run rerun --failed` on the same commit, usually
@@ -139,7 +144,8 @@ name: Claude Code Review (shared)
 # posts it; the job fails when there is none. Before this, `claude-review` went
 # green having posted nothing on AIRIA-process PR #49 and Portfolio-Dashboard
 # PRs #26–#32, and a run asked to post for itself could still end without
-# doing so (Portfolio-Dashboard PR #36). Nor does it go green without the
+# doing so (Portfolio-Dashboard PR #36). The one green without a review is
+# the cap above, and that run posts its cap comment. Nor does it go green without the
 # gate results: a run whose jobs could not be listed, or that has no finished
 # job, fails before Claude runs (airia-ci#24).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -242,17 +248,51 @@ jobs:
             echo "review=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # At most REVIEW_CAP automatic reviews per PR (airia-ci#62): after that a
-          # human decides, so the check fails instead of reviewing again or passing.
+          # At most REVIEW_CAP automatic reviews per PR (airia-ci#62). The cap is
+          # not a human gate (airia-ci#70): no review, the check passes, and the
+          # next step notes the cap on the PR.
           count="$(wc -l <<< "${reviews}" | tr -d ' ')"
           if [ "${count}" -ge "${REVIEW_CAP}" ]; then
-            msg="PR #${PR} already has ${count} automatic reviews (the cap is ${REVIEW_CAP}), the newest ${url}: escalate to a human. A person reads the thread and decides; to review again, close this PR and open a new one from the same branch."
-            echo "::error title=Automatic review cap reached::${msg}"
+            msg="PR #${PR} already has ${count} automatic reviews (the cap is ${REVIEW_CAP}), the newest ${url}: no new automatic review of ${head:-this head}. To review again, close this PR and open a new one from the same branch."
+            echo "::notice title=Automatic review cap reached::${msg}"
             echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+            { echo "review=false"; echo "capped=true"; echo "head=${head}"; echo "count=${count}"; echo "cap=${REVIEW_CAP}"; echo "newest=${url}"; } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "The automatic review ${url} covered ${reviewed:-an unknown head}, not ${head:-this head}: reviewing again." | tee -a "$GITHUB_STEP_SUMMARY"
           { echo "review=true"; echo "prior-comment-id=${comment_id}"; echo "prior-head=${reviewed:-unknown}"; } >> "$GITHUB_OUTPUT"
+
+      # One comment per capped head, so the PR says why no review came. A
+      # re-run, ready_for_review or a re-opened PR on the same head finds its
+      # marker and posts nothing. The marker counts only in this job's own
+      # comments. The comment has no review footer, so the step above never
+      # counts it as a review.
+      - name: Note the review cap
+        if: steps.once.outputs.capped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ inputs.pr-number }}
+          HEAD: ${{ steps.once.outputs.head }}
+          COUNT: ${{ steps.once.outputs.count }}
+          CAP: ${{ steps.once.outputs.cap }}
+          NEWEST: ${{ steps.once.outputs.newest }}
+        run: |
+          marker="<!-- airia-ci review-cap ${HEAD:-unknown} -->"
+          ours="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | .body')"
+          if grep -qF -- "${marker}" <<< "${ours}"; then
+            echo "PR #${PR} already says so for ${HEAD:-this head}." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          body="${RUNNER_TEMP}/claude-review-cap.md"
+          cat > "${body}" <<EOF
+          **Review cap reached; no new automatic review.** This PR already has ${COUNT} automatic reviews (the cap is ${CAP}), the newest ${NEWEST}. Head \`${HEAD:-unknown}\` was not reviewed, and Claude Review passes anyway: the cap is not a human gate (airia-ci#70).
+
+          Merge when every required check is green, every finding in the reviews has a reply on this PR, and the change fits the Roadmap. Questions go to \`@claude\`. For another automatic review, close this PR and open a new one from the same branch.
+
+          ${marker}
+          EOF
+          gh pr comment "${PR}" --repo "${GITHUB_REPOSITORY}" --body-file "${body}" | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Without it the only symptom is claude-code-action's "Environment variable
       # validation failed" and the post step's advice to retry with `@claude`,
