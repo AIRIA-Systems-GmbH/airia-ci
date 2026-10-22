@@ -42,7 +42,7 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     STEP = "Skip if this PR already has its automatic review"
     CAP = step(WORKFLOW, STEP)["env"]["REVIEW_CAP"]
 
-    def once(self, comments, run_id="42", attempt="2", heads=None, head=HEAD, pr_head=None, fails=False):
+    def once(self, comments, run_id="42", attempt="2", heads=None, head=HEAD, pr_head=None):
         # `heads` maps a review's run id to the PR head that run was for; a missing id is an unreadable run.
         rules = [[r"issues/9/comments", {"json": comments}]]
         for rid, sha in (heads or {}).items():
@@ -54,11 +54,8 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
             rules.append([r"pulls/9( |$)", {"json": {"head": {"sha": pr_head}}}])
         r = Runner(self, rules)
         p = r.run(WORKFLOW, self.STEP, PR="9", RUN_ID=run_id, ATTEMPT=attempt, HEAD_SHA=head, REVIEW_CAP=self.CAP)
-        if fails:
-            self.assertEqual(p.returncode, 1, p.stderr)
-            self.assertEqual(r.outputs(), {}, "a capped PR is neither reviewed nor skipped green")
-            return p.stdout + r.summary.read_text()
         self.assertEqual(p.returncode, 0, p.stderr)
+        self.stdout = p.stdout + (r.summary.read_text() if r.summary.exists() else "")
         return r.outputs()
 
     def test_no_prior_review_reviews(self):
@@ -117,13 +114,20 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         # Andrea, 2026-10-21: the delegated-merge rule's three rounds, then a human.
         self.assertEqual(self.CAP, "3")
 
-    def test_a_new_head_after_the_third_review_fails_and_escalates(self):
-        # airia-ci#62: a fourth review is not posted, and the check is never green on the unreviewed head.
+    def test_a_new_head_after_the_third_review_passes_capped_without_a_review(self):
+        # airia-ci#62 capped the reviews at three; airia-ci#70: the cap is not a human gate, so
+        # the check passes and hands the next step what its summary comment says. Until
+        # 2026-10-22 it failed, and four consumer PRs waited on Andrea that day.
         comments, heads = self.three_reviews("c" * 40)
-        out = self.once(comments, attempt="1", heads=heads, fails=True)
-        self.assertIn("::error title=Automatic review cap reached::PR #9 already has 3 automatic reviews", out)
-        self.assertIn("https://github.com/o/r/pull/9#c7: escalate to a human", out)
-        self.assertIn("open a new one from the same branch", out)
+        self.assertEqual(self.once(comments, attempt="1", heads=heads),
+                         {"review": "false", "capped": "true", "head": self.HEAD, "count": "3", "cap": "3",
+                          "newest": "https://github.com/o/r/pull/9#c7"})
+        self.assertIn("::notice title=Automatic review cap reached::PR #9 already has 3 automatic reviews", self.stdout)
+        self.assertNotIn("::error", self.stdout)
+
+    def test_a_capped_pr_without_the_event_head_reads_the_prs_head(self):
+        comments, heads = self.three_reviews("c" * 40)
+        self.assertEqual(self.once(comments, attempt="1", heads=heads, head="", pr_head=self.HEAD)["head"], self.HEAD)
 
     def test_the_third_reviews_own_head_still_skips_green(self):
         # ready_for_review on the head the third review covered: nothing new to review, nothing to escalate.
@@ -144,6 +148,53 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
     def test_someone_elses_comment_is_not_a_review(self):
         other = {**review(42), "user": {"login": "a-human"}}
         self.assertEqual(self.once([other]), {"review": "true"})
+
+
+class NoteTheReviewCap(unittest.TestCase):
+    """At the cap the PR gets one summary comment per head, never a fourth review (airia-ci#70)."""
+
+    STEP = "Note the review cap"
+    HEAD = "c" * 40
+    MARKER = f"<!-- airia-ci review-cap {HEAD} -->"
+
+    def note(self, comments, head=HEAD):
+        r = Runner(self, [[r"issues/9/comments", {"json": comments}],
+                          [r"^pr comment 9 ", {"text": "https://github.com/o/r/pull/9#c9\n"}]])
+        p = r.run(WORKFLOW, self.STEP, PR="9", HEAD=head, COUNT="3", CAP="3", NEWEST="https://github.com/o/r/pull/9#c7")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        posts = [c for c in r.calls() if c["args"][:2] == ["pr", "comment"]]
+        return posts, p.stdout + (r.summary.read_text() if r.summary.exists() else "")
+
+    def test_the_first_capped_run_on_a_head_posts_the_summary(self):
+        posts, _ = self.note([review(41)])
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["args"][:5], ["pr", "comment", "9", "--repo", "o/r"])
+        body = posts[0]["files"]["--body-file"]
+        self.assertIn("Review cap reached; no new automatic review.", body)
+        self.assertIn("3 automatic reviews (the cap is 3)", body)
+        self.assertIn("https://github.com/o/r/pull/9#c7", body)
+        self.assertIn(f"`{self.HEAD}`", body)
+        self.assertIn("every finding in the reviews has a reply", body)
+        self.assertIn(self.MARKER, body)
+        # The once step counts any bot comment with the footer as a review: this one must never be review #4.
+        self.assertNotIn(FOOTER, body)
+
+    def test_a_head_already_noted_is_not_noted_again(self):
+        # A re-run, ready_for_review or a re-opened PR on the same capped head: one comment, not one per run.
+        noted = {**review(41, comment_id=9), "body": "Review cap reached.\n" + self.MARKER}
+        posts, out = self.note([review(41), noted])
+        self.assertEqual(posts, [])
+        self.assertIn("already says so", out)
+
+    def test_someone_quoting_the_marker_does_not_suppress_it(self):
+        quoted = {**review(41, comment_id=9), "user": {"login": "a-human"}, "body": self.MARKER}
+        posts, _ = self.note([review(41), quoted])
+        self.assertEqual(len(posts), 1)
+
+    def test_a_note_for_another_head_does_not_suppress_this_one(self):
+        other = {**review(41, comment_id=9), "body": "<!-- airia-ci review-cap " + "d" * 40 + " -->"}
+        posts, _ = self.note([review(41), other])
+        self.assertEqual(len(posts), 1)
 
 
 class RequireTheCredential(unittest.TestCase):
