@@ -32,8 +32,8 @@ FOOTER = "_Automatic review by `claude-code-review.yml`"
 HEAD = "c" * 40
 
 
-def finding(fid="F1", file="src/a.py", line=12, severity="major", text="`x` is unchecked."):
-    f = {"id": fid, "file": file, "severity": severity, "text": text}
+def finding(fid="F1", file="src/a.py", line=12, severity="major", text="`x` is unchecked.", carried=False):
+    f = {"id": fid, "file": file, "severity": severity, "text": text, "carried": carried}
     if line is not None:
         f["line"] = line
     return f
@@ -180,7 +180,7 @@ class TheStep(unittest.TestCase):
 
     def test_a_finding_posted_by_an_earlier_review_is_linked_not_posted_again(self):
         # A re-review keeps an open finding's id; its comment is already on the PR.
-        p, summaries, comments = self.post(execution(message([finding("F1"), finding("F2", "src/c.py", 5)])),
+        p, summaries, comments = self.post(execution(message([finding("F1", carried=True), finding("F2", "src/c.py", 5)])),
                                            rules=[[LISTING, {"json": [self.earlier()]}]])
         self.assertEqual(p.returncode, 0, p.stderr)
         (args, _), = comments
@@ -196,33 +196,51 @@ class TheStep(unittest.TestCase):
         return {"html_url": "https://github.com/o/r/pull/9#discussion_r9", "user": {"login": login, "type": kind},
                 "body": f"**major** · {fid}\n\nOld text.\n\n{marker}\n"}
 
-    def test_a_reused_id_on_another_file_is_a_new_finding(self):
-        # A fresh review numbers from F1 again: the old F1's comment is about other code.
-        p, summaries, comments = self.post(execution(message([finding("F1", "src/other.py", 4)])),
+    def test_a_carried_finding_on_another_file_than_its_marker_is_posted_as_new_and_noted(self):
+        # The old F1's comment is about other code: linking it would hide the new problem.
+        p, summaries, comments = self.post(execution(message([finding("F1", "src/other.py", 4, carried=True)])),
                                            rules=[[LISTING, {"json": [self.earlier("F1", "src/a.py")]}]])
         self.assertEqual(p.returncode, 0, p.stderr)
         (args, _), = comments
         self.assertIn("path=src/other.py", args)
         self.assertNotIn("still open", summaries[0])
         self.assertNotIn("discussion_r9", summaries[0])
+        self.assertIn("marked as carried, but no earlier comment has this id and file: posted as new", summaries[0])
+
+    def test_a_finding_that_is_not_carried_is_posted_as_new_even_on_the_same_id_and_file(self):
+        # A fresh review numbers from F1 again, and the model may reuse a file: only `carried` links.
+        p, summaries, comments = self.post(execution(message([finding("F1", "src/a.py", 12, carried=False)])),
+                                           rules=[[LISTING, {"json": [self.earlier("F1", "src/a.py")]}]])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(comments), 1)
+        self.assertNotIn("discussion_r9", summaries[0])
+        self.assertNotIn("still open", summaries[0])
+        self.assertNotIn("marked as carried", summaries[0])
+
+    def test_a_carried_finding_with_no_marker_at_all_is_posted_as_new_and_noted(self):
+        p, summaries, comments = self.post(execution(message([finding("F9", carried=True)])))
+        self.assertEqual((p.returncode, len(comments)), (0, 1))
+        self.assertIn("marked as carried", summaries[0])
 
     def test_the_file_in_the_marker_survives_spaces(self):
         name = "docs/my notes.md"
         self.assertIn("file=docs/my%20notes.md -->", pr_mod.comment_body(finding("F1", name), "42"))
-        p, summaries, comments = self.post(execution(message([finding("F1", name)])),
+        p, summaries, comments = self.post(execution(message([finding("F1", name, carried=True)])),
                                            rules=[[LISTING, {"json": [self.earlier("F1", name)]}]])
         self.assertEqual((p.returncode, comments), (0, []))
         self.assertIn("still open from an earlier review", summaries[0])
 
     def test_a_marker_from_another_bot_is_recognised(self):
         app = self.earlier(login="airia-reviewer[bot]")
-        p, summaries, comments = self.post(execution(message([finding("F1")])), rules=[[LISTING, {"json": [app]}]])
+        p, summaries, comments = self.post(execution(message([finding("F1", carried=True)])),
+                                           rules=[[LISTING, {"json": [app]}]])
         self.assertEqual((p.returncode, comments), (0, []))
         self.assertIn("discussion_r9", summaries[0])
 
     def test_a_marker_quoted_by_a_user_does_not_suppress_a_finding(self):
         spoof = self.earlier(login="a-human", kind="User")
-        p, _, comments = self.post(execution(message([finding("F1")])), rules=[[LISTING, {"json": [spoof]}]])
+        p, _, comments = self.post(execution(message([finding("F1", carried=True)])),
+                                   rules=[[LISTING, {"json": [spoof]}]])
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(len(comments), 1)
 
@@ -324,6 +342,12 @@ class ParseFindings(unittest.TestCase):
         self.bad([finding(line=True)], "line must be a positive integer")
         self.bad([finding(severity="huge")], "severity must be one of")
         self.bad([finding(text="  ")], "has no text")
+
+    def test_carried_must_be_present_and_a_bool(self):
+        missing = {k: v for k, v in finding().items() if k != "carried"}
+        self.bad([missing], "carried must be true or false")
+        for value in ("true", 1, None):
+            self.bad([{**finding(), "carried": value}], "carried must be true or false")
 
 
 class TheShippedFiles(unittest.TestCase):
