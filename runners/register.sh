@@ -23,7 +23,7 @@ for i in $(seq 1 "$COUNT"); do
   # fresh token per runner (they are single-use); stays in a var, piped to stdin
   gh api -X POST "/repos/${REPO}/actions/runners/registration-token" --jq .token \
     | ssh -o BatchMode=yes "$THOR" "pct exec '${CT}' -- /root/add-runner.sh '${REPO}' '${i}'" \
-    | grep -v -i -E 'token|secret' || true
+    | { grep -v -i -E 'token|secret' || [ $? -eq 1 ]; }
 done
 
 echo "--- registered runners for ${REPO}:"
