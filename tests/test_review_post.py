@@ -52,7 +52,7 @@ INLINE = r"^api --method POST repos/o/r/pulls/9/comments .* -F line="
 FILE_LEVEL = r"^api --method POST repos/o/r/pulls/9/comments .* subject_type=file"
 LISTING = r"^api --paginate repos/o/r/pulls/9/comments"
 SUMMARY = r"^pr comment 9 "
-UNPROCESSABLE = {"exit": 1, "stderr": "HTTP 422: Unprocessable Entity"}
+UNPROCESSABLE = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\npull_request_review_thread.line could not be resolved"}
 
 
 class TheStep(unittest.TestCase):
@@ -101,7 +101,7 @@ class TheStep(unittest.TestCase):
         _, _, comments = self.post(execution(message([finding("F7")])), run_id="42")
         (_, files), = comments
         (body,) = files.values()
-        self.assertIn("<!-- airia-finding run=42 id=F7 -->", body)
+        self.assertIn("<!-- airia-finding run=42 id=F7 file=src/a.py -->", body)
         self.assertTrue(pr_mod.MARKER.search(body), "the marker is what a re-review and the unanswered-findings check read")
 
     def test_no_finding_comment_carries_the_review_footer(self):
@@ -180,11 +180,8 @@ class TheStep(unittest.TestCase):
 
     def test_a_finding_posted_by_an_earlier_review_is_linked_not_posted_again(self):
         # A re-review keeps an open finding's id; its comment is already on the PR.
-        marker = "<!-- airia-finding run=41 id=F1 -->"
-        earlier = {"html_url": "https://github.com/o/r/pull/9#discussion_r9", "user": {"login": "github-actions[bot]"},
-                   "body": f"**major** · F1\n\nOld text.\n\n{marker}\n"}
         p, summaries, comments = self.post(execution(message([finding("F1"), finding("F2", "src/c.py", 5)])),
-                                           rules=[[LISTING, {"json": [earlier]}]])
+                                           rules=[[LISTING, {"json": [self.earlier()]}]])
         self.assertEqual(p.returncode, 0, p.stderr)
         (args, _), = comments
         self.assertIn("path=src/c.py", args, "only the new finding F2 is posted")
@@ -193,11 +190,57 @@ class TheStep(unittest.TestCase):
                       "[comment](https://github.com/o/r/pull/9#discussion_r9)", summary)
         self.assertIn("- **F2** (major) `src/c.py:5` — [comment]", summary)
 
-    def test_someone_elses_comment_with_a_marker_does_not_suppress_a_finding(self):
-        spoof = {"html_url": "https://x/1", "user": {"login": "a-human"}, "body": "<!-- airia-finding run=1 id=F1 -->"}
+    @staticmethod
+    def earlier(fid="F1", file="src/a.py", login="github-actions[bot]", kind="Bot"):
+        marker = pr_mod.comment_body(finding(fid, file), "41").splitlines()[-1]
+        return {"html_url": "https://github.com/o/r/pull/9#discussion_r9", "user": {"login": login, "type": kind},
+                "body": f"**major** · {fid}\n\nOld text.\n\n{marker}\n"}
+
+    def test_a_reused_id_on_another_file_is_a_new_finding(self):
+        # A fresh review numbers from F1 again: the old F1's comment is about other code.
+        p, summaries, comments = self.post(execution(message([finding("F1", "src/other.py", 4)])),
+                                           rules=[[LISTING, {"json": [self.earlier("F1", "src/a.py")]}]])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (args, _), = comments
+        self.assertIn("path=src/other.py", args)
+        self.assertNotIn("still open", summaries[0])
+        self.assertNotIn("discussion_r9", summaries[0])
+
+    def test_the_file_in_the_marker_survives_spaces(self):
+        name = "docs/my notes.md"
+        self.assertIn("file=docs/my%20notes.md -->", pr_mod.comment_body(finding("F1", name), "42"))
+        p, summaries, comments = self.post(execution(message([finding("F1", name)])),
+                                           rules=[[LISTING, {"json": [self.earlier("F1", name)]}]])
+        self.assertEqual((p.returncode, comments), (0, []))
+        self.assertIn("still open from an earlier review", summaries[0])
+
+    def test_a_marker_from_another_bot_is_recognised(self):
+        app = self.earlier(login="airia-reviewer[bot]")
+        p, summaries, comments = self.post(execution(message([finding("F1")])), rules=[[LISTING, {"json": [app]}]])
+        self.assertEqual((p.returncode, comments), (0, []))
+        self.assertIn("discussion_r9", summaries[0])
+
+    def test_a_marker_quoted_by_a_user_does_not_suppress_a_finding(self):
+        spoof = self.earlier(login="a-human", kind="User")
         p, _, comments = self.post(execution(message([finding("F1")])), rules=[[LISTING, {"json": [spoof]}]])
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(len(comments), 1)
+
+    def test_a_422_about_something_else_fails_the_job(self):
+        # A push landed mid-review: every comment would 422 on its commit_id, and none may be filed as "not in the diff".
+        stale = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\ncommit_id is not part of the pull request"}
+        p, summaries, comments = self.post(execution(message([finding()])), rules=[[INLINE, stale]])
+        self.assertEqual((p.returncode, summaries, len(comments)), (1, [], 1))
+        self.assertIn("::error title=No review posted::finding F1: gh api failed", p.stdout)
+        self.assertIn("commit_id is not part of the pull request", p.stdout)
+
+    def test_either_wording_of_the_diff_422_falls_back_case_insensitively(self):
+        for wording in ("pull_request_review_thread.line could not be resolved",
+                        "Pull request review thread line must be part of the diff"):
+            with self.subTest(wording=wording):
+                err = {"exit": 1, "stderr": f"gh: Validation Failed (HTTP 422)\n{wording.upper()}"}
+                p, _, comments = self.post(execution(message([finding()])), rules=[[INLINE, err]])
+                self.assertEqual((p.returncode, len(comments)), (0, 2))
 
     def test_without_the_event_head_the_prs_head_is_read(self):
         _, _, comments = self.post(execution(message([finding()])), head="")

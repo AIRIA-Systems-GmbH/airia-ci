@@ -28,13 +28,17 @@ import re
 import subprocess
 import sys
 import tempfile
+from urllib.parse import quote, unquote
 
 FOOTER_START = "_Automatic review by `claude-code-review.yml`"
 SEVERITIES = ("blocker", "major", "minor", "nit")
 ID = re.compile(r"[A-Za-z0-9._-]{1,40}")
 BLOCK = re.compile(r"^```airia-findings[ \t]*\n(.*?)\n```[ \t]*$", re.DOTALL | re.MULTILINE)
-MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) -->")
-BOT = "github-actions[bot]"
+MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) file=(\S+) -->")
+# GitHub's 422 for a comment whose line or path is not in the PR's diff. Its docs give no wording, so these
+# are the stable fragments of the messages it returns ("...line could not be resolved", "...must be part of
+# the diff"); any other 422 (a stale commit_id, a rejected body) is a real failure.
+NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", re.IGNORECASE)
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
 
 
@@ -110,21 +114,24 @@ def gh_ok(*args: str) -> str:
     return p.stdout.strip()
 
 
-def posted_findings(repo: str, pr: str) -> dict[str, str]:
-    """finding id -> URL of the review comment already carrying it."""
-    jq = ('.[] | select(.user.login == "' + BOT + '") | select(.body | contains("<!-- airia-finding ")) '
+def posted_findings(repo: str, pr: str) -> dict[tuple[str, str], str]:
+    """(finding id, file) -> URL of the review comment already carrying it.
+
+    Any bot counts (an app token as well as Actions'); a person quoting a marker never does.
+    """
+    jq = ('.[] | select(.user.type == "Bot") | select(.body | contains("<!-- airia-finding ")) '
           "| {html_url, body} | tojson")
-    found: dict[str, str] = {}
+    found: dict[tuple[str, str], str] = {}
     for line in gh_ok("api", "--paginate", f"repos/{repo}/pulls/{pr}/comments", "--jq", jq).splitlines():
         comment = json.loads(line)
-        for fid in MARKER.findall(comment["body"]):
-            found.setdefault(fid, comment["html_url"])
+        for fid, file in MARKER.findall(comment["body"]):
+            found.setdefault((fid, unquote(file)), comment["html_url"])
     return found
 
 
 def comment_body(finding: dict, run_id: str) -> str:
     return (f"**{finding['severity']}** · {finding['id']}\n\n{finding['text'].strip()}\n\n"
-            f"<!-- airia-finding run={run_id} id={finding['id']} -->\n")
+            f"<!-- airia-finding run={run_id} id={finding['id']} file={quote(finding['file'], safe='/')} -->\n")
 
 
 def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> str | None:
@@ -142,8 +149,8 @@ def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> s
             p = gh(*args)
             if not p.returncode:
                 return p.stdout.strip()
-            # 422: the line, or the whole file, is not in the diff. Anything else is a real failure.
-            if "HTTP 422" not in p.stderr:
+            # A 422 about the line or the path means it is not in the diff: try the next, wider attempt.
+            if not (("HTTP 422" in p.stderr) and NOT_IN_THE_DIFF.search(p.stderr)):
                 raise ReviewError(f"finding {finding['id']}: gh api failed: {p.stderr.strip()}")
         return None
     finally:
@@ -177,14 +184,15 @@ def main() -> int:
             raise ReviewError(f"claude-review produced no review text for PR #{pr}. Treat this PR as UNREVIEWED; "
                               "comment `@claude please review` to retry.")
         summary, findings = parse_findings(text)
-        earlier: dict[str, str] = {}
+        earlier: dict[tuple[str, str], str] = {}
         urls: dict[str, str | None] = {}
         if findings:
             head = env.get("HEAD_SHA") or gh_ok("api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha")
             earlier = posted_findings(repo, pr)
-            urls = {f["id"]: earlier[f["id"]] if f["id"] in earlier else post_finding(repo, pr, head, run_id, f)
+            urls = {f["id"]: earlier.get((f["id"], f["file"])) or post_finding(repo, pr, head, run_id, f)
                     for f in findings}
-        section = findings_section(findings, urls, {f["id"] for f in findings} & set(earlier))
+        carried = {f["id"] for f in findings if (f["id"], f["file"]) in earlier}
+        section = findings_section(findings, urls, carried)
         version = env.get("CLAUDE_VERSION") or "installed by the action"
         footer = f"\n\n---\n{FOOTER_START} — [run log]({env['RUN_URL']}), Claude Code {version}._\n"
         with tempfile.NamedTemporaryFile("w", suffix=".md", dir=env.get("RUNNER_TEMP"), delete=False) as fh:
