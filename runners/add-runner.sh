@@ -5,7 +5,7 @@
 # Usage: add-runner.sh <owner/repo> <index> [labels]   (the token on stdin)
 # Run as root inside the container; register.sh pushes it there and calls it.
 # Installs one actions-runner instance into /home/runner/r-<slug>-<index>.
-# Persistent (NOT --ephemeral): see decision note in the design doc.
+# Persistent (NOT --ephemeral): see runners/POLICY.md.
 set -euo pipefail
 REPO="$1"; IDX="$2"; LABELS="${3:-thor,linux,x64}"
 # Token is read from stdin so it never appears in argv / ps / shell history.
