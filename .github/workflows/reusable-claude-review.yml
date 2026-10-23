@@ -140,8 +140,20 @@ name: Claude Code Review (shared)
 # action skips its "workflow must match the default branch" check (that check
 # lives in the App-token exchange), so a PR that edits this file IS reviewed.
 #
+# THE REVIEW'S SHAPE (airia-ci#73). Claude's final message ends with a fenced
+# `airia-findings` JSON block; the review-post action posts ONE summary issue
+# comment (the message above the block, the footer below it, a link to each
+# finding) plus ONE PR comment per finding: inline on its line, or file-level
+# when the line is not in the diff, each with a hidden marker naming the run,
+# the finding id and its file. Replies thread under the finding, so "every
+# finding has a reply" can be checked. A finding in a file the diff does not
+# touch has no comment: the summary carries its text. Only the summary has the
+# footer the once-per-head guard counts. A re-review marks a still-open finding
+# `carried`, and its existing comment is linked, not posted again.
+#
 # GREEN MEANS POSTED. Claude's final message is the review, and the last step
-# posts it; the job fails when there is none. Before this, `claude-review` went
+# posts it; the job fails when there is none, or when its findings block is
+# missing or malformed. Before this, `claude-review` went
 # green having posted nothing on AIRIA-process PR #49 and Portfolio-Dashboard
 # PRs #26–#32, and a run asked to post for itself could still end without
 # doing so (Portfolio-Dashboard PR #36). The one green without a review is
@@ -526,9 +538,36 @@ jobs:
             worse than an unrun gate reported as unrun.
 
             YOUR FINAL MESSAGE IS THE REVIEW. End your turn with the complete review, in Markdown, as
-            your last message and nothing else: the workflow posts that message to the PR as one
-            comment. Do NOT post it yourself (`gh pr comment` is disabled here). If a hook makes you
-            continue after it, end again with the complete review as your final message.
+            your last message and nothing else: the workflow posts it to the PR. Do NOT post it
+            yourself (`gh pr comment` is disabled here). If a hook makes you continue after it, end
+            again with the complete review as your final message.
+
+            The message has two parts. ABOVE the block is the summary: what you checked, which
+            earlier findings are now resolved, and the gate table. It does not repeat any finding.
+            It ENDS with a fenced block, the last thing in the message, that holds EVERY finding
+            and nowhere else; the workflow posts each as its own PR comment and links them from
+            the summary. The block is JSON; with no findings it is `{"findings": []}`:
+
+            ```airia-findings
+            {"findings": [
+              {"id": "F1", "file": "path/in/the/repo.py", "line": 42, "severity": "major",
+               "text": "What is wrong, with a concrete failing case.", "carried": false}
+            ]}
+            ```
+
+            - `id`: letters, digits, `.`, `_`, `-`; unique within the block.
+            - `file`: the repository path. `line`: the line in the new file, optional (leave it out
+              for a finding about the file as a whole or a missing change). A line outside the
+              diff becomes a file-level comment.
+            - `severity`: one of `blocker`, `major`, `minor`, `nit`.
+            - `text`: the finding, in Markdown. Never copy a review footer into it.
+            - `carried`: true or false, always present. On a re-review, `ci-results/previous-review.md`
+              is the earlier review, with its finding ids. A finding that is STILL OPEN keeps its
+              earlier id and file and sets `"carried": true`: the workflow links its existing
+              comment instead of posting it again. A NEW finding uses an id that does not appear
+              in the previous review and sets `"carried": false`. Without a previous review
+              every finding is new.
+            A missing or malformed block fails the job and the PR is left unreviewed.
 
             ${{ inputs.extra-prompt }}
 
@@ -539,41 +578,12 @@ jobs:
       # thing every successful run produces, so that is what gets posted.
       - name: Post the review
         if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ inputs.pr-number }}
-          CLAUDE_VERSION: ${{ steps.claude-cli.outputs.version }}
-          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          body="${RUNNER_TEMP}/claude-review-body.md"
-          rm -f "${body}"
-          python3 - "${EXECUTION_FILE}" "${body}" <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json, os, sys
-          path, out = sys.argv[1], sys.argv[2]
-          try:
-              msgs = json.load(open(path))
-          except (OSError, ValueError) as exc:
-              print(f"No execution file ({exc}); Claude did not run to completion.")
-              sys.exit(0)
-          result = next((m for m in reversed(msgs) if m.get("type") == "result"), {})
-          print(f"subtype: {result.get('subtype')}, turns: {result.get('num_turns')}, is_error: {result.get('is_error')}")
-          # Denials are not failures on their own (a denied push is the settings
-          # working), but they are the first thing to read when a review is thin.
-          denials = result.get("permission_denials") or []
-          print(f"permission denials: {len(denials)}")
-          for d in denials[:20]:
-              print(f"- {d.get('tool_name')}: {json.dumps(d.get('tool_input'))[:200]}")
-          text = (result.get("result") or "").strip()
-          if result.get("is_error") or not text:
-              print("No review text in the final message.")
-              sys.exit(0)
-          with open(out, "w") as fh:
-              fh.write(text + "\n\n---\n_Automatic review by `claude-code-review.yml` — [run log](" + os.environ["RUN_URL"] + "), Claude Code " + (os.environ.get("CLAUDE_VERSION") or "installed by the action") + "._\n")
-          PY
-
-          if [ ! -s "${body}" ]; then
-            echo "::error title=No review posted::claude-review produced no review text for PR #${PR}. Treat this PR as UNREVIEWED; comment \`@claude please review\` to retry."
-            exit 1
-          fi
-          gh pr comment "${PR}" --repo "${GITHUB_REPOSITORY}" --body-file "${body}"
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-post@main
+        with:
+          pr: ${{ inputs.pr-number }}
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          run-id: ${{ github.run_id }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          claude-version: ${{ steps.claude-cli.outputs.version }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
