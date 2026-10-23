@@ -88,7 +88,7 @@ runs:
       run: |
         out="${RUNNER_TEMP}/claude-settings-${PROFILE}.json"
         python3 - "${out}" <<'PY'
-        import json, os, sys
+        import json, os, re, sys
 
         READ = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
         BASH_READ = [
@@ -149,12 +149,33 @@ runs:
             sys.exit(f"extra-allow may not grant a bare Bash ({', '.join(opened)} names no command "
                      "before its first *): list the gate commands instead")
 
+        # A rule whose fixed text is a prefix of `gh api` would match it ("gh:*", "gh a:*").
+        reopened = [r for r in extra_allow if r.startswith("Bash(") and r.endswith(")")
+                    and "gh api".startswith(re.split(r"[*:]", r[5:-1], 1)[0].strip())
+                    or r.startswith("Bash(gh api")]
+        if reopened:
+            sys.exit(f"extra-allow may not grant gh api ({', '.join(reopened)}): "
+                     "the review's one read of the PR's comments is composed here")
+
         allow = READ + [f"Bash({c}:*)" for c in BASH_READ + GATES] + ["Bash(pwd)"]
         deny = list(DENY)
         if profile == "respond":
             allow += WRITE + [f"Bash({c}:*)" for c in BASH_WRITE]
         else:
             deny += REVIEW_ONLY_DENY
+            # The review reads the PR's earlier finding comments and their replies (airia-ci#73):
+            # exactly `gh api repos/<repo>/pulls/<n>/comments`, with or without --paginate, and no
+            # suffix, so `-X`, `-f`, `--input` or another path cannot match. A deny beats an allow,
+            # so the blanket `gh api` deny gives way to denies of the suffixed forms. The number is
+            # the pull_request ref's; on any other event nothing is allowed and the deny stands.
+            pr = re.fullmatch(r"refs/pull/(\d+)/merge", os.environ.get("GITHUB_REF", ""))
+            repo = os.environ.get("GITHUB_REPOSITORY", "")
+            if pr and re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
+                call = f"gh api repos/{repo}/pulls/{pr.group(1)}/comments"
+                forms = [call, call.replace("gh api ", "gh api --paginate ")]
+                allow += [f"Bash({f})" for f in forms]
+                deny.remove("Bash(gh api:*)")
+                deny += [f"Bash({f} *)" for f in forms]
         settings = {
             "permissions": {
                 "allow": allow + extra_allow,

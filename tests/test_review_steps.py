@@ -15,14 +15,33 @@ Run: python3 -m unittest discover -s tests
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
+import io
+import os
 import re
 import subprocess
 import unittest
+from unittest import mock
 
 from steps import ROOT, Runner, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-review.yml"
 FOOTER = "_Automatic review by `claude-code-review.yml`"
+spec = importlib.util.spec_from_file_location("findings", ROOT / "scripts/findings.py")
+findings_py = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(findings_py)
+
+
+def finding(cid, fid="F1", path="a.py", user="Bot", reply_to=None) -> dict:
+    return {"id": cid, "user": {"type": user}, "in_reply_to_id": reply_to,
+            "html_url": f"https://github.com/o/r/pull/9#discussion_r{cid}",
+            "body": f"text\n<!-- airia-finding run=11 id={fid} file={path} -->"}
+
+
+def thread_doc(*resolved_ids) -> dict:
+    nodes = [{"isResolved": True, "comments": {"nodes": [{"databaseId": i}]}} for i in resolved_ids]
+    return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": nodes}}}}}
 
 
 def review(run_id: int, comment_id: int = 7) -> dict:
@@ -153,8 +172,10 @@ class NoteTheReviewCap(unittest.TestCase):
     HEAD = "c" * 40
     MARKER = f"<!-- airia-ci review-cap {HEAD} -->"
 
-    def note(self, comments, head=HEAD):
+    def note(self, comments, head=HEAD, pulls=(), threads=(), pulls_reply=None):
         r = Runner(self, [[r"issues/9/comments", {"json": comments}],
+                          [r"pulls/9/comments", pulls_reply or {"json": list(pulls)}],
+                          [r"graphql", {"json": thread_doc(*threads)}],
                           [r"^pr comment 9 ", {"text": "https://github.com/o/r/pull/9#c9\n"}]])
         p = r.run(WORKFLOW, self.STEP, PR="9", HEAD=head, COUNT="3", CAP="3", NEWEST="https://github.com/o/r/pull/9#c7")
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -174,6 +195,50 @@ class NoteTheReviewCap(unittest.TestCase):
         self.assertIn(self.MARKER, body)
         # The once step counts any bot comment with the footer as a review: this one must never be review #4.
         self.assertNotIn(FOOTER, body)
+
+    def listed(self, **kw):
+        posts, _ = self.note([review(41)], **kw)
+        return posts[0]["files"]["--body-file"]
+
+    def test_the_comment_says_there_are_no_open_findings(self):
+        self.assertIn("Findings still open (no reply, thread not resolved): none.", self.listed())
+
+    def test_the_comment_lists_each_open_finding_with_its_id_file_and_link(self):
+        body = self.listed(pulls=[finding(101, "F1", "src/a.py"), finding(102, "F2", "b.py")])
+        self.assertIn("Findings still open (no reply, thread not resolved):", body)
+        self.assertIn("- `F1` in `src/a.py`: https://github.com/o/r/pull/9#discussion_r101", body)
+        self.assertIn("- `F2` in `b.py`: https://github.com/o/r/pull/9#discussion_r102", body)
+        self.assertIn(self.MARKER, body)
+        self.assertNotIn(FOOTER, body)
+
+    def test_an_unreadable_listing_is_said_not_reported_as_none(self):
+        body = self.listed(pulls_reply={"exit": 1, "stderr": "HTTP 403"})
+        self.assertNotIn(": none.", body)
+        self.assertIn("could not be read just now", body)
+        self.assertIn("python3 scripts/findings.py --repo o/r --pr 9", body)
+
+    def test_the_cap_comment_and_scripts_findings_py_pick_the_same_findings(self):
+        # The cap step runs where scripts/ is not checked out, so its jq is a copy of findings.py's rule.
+        # Same fixtures through both: they must name the same ids.
+        replies = {"none open": ([], ()),
+                   "one open": ([finding(101, "F1")], ()),
+                   "replied": ([finding(101, "F1"), finding(102, "F2"), finding(103, "x", user="User", reply_to=101)], ()),
+                   "resolved": ([finding(101, "F1"), finding(102, "F2")], (101,)),
+                   "non-bot marker": ([finding(101, "F1", user="User"), finding(102, "F2")], ()),
+                   "no marker": ([{**finding(101), "body": "plain"}], ())}
+        for name, (pulls, resolved) in replies.items():
+            with self.subTest(name):
+                body = self.listed(pulls=pulls, threads=resolved)
+                from_cap = sorted(re.findall(r"^- `([^`]+)` in", body, re.M))
+                r = Runner(self, [[r"pulls/9/comments", {"json": [pulls]}],
+                                  [r"graphql", {"json": [thread_doc(*resolved)]}]])
+                out = io.StringIO()
+                with mock.patch.dict(os.environ, r.env()), contextlib.redirect_stdout(out):
+                    findings_py.main(["--repo", "o/r", "--pr", "9"])
+                from_script = sorted(line.split("\t")[0] for line in out.getvalue().splitlines() if "\t" in line)
+                self.assertEqual(from_cap, from_script)
+                self.assertEqual(from_cap, {"none open": [], "one open": ["F1"], "replied": ["F2"], "resolved": ["F2"],
+                                            "non-bot marker": ["F2"], "no marker": []}[name])
 
     def test_a_head_already_noted_is_not_noted_again(self):
         # A re-run, ready_for_review or a re-opened PR on the same capped head: one comment, not one per run.
