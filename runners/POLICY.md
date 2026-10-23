@@ -1,0 +1,85 @@
+<!--
+SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Thor runner pool policy
+
+What the pool is, how it is shared, and how it changes. Scripts: [README.md](README.md). Issue: [#29](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/29).
+
+Read this first: **the pool is one container shared by every job from every consumer repository.** Persistent runners ([`add-runner.sh`](add-runner.sh) does not pass `--ephemeral`) execute jobs side by side on the same kernel, network namespace, Docker daemon, home directories and caches. Isolation between jobs is therefore a property the jobs have to keep, not one the pool enforces. The sections below say where that is written down, and where it is not.
+
+Each rule is marked **in the scripts** (verifiable in this directory), **from an Issue** (evidence only), or **to define** (no script or Issue settles it; a decision for the pool's owners, to be announced as a `runner` Issue).
+
+## Isolation
+
+### Ports (#53, #50)
+
+- **State today.** Nothing in `runners/` allocates ports. Jobs bind on the container's shared network namespace. Two collisions are on record: a daemon on a free port that did not become ready within 30 s ([#50](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/50)), and a job's port lane (`42620..43009`, 390 ports) holding no run of 101 consecutive free ports on a busy host ([#53](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/53)). Neither Issue establishes which other job held the ports: **to measure** (a job timeline of the host at the failure time).
+- **Policy (to define).** Each job gets its own port lane; lanes of concurrent jobs do not overlap; a lane is wide enough for the largest consumer run (101 consecutive ports in #53, so more than the 390 lane allows when it is partly taken). Whether the lane is derived from the runner or the job, and where it is set, is open in #53. This file will state it when #53 is decided.
+
+### Docker names and networks (to define)
+
+Docker is installed for `services:` and `container:` jobs ([`provision.sh`](provision.sh)), with one shared daemon and the default `daemon.json` (overlay2, json-file logs capped at 10 MB x 3). The scripts set no naming rule.
+
+- **Policy (to define).** A job names every container, network and volume it creates with a per-job prefix (for example the run id and job name), and removes them in the job's own cleanup. Fixed names (`postgres`, a compose project named after the repository) collide as soon as two jobs overlap.
+
+### `ANSIBLE_HOME` and other home directories (to define; #35)
+
+All runner services run as the single `runner` user, so `~/.ansible`, `~/.cache`, `~/.cargo` and `~/.local` are shared by every job. `provision.sh` does not set `ANSIBLE_HOME`.
+
+- **Policy (to define).** A job that runs Ansible sets `ANSIBLE_HOME` (and `ANSIBLE_LOCAL_TEMP`) below `$RUNNER_TEMP`. #35 names "uv, `~/.ansible`, …" as the shared-home class of failure; the same rule applies to any tool that writes into the home directory.
+
+### Shared caches (in the scripts)
+
+[`provision.sh`](provision.sh) creates them, owned by `runner`, and writes `/etc/profile.d/ci-cache.sh`:
+
+| Path | Variable | Limit |
+| --- | --- | --- |
+| `/var/cache/ci/sccache` | `SCCACHE_DIR` | `SCCACHE_CACHE_SIZE=40G` |
+| `/var/cache/ci/cargo` | `CARGO_HOME` | none set |
+| `/var/cache/ci/uv` | `UV_CACHE_DIR` | none set |
+| `/build` | | none set |
+
+`CARGO_INCREMENTAL=0` and `RUSTC_WRAPPER=sccache` are set for the same shell profile. Only sccache has a size limit; the free disk of the container and the growth of the other three are **to measure**. These caches are content-addressed or lock-protected by their tools, which is why they may be shared; anything else that writes into them is not safe to share.
+
+### Shared tool cache `/opt/hostedtoolcache` (in the scripts; #35)
+
+`provision.sh` creates it, owned by `runner`, and notes that each runner's `.env` must carry `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`. `toolcache-python.sh` fills `Python/<x.y.z>/x64` there. `setup-uv` and `setup-python` also read and write it.
+
+- **Known fault ([#35](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/35)).** A job executed `/opt/hostedtoolcache/uv/0.13.0/x86_64/uv` and failed with `Text file busy`: another process on the host had that file open for writing. Which job wrote it is not established (**to measure**).
+- **Options on the table, undecided.** (1) a tool cache per runner (`AGENT_TOOLSDIRECTORY` per runner); (2) pre-seed and pin uv on the host so no job writes into the cache; (3) install uv per job under `$RUNNER_TEMP`. Until one is chosen, a job must not rely on the shared cache being stable while it runs.
+
+## Capacity and concurrency (#27)
+
+What the scripts and Issues show, and nothing more:
+
+- **Runners per repository.** `register.sh <repo> [count]` registers `count` runners per repository, default 2 (`thor-1`, `thor-2`, …), one service each, persistent. Each runner executes one job at a time. The pool's concurrent job capacity is the sum over registered repositories; the live total is read with `gh api /repos/<repo>/actions/runners` per repository (`register.sh` prints it) and is not recorded here.
+- **Names in the Issues differ from the script's.** #27 and #35 report runners named `org-orlando-2`, `org-orlando-4` and `thor-org-5`, which `add-runner.sh` does not generate (`thor-<index>`). The pool therefore has runners registered some other way (an organisation-level registration). Which scripts or steps created them is **to confirm**; until then this directory does not describe the whole pool.
+- **Container resources.** CPU, memory and disk of the container are not set by any script here. **To measure** and record.
+- **A burst of about 15 PR runs.** On 2026-10-13, four night runs' PRs plus four backlog PRs opened within one minute started roughly 15 workflow runs together. Two jobs on two runners timed out (a 124 exit from the job's timeout wrapper; two `pytest-timeout` 300 s setup errors) in PRs that changed only `BACKLOG.md` ([#27](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/27)). #27's hypothesis, not a measurement: the burst saturates CPU or IO. The pool has no queue limit, no admission control and no per-consumer share; nothing in this directory limits how many jobs run at once beyond the number of runners.
+- **Superseding in-flight runs.** [`add-concurrency.py`](add-concurrency.py) adds a `concurrency:` group per workflow and ref that cancels the previous run on a PR branch (`main` is exempt). It reduces the burst a push causes; it does not limit a burst of different PRs.
+- **To measure before any number is set:** CPU and IO load during a 15-run burst; the largest runner count the container carries without timeouts; the queue time per runner count (`ci-impact-report.py` prints median, p90 and max queue time). No runner count or concurrency cap is stated here until those exist.
+
+## Changes to the pool are announced first
+
+A change to the pool, such as a new interpreter in the toolcache, a new runner, or a change to concurrency or caches, is announced as a `runner` Issue **before** it lands. On 2026-10-09 CPython 3.14.8 reached the pool unannounced and AIRIA-process went red the same day. The rule is in [CONTRIBUTING.md](../CONTRIBUTING.md#runner-pool-changes); this policy links it and adds nothing to it. A change to a script here is a PR like any other, and the Issue is linked in its description.
+
+## How a change reaches the pool
+
+### PUSH: the current model
+
+The operator's Mac pushes. `register.sh` copies `add-runner.sh` to the Proxmox host with `scp`, then `ssh` runs `pct push` and `pct exec` to put it into the container and run it. The other scripts reach the container the same way, by the operator's hand (a VM would use `qm guest exec`). Host values come from `~/.config/airia-ci/runners.env` (or `$AIRIA_CI_RUNNERS_ENV`): `THOR_SSH`, `THOR_CT`, `CI_REPOS`. Merging a change here changes nothing on the pool until the operator runs the script.
+
+- Strengths: nothing on the pool reaches out to this repository; the operator sees every change land; the registration credential never leaves the operator's `gh` login.
+- Weaknesses: the pool's state is what the last operator run left; a second operator machine needs the same env file and access; there is no check that the pool matches `main`.
+
+### PULL: an open proposal, not decided (for Andrea)
+
+Each runner host would fetch airia-ci over HTTPS on a systemd timer and run the idempotent scripts, with host values in `/etc/airia-ci/runner.env` on the host. Changes would reach the pool only when a pool tag moves. Registration would stay a manual operator step, because it needs an org-admin credential. **Nothing of this is implemented.**
+
+- For: the pool converges on a reviewed revision without an operator in the loop; the host values live on the host; works for more than one host.
+- Against: the host needs outbound access to GitHub and a timer to maintain; the scripts must be safe to re-run on a live pool, with jobs in flight (`provision.sh` restarts nothing, but `apt-get` and `locale-gen` run under the jobs); an unannounced move of the pool tag is the same failure as the 2026-10-09 toolcache change, so the tag must move only after the `runner` Issue.
+- **A pool tag is a new decision.** This repository's CLAUDE.md forbids cutting new `ci-vN` tags (they are frozen history), so a pool tag would be a different kind of tag, or a pinned commit file, and either needs Andrea's decision first.
+
+Until decided, PUSH stays the model and this section is the whole record.
