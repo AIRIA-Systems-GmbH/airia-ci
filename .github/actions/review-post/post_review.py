@@ -14,8 +14,10 @@ review does ("green means posted"); an empty list is valid.
   hidden marker naming the run and the finding id.
 - A finding whose file is not in the diff at all cannot hold a threaded reply,
   so it gets no comment: the summary carries its text instead.
-- A finding whose id already has a marker on the PR is not posted again; the
-  summary links the comment it already has.
+- A finding the review marks `carried` (still open from an earlier review) is
+  not posted again when a marker with its id AND file is on the PR; the
+  summary links that comment. A finding that is not carried is always posted
+  as new, and a carried one with no such marker is posted as new and noted.
 - The summary stays ONE issue comment with the footer the once-per-head guard
   counts. A finding comment never carries that footer.
 """
@@ -98,6 +100,8 @@ def parse_findings(text: str) -> tuple[str, list[dict]]:
             raise ReviewError(f"{where}: severity must be one of {', '.join(SEVERITIES)}")
         if not isinstance(f.get("text"), str) or not f["text"].strip():
             raise ReviewError(f"{where} has no text")
+        if not isinstance(f.get("carried"), bool):
+            raise ReviewError(f"{where}: carried must be true or false")
         if FOOTER_START in f["text"]:
             raise ReviewError(f"{where}: the text carries the review footer, which would count as a review")
     return (text[:last.start()] + text[last.end():]).strip(), findings
@@ -157,7 +161,7 @@ def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> s
         os.unlink(fh.name)
 
 
-def findings_section(findings: list[dict], urls: dict[str, str | None], carried: set[str]) -> str:
+def findings_section(findings: list[dict], urls: dict[str, str | None], carried: set[str], orphans: set[str]) -> str:
     if not findings:
         return ""
     rows = []
@@ -166,6 +170,8 @@ def findings_section(findings: list[dict], urls: dict[str, str | None], carried:
         head = f"- **{f['id']}** ({f['severity']}) `{at}`"
         if f["id"] in carried:
             head += " (still open from an earlier review)"
+        if f["id"] in orphans:
+            head += " (marked as carried, but no earlier comment has this id and file: posted as new)"
         if urls[f["id"]]:
             rows.append(f"{head} — [comment]({urls[f['id']]})")
         else:
@@ -189,10 +195,14 @@ def main() -> int:
         if findings:
             head = env.get("HEAD_SHA") or gh_ok("api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha")
             earlier = posted_findings(repo, pr)
-            urls = {f["id"]: earlier.get((f["id"], f["file"])) or post_finding(repo, pr, head, run_id, f)
-                    for f in findings}
-        carried = {f["id"] for f in findings if (f["id"], f["file"]) in earlier}
-        section = findings_section(findings, urls, carried)
+            # Only a finding the review calls carried is linked to a comment already on the PR, and only
+            # when that comment is for the same id and file; a new one is always posted, even on a collision.
+            linked = {f["id"]: earlier[(f["id"], f["file"])] for f in findings
+                      if f["carried"] and (f["id"], f["file"]) in earlier}
+            urls = {f["id"]: linked.get(f["id"]) or post_finding(repo, pr, head, run_id, f) for f in findings}
+        carried = {f["id"] for f in findings if f["carried"] and f["id"] in linked}
+        orphans = {f["id"] for f in findings if f["carried"]} - carried
+        section = findings_section(findings, urls, carried, orphans)
         version = env.get("CLAUDE_VERSION") or "installed by the action"
         footer = f"\n\n---\n{FOOTER_START} — [run log]({env['RUN_URL']}), Claude Code {version}._\n"
         with tempfile.NamedTemporaryFile("w", suffix=".md", dir=env.get("RUNNER_TEMP"), delete=False) as fh:

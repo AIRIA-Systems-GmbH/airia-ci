@@ -327,6 +327,8 @@ Inputs of `reusable-claude-respond.yml` worth knowing:
 
 The automatic review runs once per head commit. A push after it is reviewed again when its gates finish, so up to the cap below the required review check is never green on code no review saw (airia-ci#60). That re-review reads the earlier one and reports only what is new or still open, because a reviewer that re-rolls every push from scratch turns a PR into an endless back-and-forth. For a question in between, comment `@claude`.
 
+**What a review looks like (airia-ci#73).** One *summary* comment, with the footer, says what was checked and holds the gate table and a link to each finding. Each finding is also its own PR comment: inline on its line, or a file-level comment when the line is not in the diff. Reply in that comment's thread, so that "every finding has a reply" can be read off the PR. A finding in a file the diff does not touch has no comment of its own (no thread could hold a reply): the summary carries its text, so answer it in a PR comment that quotes its id. Each finding comment carries a hidden marker naming the run, the finding id and its file; only the summary has the footer. On a re-review a finding still open from the earlier review is linked in the summary, not posted again, and a new one is posted. The review fails, and the PR counts as unreviewed, when Claude's final message has no well-formed `airia-findings` block.
+
 A PR gets at most **three** automatic reviews (airia-ci#62). A newer head after the third gets no fourth review. The review check passes with a notice, and the PR gets one comment per such head: *Review cap reached; no new automatic review* (airia-ci#70). The cap is not a human gate (Andrea, 2026-10-22). Merge when every required check is green, every finding in the reviews has a reply on the PR, and the change fits the Roadmap. Same-head re-runs still refresh the third review's gate table. For a fresh automatic review, open a new PR from the same branch: the count is per PR.
 
 Re-running the gate on the same commit (`gh run rerun --failed`) does not post a second review: it rewrites the existing review's gate-results section with the new attempt's results.
@@ -355,7 +357,7 @@ Every `ci-vN` is frozen, so leaving one means moving to `@main`:
 
 ## When something goes wrong
 
-- **No review on the PR.** `claude-review` is red with *No review posted*: the run ended without review text. Treat the PR as unreviewed and comment `@claude please review`.
+- **No review on the PR.** `claude-review` is red with *No review posted*: the run ended without review text, or its final message lacked a well-formed `airia-findings` block (the error says which). Treat the PR as unreviewed and comment `@claude please review`.
 - **The review job shows SKIPPED.** Its `if:` lacks `always()`: with a bare `needs:`, one red gate skips the review. The job `init.py` writes has it.
 - **A draft PR was never reviewed.** The gate workflow's `pull_request` types must include `ready_for_review`.
 - **No Claude credential.** The repository has no `CLAUDE_CODE_OAUTH_TOKEN` secret, or the caller does not pass it: `gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>`. An `@claude` retry cannot help until then.
