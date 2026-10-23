@@ -300,6 +300,7 @@ jobs:
           # to it and its thread not resolved. scripts/findings.py applies the same rule (it is not
           # checked out in a caller's repository, so this is the jq copy; tests/test_review_steps.py
           # holds the two to the same ids). A failed read is said, never reported as "none".
+          # shellcheck disable=SC2016  # the $names are GraphQL variables, literal text for gh
           threads='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
             repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
               reviewThreads(first: 100, after: $endCursor) {
