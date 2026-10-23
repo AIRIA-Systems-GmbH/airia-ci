@@ -33,6 +33,9 @@ sudo -u runner "$DIR/config.sh" \
   --work "_work" \
   --unattended --replace
 
+# Its own tool cache, set in .env before the service first starts (register.sh pushes the script).
+"$(dirname "$0")/set-toolcache.sh" "$DIR"
+
 cd "$DIR" && ./svc.sh install runner
 ./svc.sh start
 echo "INSTALLED $DIR"
