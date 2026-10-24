@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Job isolation
+description: >-
+  Keep one job's per-job state off the home directory that persistent runners
+  share. Today: every later step's `git config --global` writes a private file
+  under RUNNER_TEMP instead of the shared ~/.gitconfig. Repository-agnostic.
+
+# Persistent runners (runners/POLICY.md) run jobs side by side as one user with
+# one HOME. Two jobs that write `git config --global` at the same time race for
+# ~/.gitconfig.lock and one fails with "could not lock config file" (AIRIA-process
+# #159, run 38362607060). GIT_CONFIG_GLOBAL points git at a per-job file, and
+# GITHUB_ENV carries it to every later step of the job.
+#
+# The private file starts empty: a job no longer inherits whatever an earlier
+# job left in ~/.gitconfig, which is the point. Put this step before any step
+# that writes global git config, and give the job its identity after it.
+#
+# A NEW action with no inputs, outputs or secrets: no existing call contract
+# changes. Further per-job state (ANSIBLE_HOME, Docker names, ports) is still
+# open in runners/POLICY.md and would join here.
+
+runs:
+  using: composite
+  steps:
+    - name: Give the job a private git global config
+      shell: bash
+      run: |
+        config="$RUNNER_TEMP/gitconfig"
+        : > "$config"
+        echo "GIT_CONFIG_GLOBAL=$config" >> "$GITHUB_ENV"

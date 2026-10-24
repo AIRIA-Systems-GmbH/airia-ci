@@ -30,6 +30,13 @@ All runner services run as the single `runner` user, so `~/.ansible`, `~/.cache`
 
 - **Policy (to define).** A job that runs Ansible sets `ANSIBLE_HOME` (and `ANSIBLE_LOCAL_TEMP`) below `$RUNNER_TEMP`. #35 names "uv, `~/.ansible`, …" as the shared-home class of failure; the same rule applies to any tool that writes into the home directory.
 
+### Git global config (in the actions; #31)
+
+Jobs share one `~/.gitconfig`, and two jobs writing `git config --global` at the same time race for `~/.gitconfig.lock` (`could not lock config file`; donor: AIRIA-process #159).
+
+- **Rule.** A job that writes global git config uses the [`job-isolation`](../.github/actions/job-isolation/action.yml) action first: it creates an empty `$RUNNER_TEMP/gitconfig` and exports it as `GIT_CONFIG_GLOBAL` through `$GITHUB_ENV`, so every later step of the job reads and writes that file and never the shared one. The file starts empty, so a job does not inherit what an earlier job left in `~/.gitconfig`.
+- **Opt-in.** The action is new and has no inputs; a consumer adds `uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/job-isolation@main` as a step before its first `git config --global`. The reusable workflows write no global git config, so they do not call it. The other per-job state above (ports, Docker names, `ANSIBLE_HOME`) is still to define and would join this action.
+
 ### Shared caches (in the scripts)
 
 [`provision.sh`](provision.sh) creates them, owned by `runner`, and writes `/etc/profile.d/ci-cache.sh`:
