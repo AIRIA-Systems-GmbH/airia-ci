@@ -100,7 +100,7 @@ def execute(file: Path, args: list[str], env: dict, cwd: Path) -> subprocess.Com
     """Run a shell script (under kcov when measuring); never raises on a non-zero exit, the test asserts it."""
     cmd = ["bash", "--noprofile", "--norc", str(file), *args]
     if os.environ.get("KCOV_OUT"):
-        cmd = ["kcov", f"--include-path={SRC},{ROOT / '.github'},{ROOT / 'templates'}", os.environ["KCOV_OUT"], str(file), *args]
+        cmd = ["kcov", f"--include-path={SRC},{ROOT / '.github'},{ROOT / 'templates'},{ROOT / 'runners/measure.sh'}", os.environ["KCOV_OUT"], str(file), *args]
     return subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True)
 
 
