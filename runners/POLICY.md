@@ -21,24 +21,26 @@ Each rule is marked **in the scripts** (verifiable in this directory), **from an
 - **Applying it to the live pool (operator, on CT 144).** Choose an index 0 to 11 for each of the 8 active runners, run `set-portlane.sh /home/runner/<dir> <index>` for each, and restart each runner it lists as "restart needed" while that runner is idle. Until then the variables are absent in every job. Record the assignment in this section.
 - **Still open.** Whether 1000 ports hold the largest consumer run (101 consecutive ports in #53) is not in doubt for the width, but the two collisions above are not proven to be the ephemeral range: **to measure** after the lanes are live.
 
-### Docker names and networks (to define)
+### Docker names and networks (in the actions; #31)
 
-Docker is installed for `services:` and `container:` jobs ([`provision.sh`](provision.sh)), with one shared daemon and the default `daemon.json` (overlay2, json-file logs capped at 10 MB x 3). The scripts set no naming rule.
+Docker is installed for `services:` and `container:` jobs ([`provision.sh`](provision.sh)), with one shared daemon and the default `daemon.json` (overlay2, json-file logs capped at 10 MB x 3). The scripts set no naming rule; the [`job-isolation`](../.github/actions/job-isolation/action.yml) action does.
 
-- **Policy (to define).** A job names every container, network and volume it creates with a per-job prefix (for example the run id and job name), and removes them in the job's own cleanup. Fixed names (`postgres`, a compose project named after the repository) collide as soon as two jobs overlap.
+- **Rule.** A job that creates containers, networks or volumes uses the `job-isolation` action, names every one of them with `$CI_JOB_PREFIX`, and removes them in the job's own cleanup. The action exports `CI_JOB_PREFIX` as `ci-<run id>-<attempt>-<job>-<hash of the runner name>`: lowercase `[a-z0-9_-]`, starting with a letter, so it is valid as a container, network or volume name and as a compose project name. Matrix legs share `GITHUB_JOB`; a runner runs one job at a time, so the runner-name hash is what separates concurrent legs. Fixed names (`postgres`, a compose project named after the repository) collide as soon as two jobs overlap.
+- **What the action does not do.** It does not set `COMPOSE_PROJECT_NAME` (the consumer passes `-p "$CI_JOB_PREFIX"` or sets it) and it removes no containers.
 
-### `ANSIBLE_HOME` and other home directories (to define; #35)
+### `ANSIBLE_HOME` and other home directories (in the actions; #35, #31)
 
 All runner services run as the single `runner` user, so `~/.ansible`, `~/.cache`, `~/.cargo` and `~/.local` are shared by every job. `provision.sh` does not set `ANSIBLE_HOME`.
 
-- **Policy (to define).** A job that runs Ansible sets `ANSIBLE_HOME` (and `ANSIBLE_LOCAL_TEMP`) below `$RUNNER_TEMP`. #35 names "uv, `~/.ansible`, …" as the shared-home class of failure; the same rule applies to any tool that writes into the home directory.
+- **Rule.** A job that runs Ansible uses the `job-isolation` action first: it creates an empty `$RUNNER_TEMP/ansible` and `$RUNNER_TEMP/ansible/tmp` and exports `ANSIBLE_HOME` and `ANSIBLE_LOCAL_TEMP` to them through `$GITHUB_ENV`.
+- **Other tools (to define).** #35 names "uv, `~/.ansible`, …" as the shared-home class of failure; `~/.cache`, `~/.cargo` and `~/.local` have no rule yet.
 
 ### Git global config (in the actions; #31)
 
 Jobs share one `~/.gitconfig`, and two jobs writing `git config --global` at the same time race for `~/.gitconfig.lock` (`could not lock config file`; donor: AIRIA-process #159).
 
 - **Rule.** A job that writes global git config uses the [`job-isolation`](../.github/actions/job-isolation/action.yml) action first: it creates an empty `$RUNNER_TEMP/gitconfig` and exports it as `GIT_CONFIG_GLOBAL` through `$GITHUB_ENV`, so every later step of the job reads and writes that file and never the shared one. The file starts empty, so a job does not inherit what an earlier job left in `~/.gitconfig`.
-- **Opt-in.** The action is new and has no inputs; a consumer adds `uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/job-isolation@main` as a step before its first `git config --global`. The reusable workflows write no global git config, so they do not call it. The other per-job state above (ports, Docker names, `ANSIBLE_HOME`) is still to define and would join this action.
+- **Opt-in.** The action has no inputs; a consumer adds `uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/job-isolation@main` as a step before its first `git config --global`. The reusable workflows write no global git config, so they do not call it. It also carries the Ansible and Docker-name rules above; ports come from the runner's `.env`, not from the action.
 
 ### Shared caches (in the scripts)
 
