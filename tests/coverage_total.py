@@ -41,6 +41,7 @@ SRC = COV / "src"
 def shipped() -> tuple[set[Path], set[Path]]:
     """Every file the figure must include: (bash, python)."""
     sh = set(SRC.glob("*.sh")) | set((ROOT / ".github").rglob("*.sh")) | set((ROOT / "templates").rglob("*.sh"))
+    sh.add(ROOT / "runners/measure.sh")  # the one operator script inside the gate; the rest of runners/ is not
     py = set(SRC.glob("*.py")) | set((ROOT / ".github").rglob("*.py")) | set((ROOT / "scripts").glob("*.py"))
     return {p.resolve() for p in sh}, {p.resolve() for p in py}
 
