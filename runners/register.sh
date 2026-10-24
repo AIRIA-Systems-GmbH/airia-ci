@@ -15,8 +15,8 @@ CONF="${AIRIA_CI_RUNNERS_ENV:-$HOME/.config/airia-ci/runners.env}"
 THOR="${THOR_SSH:?set THOR_SSH (user@host of the Proxmox host) in $CONF}"
 CT="${THOR_CT:?set THOR_CT (the runner container id) in $CONF}"
 
-scp -q -o BatchMode=yes "$(dirname "$0")/add-runner.sh" "$THOR:/tmp/add-runner.sh"
-ssh -o BatchMode=yes "$THOR" "pct push '${CT}' /tmp/add-runner.sh /root/add-runner.sh && pct exec '${CT}' -- chmod +x /root/add-runner.sh"
+scp -q -o BatchMode=yes "$(dirname "$0")/add-runner.sh" "$(dirname "$0")/set-toolcache.sh" "$THOR:/tmp/"
+ssh -o BatchMode=yes "$THOR" "pct push '${CT}' /tmp/add-runner.sh /root/add-runner.sh && pct push '${CT}' /tmp/set-toolcache.sh /root/set-toolcache.sh && pct exec '${CT}' -- chmod +x /root/add-runner.sh /root/set-toolcache.sh"
 
 for i in $(seq 1 "$COUNT"); do
   echo "--- registering ${REPO} runner thor-${i}"
