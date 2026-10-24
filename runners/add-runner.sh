@@ -2,12 +2,13 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
 #
-# Usage: add-runner.sh <owner/repo> <index> [labels]   (the token on stdin)
+# Usage: add-runner.sh <owner/repo> <index> [labels] [lane]   (the token on stdin)
+# [lane] is the runner's pool-wide port lane index (0..11); without it no lane is set.
 # Run as root inside the container; register.sh pushes it there and calls it.
 # Installs one actions-runner instance into /home/runner/r-<slug>-<index>.
 # Persistent (NOT --ephemeral): see runners/POLICY.md.
 set -euo pipefail
-REPO="$1"; IDX="$2"; LABELS="${3:-thor,linux,x64}"
+REPO="$1"; IDX="$2"; LABELS="${3:-thor,linux,x64}"; LANE="${4:-}"
 # Token is read from stdin so it never appears in argv / ps / shell history.
 read -r TOKEN
 SLUG="$(echo "$REPO" | tr '/' '-' | tr '[:upper:]' '[:lower:]')"
@@ -35,6 +36,10 @@ sudo -u runner "$DIR/config.sh" \
 
 # Its own tool cache, set in .env before the service first starts (register.sh pushes the script).
 "$(dirname "$0")/set-toolcache.sh" "$DIR"
+
+# Its own port lane (#53), when the caller names one. The lane index is pool-wide, not the
+# per-repository <index> above: two repositories both have a runner 1.
+if [ -n "$LANE" ]; then "$(dirname "$0")/set-portlane.sh" "$DIR" "$LANE"; fi
 
 cd "$DIR" && ./svc.sh install runner
 ./svc.sh start
