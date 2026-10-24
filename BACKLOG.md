@@ -1,6 +1,6 @@
 ---
 roadmap: Roadmap-airia-ci
-updated: 2026-10-24
+updated: 2026-10-25
 ---
 <!--
 SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
@@ -11,36 +11,34 @@ SPDX-License-Identifier: Apache-2.0
 
 The order in which to do the work. Milestones are those of the Roadmap note `Roadmap-airia-ci`, kept in its order. Issues are GitHub issues on AIRIA-Systems-GmbH/airia-ci. Each Issue sits above the milestone it blocks. An Issue that breaks something already released goes at the very top.
 
-2026-10-24 (re-cut from `main` at 818feac; it replaces the stale #78): three Issues closed since 2026-10-23, and the pool work merged. #54 closed on 2026-10-23 on Andrea's go (Q3 is "fail closed", which `main` already does), so it leaves the top. #73 (each review finding is its own PR comment, plus a deterministic check for unanswered findings) is closed: #74, #75, #80 and #81 are merged. #79 (should the main ruleset exempt web-flow merge commits?) is closed with a ruling: keep the rule. On this repository coordinators never run `gh pr update-branch`; a stale PR is brought up to date by a local signed merge of `origin/main`, or re-cut from `origin/main`. Merged since 2026-10-23: #77 (the pool scripts, README and `runners/POLICY.md`, for #29), #82 (a tool cache per runner, for #35) and #83 (the job-isolation action, for #31). `runners/` now exists on `main`, so the M3 check that it did not is met. Every open Issue is labelled.
+2026-10-25 (cut from `main` at 52d59cc): two Issues closed since 2026-10-24. #53 (port lanes) and #35 (per-runner tool cache) closed on 2026-10-24 at 17:42 UTC, after the operator steps ran: all 8 active CT 144 runners have had their own port lane and tool cache since 16:12 UTC (#89, #90). Merged since 818feac: #84 (the re-cut of night triage #78), #85 and #86 (#27 Step 0: the CT 144 snapshot, `runners/measure.sh` and the open items), #87 (#53 port lanes 10000+1000·i), #88 (#31: `ANSIBLE_HOME` and `CI_JOB_PREFIX` in `job-isolation`), #89 and #90 (CT 144's lanes and caches live, and the burst sampler running), #91 (POLICY.md records the pool as two hosts, CT 144 and the Orlando VM, and CT 144 keeps its 12 cores). Every open Issue is labelled. Since 2026-10-24 the coordinators have neither run `gh pr update-branch` on this repository nor been allowed to (#79): a stale PR gets a local signed merge of `origin/main` or is re-cut from it.
 
 ## Breaks something released
 
-1. #53: AIRIA-process's `daemon-shard (1, …)` job failed because its port-lane helper found no free run of 101 consecutive ports inside its 390-port lane (42620..43009), on PR #192 (2026-10-18), which did not touch that path. A consumer gate went red with no code cause. It is the second report of port collisions between jobs on one runner host, after #50. Ruled on #53, see the Issue. Nothing in airia-ci's YAML is implicated; the fix is the operator's, under `runners/POLICY.md`.
-2. #50: AIRIA-framework's "AIRIA Control Tests" job failed a two-daemon test with `ReadinessTimeoutError` (30 s) on the pool; the re-run was green. One occurrence. The analysis on the Issue (2026-10-24) finds a host-wide stall weakly supported and a port collision plausible but not shown; the cause cannot be diagnosed from what exists, and the framework's side is filed as AIRIA-framework#1036. No pool change from this evidence; the port lane is #53. No recurrence reported by 2026-10-24.
-3. #35: `uv` in the shared `/opt/hostedtoolcache` fails with `Text file busy` mid-job on thor (DevTools, one occurrence). The repository fix merged in #82 (56b49a6): each runner gets its own tool cache through `runners/set-toolcache.sh`. The Issue stays open until the operator steps in #82's description have run on CT 144 (`set-toolcache.sh` per runner, restart the idle runners, then `toolcache-python.sh` to seed every cache). Until then the live pool still shares one cache. Operator work, not night work.
-4. #27: load-induced timeouts on the orlando runners when about 15 PR runs start together (framework, SiteBuilder). Systemic: it fires on every burst. Andrea's ruling (2026-10-24): Step 0 first, which measures CT 144 under load, then option D, more Portfolio-Dashboard runners. Option E, moving Portfolio-Dashboard into the org, is excluded: it stays on tumma72. Step 0 is in progress on branch `feat/27-step0-measure-ct144`. After Step 0, the Issue's analysis says: if the container is CPU- or IO-bound at 6+ jobs, C before A; if not, treat the timeouts as isolation faults (#53, #35). The fix is pool capacity, so it is the operator's.
+1. #50: AIRIA-framework's "AIRIA Control Tests" job failed a two-daemon test with `ReadinessTimeoutError` (30 s) on the pool; the re-run was green. One occurrence, on 2026-10-18. The analysis on the Issue (2026-10-24) finds weak support for a host-wide stall. A port collision is plausible but not shown, and what exists cannot show the cause. The framework's half is AIRIA-framework#1036 (open, no activity since 2026-10-24). Since 2026-10-24 16:12 UTC every CT 144 runner has had its own port lane (#53, closed), so if the cause was a collision between runners, the lanes should stop it. No recurrence has been reported. The Issue can close once the framework's test uses the lane or #1036 names another cause. Not night work: the next step is upstream.
+2. #27: load-induced timeouts on the orlando runners when about 15 PR runs start together (framework, SiteBuilder). Systemic: it fires on every burst. Andrea's ruling (2026-10-24): Step 0 first, then option D, more Portfolio-Dashboard runners. Option E (moving Portfolio-Dashboard into the org) is excluded. Step 0 merged in #85/#86. The burst sampler (`measure.sh`, unit `ci-measure`) runs on CT 144 until about 2026-10-26 03:42 UTC (#89). Next: read its log against options A and C, then option D. #91 records CT 144's 12 cores as decided. The fix is pool capacity, which is the operator's job.
 
 ## Roadmap
 
 - M2 Owned: airia-agile process + BACKLOG.md + triage loop. Waits on airia-agile running headless; the night owns it in the interim.
 - M3 The runner pool is code (NEXT).
-5. #29: Thor runner pool (CT 144) as code. The pool-as-code part merged in #77 (53ad490): the scripts, README and `runners/POLICY.md` are under `runners/`. Left open: PUSH versus PULL for applying the pool's config is Andrea's decision (PUSH is documented, PULL is an open proposal), and moving the originals out of `~/Development` is the operator's step. Not night work.
-6. #31: per-job git global config isolation (donor AIRIA-process #159). The git-config part merged in #83 (818feac): `.github/actions/job-isolation` points `GIT_CONFIG_GLOBAL` at a private file under `RUNNER_TEMP`. Left open: the other per-job state in `runners/POLICY.md` (ports, Docker names, `ANSIBLE_HOME`), which would join the action once decided (ports wait on #53), and AIRIA-process adopting the action and deleting its local step. Blocks M4's job-isolation action.
+3. #29: Thor runner pool (CT 144) as code. The pool-as-code part merged in #77 (53ad490), and #85–#91 have extended `runners/POLICY.md` since. Left open: PUSH versus PULL for applying the pool's config, which is Andrea's decision (PUSH is documented, PULL is an open proposal), and moving the originals out of `~/Development`, an operator step. Not night work.
+4. #31: per-job state isolation (donor AIRIA-process #159). The repository parts are merged: private git config (#83), then `ANSIBLE_HOME`, `ANSIBLE_LOCAL_TEMP` and the Docker name prefix `CI_JOB_PREFIX` (#88); ports are the runner lanes (#53, closed). Left open: AIRIA-process adopting `job-isolation@main` and deleting its local step, which is the donor's change and is routed to the Process coordinator. Blocks M4's job-isolation action (one donor deleting its copy).
 - M4 Harvest wave 1.
-7. #30: Python 3.12–3.14 matrix as a reusable job. Blocks M4 and goes first in M4 (ruling 2026-10-13). It is the CI carrier of framework M3, whose Requirement is still being elicited. No comment on the Issue yet.
-8. #37: an unpinned `ty` release turned SiteBuilder's "Code quality" job red on files the PR never touched. airia-ci's half shipped in ci-v5 (#39): `python-toolchain` installs the gate tools at `pins.toml` and refuses `uv run --with ty`, and HOWTO.md says to pin. It closes when SiteBuilder's job calls the gate, which is M5 adoption (`init.py protect` with Andrea's `gh` login), and the standard does not accept `ty` (`pins.toml`: pyright or mypy-strict), so SiteBuilder also changes type checker. As of 2026-10-19 SiteBuilder's "Code quality" job still ran `uv run --with ty` unpinned; the Issue has had no activity since 2026-10-14. The drift risk remains. It blocks M5, so it sits before M5. Not night work.
-- M5 No local workarounds. CookieGusto and Portfolio-Dashboard are still on the frozen `@ci-v5` (ci-v5.4); moving them to `@main` is their own repositories' change.
+5. #30: Python 3.12–3.14 matrix as a reusable job. It blocks M4 and goes first in M4 (ruling 2026-10-13). It is the CI carrier of framework M3, whose Requirement is still being elicited. The Issue has no comment and has been unchanged since 2026-10-13.
+6. #37: an unpinned `ty` release turned SiteBuilder's "Code quality" job red on files the PR never touched. airia-ci's half shipped in ci-v5 (#39): `python-toolchain` installs the gate tools at `pins.toml` and refuses `uv run --with ty`, and HOWTO.md says to pin. The Issue closes when SiteBuilder's job calls the gate, which is M5 adoption (`init.py protect` with Andrea's `gh` login). The standard does not accept `ty` (`pins.toml`: pyright or mypy-strict), so SiteBuilder also has to change its type checker. The Issue has had no activity since 2026-10-14. It blocks M5, so it sits before M5. Not night work.
+- M5 No local workarounds. Cookiegusto's #24 (merged 2026-10-24) moves it to `@main` (not re-scanned); Portfolio-Dashboard is on `@main` by the 2026-10-24 scan. ParlAIment still calls none.
 
 ## Off-roadmap
 
-Andrea's order (2026-10-21) of the open Issues: #54 (closed 2026-10-23), #37, #53, #50, #35, #27. #63 and #62 came first and are done: #65 deleted `release.yml`, the newer-major step and `HARNESS_MAJOR` (06f0c8a), and #66 caps the automatic reviews at three per PR (4059de8); since #71 (closes #70, 5fd1f79) a head past the cap passes the check with a cap comment instead of failing it. No open Issue is off-roadmap.
+Andrea's order (2026-10-21) of the open Issues: #54 (closed 2026-10-23), #37, #53 (closed 2026-10-24), #50, #35 (closed 2026-10-24), #27. #63 and #62 came first and are done. No open Issue is off-roadmap.
 
 ## Pick
 
-None tonight. Every open Issue is operator work, waits on an Andrea decision, or is in someone's hands:
-- #53, #50 and #35 are operator work on CT 144 (the port lane; the tool-cache steps from #82).
-- #27 is in progress: Step 0 is on `feat/27-step0-measure-ct144`.
+None tonight. Every open Issue waits on an operator step, an upstream fix, an Andrea decision or another repository:
+- #50 waits on AIRIA-framework#1036. Since 2026-10-24 16:12 UTC the port lanes are live, so a recurrence there is now the evidence to watch for.
+- #27 waits on the burst sampler, which runs until about 2026-10-26 03:42 UTC; then option D, which is pool capacity and the operator's.
 - #29 waits on Andrea's PUSH versus PULL decision.
-- #31's remaining state waits on #53 and on AIRIA-process adopting the action.
+- #31's remaining part is AIRIA-process adopting the action.
 - #30's Requirement is still being elicited.
 - #37's remaining part is SiteBuilder's adoption (M5).
