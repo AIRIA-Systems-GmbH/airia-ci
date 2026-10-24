@@ -140,6 +140,25 @@ class ToolcachePython(Base):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("already present", p.stdout)
 
+    def test_a_directory_without_env_sorted_last_does_not_stop_the_seeding(self):
+        # the loop that collects the caches must not return the status of its last glob match
+        self.runner_dir("r-o-r-1", f"AGENT_TOOLSDIRECTORY={self.cache}/r-o-r-1\n")
+        self.runner_dir("zzz")
+        p = self.seed()
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue((self.cache / "r-o-r-1/Python/3.12.5/x64/bin/python3").exists())
+
+    def test_no_env_file_at_all_says_to_run_set_toolcache_first(self):
+        self.runner_dir("zzz")
+        p = self.seed()
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("run set-toolcache.sh first", p.stderr)
+
+    def test_no_runner_directory_at_all_says_to_run_set_toolcache_first(self):
+        p = self.seed()
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("run set-toolcache.sh first", p.stderr)
+
     def test_no_runner_with_a_tool_cache_fails_with_the_fix(self):
         self.runner_dir("r-o-r-1", "LANG=C\n")
         p = self.seed()

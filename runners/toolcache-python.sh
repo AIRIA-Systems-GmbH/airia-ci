@@ -32,7 +32,7 @@ SRC_ROOT="$(dirname "$(dirname "$SRC")")"      # strip /bin/python3
 FULL="$("$SRC" -c 'import sys;print("%d.%d.%d"%sys.version_info[:3])')"
 
 CACHES="$(for envf in "$RUNNER_HOME"/*/.env; do
-  [ -f "$envf" ] && sed -n 's/^AGENT_TOOLSDIRECTORY=//p' "$envf"
+  if [ -f "$envf" ]; then sed -n 's/^AGENT_TOOLSDIRECTORY=//p' "$envf"; fi
 done | sort -u)"
 [ -n "$CACHES" ] || { echo "no runner .env sets AGENT_TOOLSDIRECTORY; run set-toolcache.sh first" >&2; exit 1; }
 
