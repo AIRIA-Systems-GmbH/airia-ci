@@ -2,7 +2,8 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
 #
-# Usage: set-portlane.sh <runner-dir> <index>
+# Usage: set-portlane.sh [--check] <runner-dir> <index>
+# --check only validates (exit 0 if the lane may be set) and writes nothing.
 # Run as root inside the container (add-runner.sh calls it when it is given a lane index; the
 # operator runs it once per runner already registered). Gives the runner its own port lane: sets
 # CI_PORT_LANE_START and CI_PORT_LANE_END in the runner's .env to 10000+1000*index and
@@ -16,11 +17,15 @@ LANE_BASE=10000
 LANE_SIZE=1000
 LANE_COUNT=12
 
-[ "$#" -eq 2 ] || { echo "usage: set-portlane.sh <runner-dir> <index>" >&2; exit 2; }
+check=0
+if [ "${1:-}" = "--check" ]; then check=1; shift; fi
+[ "$#" -eq 2 ] || { echo "usage: set-portlane.sh [--check] <runner-dir> <index>" >&2; exit 2; }
 dir="${1%/}"
 index="$2"
 
-[ -d "$dir" ] || { echo "no such runner directory: $dir" >&2; exit 1; }
+# --check validates the index and the lane and writes nothing; the directory need not exist yet,
+# so add-runner.sh can refuse a lane before it registers the runner.
+[ "$check" -eq 1 ] || [ -d "$dir" ] || { echo "no such runner directory: $dir" >&2; exit 1; }
 case "$index" in
   '' | *[!0-9]*) echo "index must be a number from 0 to $((LANE_COUNT - 1)): $index" >&2; exit 2 ;;
 esac
@@ -40,6 +45,8 @@ for other in "$(dirname "$dir")"/*/.env; do
     exit 1
   fi
 done
+
+[ "$check" -eq 0 ] || exit 0
 
 touch "$dir/.env"
 { grep -v -e '^CI_PORT_LANE_START=' -e '^CI_PORT_LANE_END=' "$dir/.env" || [ $? -eq 1 ]; echo "CI_PORT_LANE_START=$start"; echo "CI_PORT_LANE_END=$end"; } > "$dir/.env.new"

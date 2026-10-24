@@ -12,18 +12,24 @@ REPO="$1"; IDX="$2"; LABELS="${3:-thor,linux,x64}"; LANE="${4:-}"
 # Token is read from stdin so it never appears in argv / ps / shell history.
 read -r TOKEN
 SLUG="$(echo "$REPO" | tr '/' '-' | tr '[:upper:]' '[:lower:]')"
-DIR="/home/runner/r-${SLUG}-${IDX}"
+RUNNER_HOME="${RUNNER_HOME:-/home/runner}"
+TARBALL="${RUNNER_TARBALL:-/root/actions-runner.tar.gz}"
+DIR="${RUNNER_HOME}/r-${SLUG}-${IDX}"
 
 if [ -d "$DIR" ]; then echo "SKIP: $DIR exists"; exit 0; fi
 
+# Refuse a lane before anything is registered: config.sh registers the runner on GitHub, and a
+# refusal after it would leave a registered runner with no service.
+if [ -n "$LANE" ]; then "$(dirname "$0")/set-portlane.sh" --check "$DIR" "$LANE"; fi
+
 mkdir -p "$DIR" && cd "$DIR"
-if [ ! -f /root/actions-runner.tar.gz ]; then
+if [ ! -f "$TARBALL" ]; then
   URL=$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest \
         | jq -r '.assets[] | select(.name | test("actions-runner-linux-x64-[0-9.]+\\.tar\\.gz$")) | .browser_download_url' | head -1)
   echo "downloading $URL"
-  curl -fsSL -o /root/actions-runner.tar.gz "$URL"
+  curl -fsSL -o "$TARBALL" "$URL"
 fi
-tar xzf /root/actions-runner.tar.gz -C "$DIR"
+tar xzf "$TARBALL" -C "$DIR"
 chown -R runner:runner "$DIR"
 
 sudo -u runner "$DIR/config.sh" \

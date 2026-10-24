@@ -11,6 +11,16 @@
 # ~/.config/airia-ci/runners.env); see runners/README.md.
 set -euo pipefail
 REPO="$1"; COUNT="${2:-2}"; FIRST_LANE="${3:-}"
+# Refuse a bad lane range before the first runner is registered (lanes are 0..11, #53).
+if [ -n "$FIRST_LANE" ]; then
+  case "$FIRST_LANE$COUNT" in
+    *[!0-9]*) echo "first-lane and count must be numbers: $FIRST_LANE $COUNT" >&2; exit 2 ;;
+  esac
+  if [ $((10#$FIRST_LANE + 10#$COUNT - 1)) -gt 11 ]; then
+    echo "lanes $FIRST_LANE to $((10#$FIRST_LANE + 10#$COUNT - 1)) go past lane 11" >&2
+    exit 2
+  fi
+fi
 CONF="${AIRIA_CI_RUNNERS_ENV:-$HOME/.config/airia-ci/runners.env}"
 # shellcheck source=/dev/null
 [ -r "$CONF" ] && . "$CONF"
@@ -23,7 +33,7 @@ ssh -o BatchMode=yes "$THOR" "pct push '${CT}' /tmp/add-runner.sh /root/add-runn
 for i in $(seq 1 "$COUNT"); do
   echo "--- registering ${REPO} runner thor-${i}"
   lane=""
-  if [ -n "$FIRST_LANE" ]; then lane=$((FIRST_LANE + i - 1)); fi
+  if [ -n "$FIRST_LANE" ]; then lane=$((10#$FIRST_LANE + i - 1)); fi
   # fresh token per runner (they are single-use); stays in a var, piped to stdin
   gh api -X POST "/repos/${REPO}/actions/runners/registration-token" --jq .token \
     | ssh -o BatchMode=yes "$THOR" "pct exec '${CT}' -- /root/add-runner.sh '${REPO}' '${i}' '' '${lane}'" \
