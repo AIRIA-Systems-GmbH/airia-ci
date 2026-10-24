@@ -153,8 +153,9 @@ def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> s
             p = gh(*args)
             if not p.returncode:
                 return p.stdout.strip()
-            # A 422 about the line or the path means it is not in the diff: try the next, wider attempt.
-            if not (("HTTP 422" in p.stderr) and NOT_IN_THE_DIFF.search(p.stderr)):
+            # A 422 about the line or the path means it is not in the diff: try the next, wider attempt. `gh api`
+            # puts only "gh: Validation Failed (HTTP 422)" on stderr; the errors[].message detail is in the body on stdout.
+            if not (("HTTP 422" in p.stderr) and NOT_IN_THE_DIFF.search(p.stderr + "\n" + p.stdout)):
                 raise ReviewError(f"finding {finding['id']}: gh api failed: {p.stderr.strip()}")
         return None
     finally:
