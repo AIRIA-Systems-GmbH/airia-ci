@@ -54,6 +54,18 @@ LISTING = r"^api --paginate repos/o/r/pulls/9/comments"
 SUMMARY = r"^pr comment 9 "
 UNPROCESSABLE = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\npull_request_review_thread.line could not be resolved"}
 
+# What `gh api` really does on a 422: the one-line summary on stderr, the response body (with the errors[]
+# detail) on stdout. PR #80's review job showed stderr as exactly `gh: Validation Failed (HTTP 422)`.
+NOT_IN_DIFF_422 = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\n",
+                   "text": json.dumps({"message": "Validation Failed", "status": "422", "errors": [
+                       {"resource": "PullRequestReviewComment", "code": "custom",
+                        "field": "pull_request_review_thread.line",
+                        "message": "pull_request_review_thread.line could not be resolved"}]})}
+OTHER_422 = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\n",
+             "text": json.dumps({"message": "Validation Failed", "status": "422", "errors": [
+                 {"resource": "PullRequestReviewComment", "code": "custom", "field": "commit_id",
+                  "message": "commit_id is not part of the pull request"}]})}
+
 
 class TheStep(unittest.TestCase):
     """The action's shell and Python together, against a fake `gh`, as the review job runs them."""
@@ -130,6 +142,32 @@ class TheStep(unittest.TestCase):
         self.assertIn("subject_type=file", comments[1][0])
         self.assertNotIn("line=12", comments[1][0])
         self.assertIn("[comment](https://github.com/o/r/pull/9#discussion_r2)", summaries[0])
+
+    def test_a_not_in_the_diff_422_whose_detail_is_only_on_stdout_falls_back_to_a_file_level_comment(self):
+        # Real gh keeps the errors[] detail off stderr; matching stderr alone failed every such finding (PR #80).
+        p, summaries, comments = self.post(execution(message([finding()])), rules=[[INLINE, NOT_IN_DIFF_422]])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(comments), 2, "the inline attempt, then the file-level one")
+        self.assertIn("subject_type=file", comments[1][0])
+        self.assertIn("[comment](https://github.com/o/r/pull/9#discussion_r2)", summaries[0])
+
+    def test_a_file_level_422_with_the_detail_on_stdout_falls_back_to_the_summary(self):
+        p, summaries, comments = self.post(execution(message([finding()])),
+                                           rules=[[INLINE, NOT_IN_DIFF_422], [FILE_LEVEL, NOT_IN_DIFF_422]])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(len(comments), 2)
+        self.assertIn("(not in the diff: answer in a PR comment", summaries[0])
+
+    def test_any_other_422_still_fails_even_with_a_body(self):
+        p, summaries, comments = self.post(execution(message([finding()])), rules=[[INLINE, OTHER_422]])
+        self.assertEqual((p.returncode, summaries, len(comments)), (1, [], 1))
+        self.assertIn("::error title=No review posted::finding F1: gh api failed: gh: Validation Failed (HTTP 422)",
+                      p.stdout)
+
+    def test_a_not_in_the_diff_text_without_a_422_status_still_fails(self):
+        p, summaries, _ = self.post(execution(message([finding()])), rules=[[INLINE, {
+            "exit": 1, "stderr": "gh: Server Error (HTTP 500)\n", "text": NOT_IN_DIFF_422["text"]}]])
+        self.assertEqual((p.returncode, summaries), (1, []))
 
     def test_a_finding_without_a_line_is_file_level_straight_away(self):
         p, _, comments = self.post(execution(message([finding(line=None)])))
