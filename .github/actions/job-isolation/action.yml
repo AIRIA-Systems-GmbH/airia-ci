@@ -16,8 +16,10 @@
 name: Job isolation
 description: >-
   Keep one job's per-job state off the home directory that persistent runners
-  share. Today: every later step's `git config --global` writes a private file
-  under RUNNER_TEMP instead of the shared ~/.gitconfig. Repository-agnostic.
+  share. Every later step's `git config --global` writes a private file under
+  RUNNER_TEMP instead of the shared ~/.gitconfig; ANSIBLE_HOME and
+  ANSIBLE_LOCAL_TEMP point below RUNNER_TEMP; CI_JOB_PREFIX is a per-job Docker
+  name prefix. Repository-agnostic.
 
 # Persistent runners (runners/POLICY.md) run jobs side by side as one user with
 # one HOME. Two jobs that write `git config --global` at the same time race for
@@ -29,9 +31,19 @@ description: >-
 # job left in ~/.gitconfig, which is the point. Put this step before any step
 # that writes global git config, and give the job its identity after it.
 #
-# A NEW action with no inputs, outputs or secrets: no existing call contract
-# changes. Further per-job state (ANSIBLE_HOME, Docker names, ports) is still
-# open in runners/POLICY.md and would join here.
+# ANSIBLE_HOME / ANSIBLE_LOCAL_TEMP: a fresh $RUNNER_TEMP/ansible and its tmp,
+# so ~/.ansible is not shared (#35).
+#
+# CI_JOB_PREFIX: ci-<run id>-<attempt>-<job>-<runner hash>, lowercase
+# [a-z0-9_-], starting with a letter, so it is valid as a container, network or
+# volume name and as a compose project name. Matrix legs share GITHUB_JOB, but
+# a runner runs one job at a time, so the runner name (hashed, since names may
+# hold dots or spaces) is what separates concurrent jobs. The action neither
+# sets COMPOSE_PROJECT_NAME nor removes containers: the consumer names its
+# resources with the prefix and cleans up in its own job.
+#
+# No inputs, outputs or secrets; the new env vars are additive. Ports are not
+# here: they come from the runner's .env (#53).
 
 runs:
   using: composite
@@ -42,3 +54,21 @@ runs:
         config="$RUNNER_TEMP/gitconfig"
         : > "$config"
         echo "GIT_CONFIG_GLOBAL=$config" >> "$GITHUB_ENV"
+
+    - name: Give the job a private Ansible home
+      shell: bash
+      run: |
+        home="$RUNNER_TEMP/ansible"
+        rm -rf "$home"
+        mkdir -p "$home/tmp"
+        {
+          echo "ANSIBLE_HOME=$home"
+          echo "ANSIBLE_LOCAL_TEMP=$home/tmp"
+        } >> "$GITHUB_ENV"
+
+    - name: Give the job a Docker name prefix
+      shell: bash
+      run: |
+        job=$(printf '%s' "$GITHUB_JOB" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_-' '-' | cut -c1-30)
+        runner=$(printf '%s' "$RUNNER_NAME" | cksum | cut -d' ' -f1)
+        echo "CI_JOB_PREFIX=ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$job-$runner" >> "$GITHUB_ENV"
