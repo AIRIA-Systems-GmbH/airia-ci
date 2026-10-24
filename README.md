@@ -76,7 +76,9 @@ Callers call `@main`, never a pinned tag (Andrea, 2026-10-20): a merged fix reac
 
 `conformance.yml` runs `scripts/consumers.py --conformance` weekly. It keeps one "airia-ci standard drift" issue in each consumer that falls short of the standard, and it needs the `CONFORMANCE_TOKEN` secret (see its header).
 
-`scripts/consumers.py` lists every caller and flags one pinned to a `ci-vN` tag instead of `@main`; `scripts/canary.py` proves `@claude` answers on a consumer PR. [CLAUDE.md](CLAUDE.md) has the commands.
+`scripts/consumers.py` lists every caller and flags one pinned to a `ci-vN` tag instead of `@main`; `scripts/canary.py` proves `@claude` answers on a consumer PR.
+
+`scripts/findings.py --repo OWNER/NAME --pr N` lists the review findings nobody has answered: a Bot's PR review comment with the `airia-finding` marker, no reply to it and its thread not resolved (a person's comment that quotes the marker is ignored). It prints each as id, file and link, and exits 1 if any is left, 0 if none, 2 if a lookup failed. It runs no model; it is the check behind "every bot finding has a reply" (#73). The *Review cap reached* comment lists the same findings (or says there are none), by a copy of the rule in the workflow's jq; a test holds the two to the same ids. The review itself may read the PR's earlier finding comments and their replies with `gh api repos/<repo>/pulls/<n>/comments`, the one `gh api` call its settings allow, and only when it runs on a `pull_request` event. [CLAUDE.md](CLAUDE.md) has the commands.
 
 ## Licence
 

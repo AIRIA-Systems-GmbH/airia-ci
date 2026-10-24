@@ -87,6 +87,56 @@ class ReviewProfile(Compose):
             self.assertIn(tool, s["permissions"]["deny"])
 
 
+class ReadTheFindingComments(Compose):
+    """A re-review reads earlier finding comments and their replies (airia-ci#73): one exact read-only call."""
+
+    CALL = "gh api repos/o/r/pulls/7/comments"
+
+    def on_pr(self, profile="review", ref="refs/pull/7/merge", repo="o/r", **kw):
+        r = Runner(self)
+        out = r.tmp / "settings.json"
+        env = bare(PROFILE=profile, EXTRA_ALLOW=kw.get("allow", ""), EXTRA_DENY="", GITHUB_REF=ref, GITHUB_REPOSITORY=repo)
+        p = subprocess.run([sys.executable, str(heredoc(ACTION, STEP)), str(out)], env=env, capture_output=True, text=True)
+        return p, json.loads(out.read_text()) if out.exists() else None
+
+    def test_the_exact_call_is_allowed_with_and_without_paginate_and_nothing_longer(self):
+        _, s = self.on_pr()
+        allow, deny = s["permissions"]["allow"], s["permissions"]["deny"]
+        self.assertIn(f"Bash({self.CALL})", allow)
+        self.assertIn(f"Bash({self.CALL.replace('gh api ', 'gh api --paginate ')})", allow)
+        self.assertFalse([r for r in allow if "gh api" in r and "*" in r], "no wildcard may follow gh api")
+        # `-X POST` appended matches neither allow rule (no trailing wildcard) and a deny rule names it.
+        self.assertIn(f"Bash({self.CALL} *)", deny)
+
+    def test_every_other_gh_api_call_is_still_not_allowed(self):
+        _, s = self.on_pr(repo="o/other")
+        rules = [r for r in s["permissions"]["allow"] if "gh api" in r]
+        self.assertEqual(rules, ["Bash(gh api repos/o/other/pulls/7/comments)",
+                               "Bash(gh api --paginate repos/o/other/pulls/7/comments)"])
+        self.assertNotIn("Bash(gh api repos/o/r/pulls/7/comments)", rules)
+        self.assertNotIn("Bash(gh api repos/o/other/pulls/8/comments)", rules)
+
+    def test_without_a_pull_request_ref_nothing_is_allowed_and_the_gh_api_deny_stands(self):
+        for ref in ("refs/heads/main", "refs/pull/7/head", "refs/pull/x/merge", ""):
+            _, s = self.on_pr(ref=ref)
+            self.assertFalse([r for r in s["permissions"]["allow"] if "gh api" in r], ref)
+            self.assertIn("Bash(gh api:*)", s["permissions"]["deny"], ref)
+
+    def test_the_respond_profile_does_not_get_it(self):
+        _, s = self.on_pr("respond")
+        self.assertFalse([r for r in s["permissions"]["allow"] if "gh api" in r])
+        self.assertIn("Bash(gh api:*)", s["permissions"]["deny"])
+
+    def test_an_extra_allow_may_not_grant_gh_api(self):
+        for spelling in ("Bash(gh api:*)", "Bash(gh api repos/x/y/pulls/1/comments)", "Bash(gh:*)", "Bash(g*)", "Bash(gh a*)"):
+            p, s = self.on_pr(allow=spelling)
+            self.assertNotEqual(p.returncode, 0, spelling)
+            self.assertIn("may not grant gh api", p.stderr)
+            self.assertIsNone(s)
+        _, s = self.on_pr(allow="Bash(make test:*)")
+        self.assertIn("Bash(make test:*)", s["permissions"]["allow"])
+
+
 class RespondProfile(Compose):
     def test_respond_can_edit_and_commit_but_never_force_push(self):
         s = self.settings("respond")
