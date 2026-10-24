@@ -296,11 +296,44 @@ jobs:
             echo "PR #${PR} already says so for ${HEAD:-this head}." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
+          # The findings still open: a Bot's review comment with the airia-finding marker, no reply
+          # to it and its thread not resolved. scripts/findings.py applies the same rule (it is not
+          # checked out in a caller's repository, so this is the jq copy; tests/test_review_steps.py
+          # holds the two to the same ids). A failed read is said, never reported as "none".
+          # shellcheck disable=SC2016  # the $names are GraphQL variables, literal text for gh
+          threads='query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
+            repository(owner: $owner, name: $name) { pullRequest(number: $pr) {
+              reviewThreads(first: 100, after: $endCursor) {
+                nodes { isResolved comments(first: 100) { nodes { databaseId } } }
+                pageInfo { hasNextPage endCursor } } } } }'
+          open_text=""
+          if raw="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/comments" --jq '.[]')" \
+             && comments="$(jq -cs . <<< "${raw}")" \
+             && raw="$(gh api graphql --paginate -f query="${threads}" -F owner="${GITHUB_REPOSITORY%/*}" \
+                  -F name="${GITHUB_REPOSITORY#*/}" -F pr="${PR}" \
+                  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved) | .comments.nodes[].databaseId')" \
+             && resolved="$(jq -cs . <<< "${raw}")" \
+             && open_text="$(jq -r --argjson resolved "${resolved}" '
+                  [.[] | .in_reply_to_id // empty] as $replied
+                  | .[] | . as $c | select(.user.type == "Bot")
+                  | (.body // "" | capture("<!-- airia-finding run=[0-9]+ id=(?<id>\\S+) file=(?<file>\\S+) -->")?) as $m
+                  | select($m != null and ([$c.id] | inside($replied + $resolved) | not))
+                  | "- `\($m.id)` in `\($m.file)`: \($c.html_url)"' <<< "${comments}")"; then
+            if [ -z "${open_text}" ]; then
+              open_text="Findings still open (no reply, thread not resolved): none."
+            else
+              open_text="$(printf 'Findings still open (no reply, thread not resolved):\n\n%s' "${open_text}")"
+            fi
+          else
+            open_text="The open findings could not be read just now; \`python3 scripts/findings.py --repo ${GITHUB_REPOSITORY} --pr ${PR}\` lists them."
+          fi
           body="${RUNNER_TEMP}/claude-review-cap.md"
           cat > "${body}" <<EOF
           **Review cap reached; no new automatic review.** This PR already has ${COUNT} automatic reviews (the cap is ${CAP}), the newest ${NEWEST}. Head \`${HEAD:-unknown}\` was not reviewed, and Claude Review passes anyway: the cap is not a human gate (airia-ci#70).
 
           Merge when every required check is green, every finding in the reviews has a reply on this PR, and the change fits the Roadmap. Questions go to \`@claude\`. For another automatic review, close this PR and open a new one from the same branch.
+
+          ${open_text}
 
           ${marker}
           EOF
