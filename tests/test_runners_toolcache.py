@@ -28,6 +28,11 @@ class Base(unittest.TestCase):
         self.cache = self.r.tmp / "tools"
         self.home.mkdir()
         self.cache.mkdir()
+        # The script chowns as root. Fake `id` (always root) and `chown` (records its arguments), so
+        # the tests need neither root nor a `runner` user: the coverage container has no such user.
+        self.chowns = self.r.tmp / "chown.log"
+        self.r.tool("id", '#!/usr/bin/env bash\n[ "$1" = -u ] && { echo 0; exit 0; }\nexec /usr/bin/id "$@"\n')
+        self.r.tool("chown", f'#!/usr/bin/env bash\necho "$*" >> {self.chowns}\n')
 
     def runner_dir(self, name, env=None, registered=True):
         d = self.home / name
@@ -51,6 +56,14 @@ class SetToolcache(Base):
         self.assertEqual((b / ".env").read_text(), f"AGENT_TOOLSDIRECTORY={self.cache}/r-o-r-2\n")
         self.assertTrue((self.cache / "r-o-r-1").is_dir() and (self.cache / "r-o-r-2").is_dir())
         self.assertEqual(p.stdout.count("restart needed"), 2)
+
+    def test_the_env_file_and_the_cache_are_handed_to_the_runner_user(self):
+        a = self.runner_dir("r-o-r-1")
+        self.assertEqual(self.set_toolcache().returncode, 0)
+        self.assertEqual(
+            self.chowns.read_text().splitlines(),
+            [f"runner:runner {a}/.env", f"-R runner:runner {self.cache}/r-o-r-1"],
+        )
 
     def test_a_shared_setting_is_replaced_and_other_lines_stay(self):
         a = self.runner_dir("org-orlando-2", "LANG=en_US.UTF-8\nAGENT_TOOLSDIRECTORY=/opt/hostedtoolcache\n")
