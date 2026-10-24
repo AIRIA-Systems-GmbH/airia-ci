@@ -50,12 +50,15 @@ Jobs share one `~/.gitconfig`, and two jobs writing `git config --global` at the
 
 `CARGO_INCREMENTAL=0` and `RUSTC_WRAPPER=sccache` are set for the same shell profile. Only sccache has a size limit; the free disk of the container and the growth of the other three are **to measure**. These caches are content-addressed or lock-protected by their tools, which is why they may be shared; anything else that writes into them is not safe to share.
 
-### Shared tool cache `/opt/hostedtoolcache` (in the scripts; #35)
+### Tool cache: one per runner (in the scripts; #35)
 
-`provision.sh` creates it, owned by `runner`, and notes that each runner's `.env` must carry `AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache`. `toolcache-python.sh` fills `Python/<x.y.z>/x64` there. `setup-uv` and `setup-python` also read and write it.
+`provision.sh` creates `/opt/hostedtoolcache`, owned by `runner`. Under it each runner has its own directory, named after the runner's directory (`/opt/hostedtoolcache/r-<slug>-<index>`), and the runner's `.env` carries `AGENT_TOOLSDIRECTORY=<that directory>`. [`set-toolcache.sh`](set-toolcache.sh) sets both; `add-runner.sh` calls it for a new runner. `toolcache-python.sh` copies the interpreter into every runner's cache. `setup-uv` and `setup-python` read and write only their own runner's cache.
 
-- **Known fault ([#35](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/35)).** A job executed `/opt/hostedtoolcache/uv/0.13.0/x86_64/uv` and failed with `Text file busy`: another process on the host had that file open for writing. Which job wrote it is not established (**to measure**).
-- **Options on the table, undecided.** (1) a tool cache per runner (`AGENT_TOOLSDIRECTORY` per runner); (2) pre-seed and pin uv on the host so no job writes into the cache; (3) install uv per job under `$RUNNER_TEMP`. Until one is chosen, a job must not rely on the shared cache being stable while it runs.
+- **Rule.** Two runners never share a tool cache. A job runs on one runner at a time, so within a cache the writer of `uv/<ver>/x86_64/uv` and its executor are the same job's steps, never two jobs. The shared `/opt/hostedtoolcache/<tool>/…` layout is retired; a runner whose `.env` still points at `/opt/hostedtoolcache` itself is not covered.
+- **Fault this answers ([#35](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/35)).** A job executed `/opt/hostedtoolcache/uv/0.13.0/x86_64/uv` and failed with `Text file busy`: another process on the host had that file open for writing. Which job wrote it was not recorded. The likeliest writer is a second job's `setup-uv` copying the same version into the shared directory at the same time (the pull request that added this section explains why); a per-runner cache removes every cross-job writer of that path, whichever it was.
+- **Cost.** Each runner downloads and keeps its own copy of each tool (uv, Python from `setup-python`), so disk grows with the runner count and the first job per runner and version is slower. Free disk is **to measure**.
+- **Not covered.** Within one runner a persistent cache still holds whatever the last job left; a job that kills `setup-uv` mid-copy leaves a partial directory without the `.complete` marker, which the next `setup-uv` run overwrites. `/home/runner/.local/bin/uv` (installed by `provision.sh`) and `UV_CACHE_DIR` are shared and are not changed here: the first is written only by `provision.sh`, the second is the lock-protected content-addressed cache listed above.
+- **Applying it to the live pool.** Run `set-toolcache.sh` in the container (it changes `.env` files and restarts nothing), restart each runner it lists as "restart needed" while that runner is idle, then run `toolcache-python.sh`. Steps are in the pull request that added this.
 
 ## Capacity and concurrency (#27)
 

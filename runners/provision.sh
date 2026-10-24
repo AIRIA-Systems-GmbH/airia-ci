@@ -126,5 +126,7 @@ sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
 apt-get install -y -qq locales >/dev/null && locale-gen >/dev/null && update-locale LANG=en_US.UTF-8
 # Tool cache must be writable by the runner: setup-uv creates /opt/hostedtoolcache/uv.
 mkdir -p /opt/hostedtoolcache && chown -R runner:runner /opt/hostedtoolcache
-# NOTE: each runner's .env MUST carry AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache,
-# otherwise RUNNER_TOOL_CACHE defaults to _work/_tool and setup-python misses it.
+# NOTE: each runner's .env MUST carry its own AGENT_TOOLSDIRECTORY below /opt/hostedtoolcache
+# (set-toolcache.sh writes it), never the shared directory itself: two runners writing the same
+# uv binary fail a job with "Text file busy" (#35). Without it RUNNER_TOOL_CACHE defaults to
+# _work/_tool and setup-python misses the seeded interpreter.
