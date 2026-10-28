@@ -504,6 +504,14 @@ class AUsageLimit(unittest.TestCase):
                 self.assertIn("comment `@claude please review` to retry.", out)
                 self.assertNotIn("usage limit", out)
 
+    def test_a_limit_that_is_not_a_usage_or_rate_limit_stays_no_review_posted(self):
+        # "limit reached" alone is not the account's limit: a context or budget limit is a different failure.
+        for text in ("Context limit reached", "Budget limit reached"):
+            with self.subTest(text=text):
+                out = self.failed(errored(text, **USED))
+                self.assertIn("::error title=No review posted::", out)
+                self.assertNotIn("usage limit", out)
+
     def test_a_normal_review_that_discusses_a_rate_limit_is_posted(self):
         p, summaries, _ = self.post(execution(message([], summary="The 5-hour limit reached check is right.")))
         self.assertEqual((p.returncode, len(summaries)), (0, 1))

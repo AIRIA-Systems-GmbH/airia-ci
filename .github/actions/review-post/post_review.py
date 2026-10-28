@@ -55,8 +55,9 @@ NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", 
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
 # A usage or rate limit as Claude Code reports it ("Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙
 # resets 3pm", "You've hit your limit · resets 7pm (Europe/Berlin)", an assistant message's `error: rate_limit`).
-LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached|hit your limit"
-                   r"|\blimit (?:will )?resets?\b", re.IGNORECASE)
+# "limit reached" counts only qualified (a context or budget limit is another failure) or in the epoch form.
+LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached\|\d{9,11}\b"
+                   r"|hit your limit|\blimit (?:will )?resets?\b", re.IGNORECASE)
 EPOCH = re.compile(r"limit reached\|(\d{9,11})\b", re.IGNORECASE)
 # Only a short run of time-like characters after "resets"/"reset at" is ever printed, never the text around it.
 RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+(\w[\w :+/()-]{0,40})", re.IGNORECASE)
