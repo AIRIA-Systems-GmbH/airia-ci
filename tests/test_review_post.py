@@ -129,10 +129,14 @@ class TheStep(unittest.TestCase):
         self.assertIn(FOOTER + " — [run log](https://github.com/o/r/actions/runs/42), Claude Code 2.1.300._", summary)
         self.assertTrue(summary.rstrip().endswith("2.1.300._"), "the footer closes the summary")
 
-    def test_a_finding_that_carries_the_footer_in_its_text_is_refused(self):
-        p, summaries, comments = self.post(execution(message([finding(text=f"copied: {FOOTER}")])))
-        self.assertEqual((p.returncode, summaries, comments), (1, [], []))
+    def test_a_finding_that_carries_the_footer_in_its_text_is_quoted_without_it_and_fails_the_check(self):
+        p, summaries, comments = self.post(execution(message([finding(text=f"copied: {FOOTER} tail")])))
+        self.assertEqual((p.returncode, comments), (1, []))
         self.assertIn("would count as a review", p.stdout)
+        (summary,) = summaries
+        self.assertIn("copied:", summary)
+        self.assertIn("tail", summary, "the text still reaches the PR")
+        self.assertEqual(summary.count(FOOTER), 1, "only the summary's own footer counts as a review")
 
     def test_a_line_outside_the_diff_falls_back_to_a_file_level_comment(self):
         p, summaries, comments = self.post(execution(message([finding()])), rules=[[INLINE, UNPROCESSABLE]])
@@ -205,16 +209,64 @@ class TheStep(unittest.TestCase):
         self.assertTrue(summary.startswith("Nothing blocking.\n\n---\n" + FOOTER))
         self.assertNotIn("### Findings", summary)
 
-    def test_a_missing_findings_block_fails_and_posts_nothing(self):
+    def test_a_missing_findings_block_posts_the_message_then_fails(self):
         p, summaries, comments = self.post(execution("## Review\n\nLooks right."))
-        self.assertEqual((p.returncode, summaries, comments), (1, [], []))
-        self.assertIn("::error title=No review posted::the final message does not end with an `airia-findings` block", p.stdout)
+        self.assertEqual((p.returncode, comments), (1, []))
+        (summary,) = summaries
+        self.assertIn("Looks right.", summary)
+        self.assertIn("::error title=No review posted::the review was posted, but its findings block broke the schema: "
+                      "the final message does not end with an `airia-findings` block", p.stdout)
 
-    def test_a_malformed_findings_block_fails_and_posts_nothing(self):
-        bad = "Review.\n\n```airia-findings\n{not json\n```"
+    def test_a_malformed_findings_block_posts_the_raw_block_then_fails(self):
+        bad = "Review text.\n\n```airia-findings\n{not json, \"text\": \"the lost finding\"\n```"
         p, summaries, comments = self.post(execution(bad))
-        self.assertEqual((p.returncode, summaries, comments), (1, [], []))
+        self.assertEqual((p.returncode, comments), (1, []))
+        (summary,) = summaries
+        self.assertIn("Review text.", summary)
+        self.assertIn('{not json, "text": "the lost finding"', summary, "the raw block reaches the PR")
         self.assertIn("is not JSON of the form", p.stdout)
+
+    def test_a_carried_that_is_not_a_boolean_still_posts_the_finding_and_names_the_coercion(self):
+        # CryptoStudio #472 (run 40706776861): `carried must be true or false` dropped the finding and posted nothing.
+        for value in ("yes", 1, None, [], "maybe"):
+            with self.subTest(carried=value):
+                p, summaries, comments = self.post(execution(message([{**finding(text="Real defect."), "carried": value}])))
+                self.assertEqual(p.returncode, 0, p.stderr)
+                (_, files), = comments
+                self.assertIn("Real defect.", next(iter(files.values())))
+                (summary,) = summaries
+                self.assertIn("finding F1: carried was", summary)
+                self.assertIn("treated as false (a new finding)", summary)
+
+    def test_a_carried_string_is_read_case_insensitively_and_named(self):
+        for value, linked in (("TRUE", True), (" False ", False)):
+            with self.subTest(carried=value):
+                p, summaries, comments = self.post(execution(message([{**finding(), "carried": value}])),
+                                                   rules=[[LISTING, {"json": [self.earlier()]}]])
+                self.assertEqual((p.returncode, len(comments)), (0, 0 if linked else 1))
+                self.assertIn(f"read as {str(linked).lower()}", summaries[0])
+
+    def test_a_missing_carried_is_a_new_finding_and_named(self):
+        gone = {k: v for k, v in finding().items() if k != "carried"}
+        p, summaries, comments = self.post(execution(message([gone])))
+        self.assertEqual((p.returncode, len(comments)), (0, 1))
+        self.assertIn("finding F1: carried was missing: treated as false", summaries[0])
+
+    def test_a_finding_failing_another_field_is_quoted_in_the_summary_and_fails_the_check(self):
+        both = [finding("F1", severity="huge", text="Lost without the fix."), finding("F2", "src/b.py", 3, text="Fine.")]
+        p, summaries, comments = self.post(execution(message(both)))
+        self.assertEqual((p.returncode, len(comments)), (1, 1), "the valid finding is still posted as a comment")
+        (summary,) = summaries
+        self.assertIn("Lost without the fix.", summary)
+        self.assertIn("finding F1: severity must be one of", summary)
+        self.assertIn("finding F1: severity must be one of", p.stdout)
+        self.assertEqual(summary.count(FOOTER), 1)
+
+    def test_a_finding_that_is_not_an_object_is_quoted_raw(self):
+        p, summaries, _ = self.post(execution(message(["Plain string finding."])))
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Plain string finding.", summaries[0])
+        self.assertIn("finding 1: is not an object", summaries[0])
 
     def test_a_finding_posted_by_an_earlier_review_is_linked_not_posted_again(self):
         # A re-review keeps an open finding's id; its comment is already on the PR.
@@ -347,30 +399,38 @@ class TheStep(unittest.TestCase):
 
 class ParseFindings(unittest.TestCase):
     def bad(self, findings, expect):
-        with self.assertRaises(pr_mod.ReviewError) as cm:
-            pr_mod.parse_findings(message(findings))
-        self.assertIn(expect, str(cm.exception))
+        _, _, _, problems = pr_mod.parse_findings(message(findings))
+        self.assertTrue(any(expect in why for why, _ in problems), problems)
 
     def test_a_valid_block_is_split_from_the_summary(self):
-        summary, found = pr_mod.parse_findings(message([finding()], summary="Text."))
-        self.assertEqual((summary, found), ("Text.", [finding()]))
+        summary, found, notes, problems = pr_mod.parse_findings(message([finding()], summary="Text."))
+        self.assertEqual((summary, found, notes, problems), ("Text.", [finding()], [], []))
 
     def test_the_last_block_wins_when_the_summary_quotes_one(self):
         quoted = "Format:\n```airia-findings\n{\"findings\": []}\n```\n"
-        summary, found = pr_mod.parse_findings(message([finding()], summary=quoted))
+        summary, found, _, _ = pr_mod.parse_findings(message([finding()], summary=quoted))
         self.assertEqual(len(found), 1)
         self.assertIn("Format:", summary)
 
-    def test_text_after_the_block_is_refused(self):
-        with self.assertRaises(pr_mod.ReviewError):
-            pr_mod.parse_findings(message([]) + "\n\nAnd one more thing.")
+    def test_text_after_the_block_is_a_problem_and_the_whole_message_is_the_summary(self):
+        full = message([finding(text="Kept.")]) + "\n\nAnd one more thing."
+        summary, found, _, problems = pr_mod.parse_findings(full)
+        self.assertEqual((found, len(problems)), ([], 1))
+        self.assertIn("Kept.", summary)
+        self.assertIn("And one more thing.", summary)
 
-    def test_findings_that_are_not_a_list_or_not_objects_are_refused(self):
-        with self.assertRaises(pr_mod.ReviewError):
-            pr_mod.parse_findings("x\n```airia-findings\n{\"findings\": {}}\n```")
-        with self.assertRaises(pr_mod.ReviewError):
-            pr_mod.parse_findings("x\n```airia-findings\n[]\n```")
-        self.bad(["F1"], "finding 1 is not an object")
+    def test_findings_that_are_not_a_list_or_not_objects_are_problems(self):
+        for block in ("{\"findings\": {}}", "[]"):
+            _, found, _, problems = pr_mod.parse_findings(f"x\n```airia-findings\n{block}\n```")
+            self.assertEqual((found, len(problems)), ([], 1))
+            self.assertIn(block, problems[0][1], "the raw block is kept")
+        self.bad(["F1"], "finding 1: is not an object")
+
+    def test_a_raw_block_holding_a_fence_and_the_footer_is_quoted_safely(self):
+        raw = "x\n```airia-findings\n{oops ```` " + FOOTER + "\n```"
+        summary, _, _, problems = pr_mod.parse_findings(raw)
+        self.assertNotIn(FOOTER, summary + problems[0][1])
+        self.assertIn("`````text", problems[0][1], "the fence outgrows the backticks inside")
 
     def test_every_field_is_checked(self):
         self.bad([finding(fid="has space")], "no usable id")
@@ -381,11 +441,14 @@ class ParseFindings(unittest.TestCase):
         self.bad([finding(severity="huge")], "severity must be one of")
         self.bad([finding(text="  ")], "has no text")
 
-    def test_carried_must_be_present_and_a_bool(self):
+    def test_carried_is_coerced_never_refused(self):
         missing = {k: v for k, v in finding().items() if k != "carried"}
-        self.bad([missing], "carried must be true or false")
-        for value in ("true", 1, None):
-            self.bad([{**finding(), "carried": value}], "carried must be true or false")
+        for given, expect in ((missing, False), ({**finding(), "carried": "true"}, True),
+                              ({**finding(), "carried": "No"}, False), ({**finding(), "carried": 1}, False),
+                              ({**finding(), "carried": None}, False)):
+            _, found, notes, problems = pr_mod.parse_findings(message([given]))
+            self.assertEqual(([f["carried"] for f in found], len(notes), problems), ([expect], 1, []), given)
+        self.assertEqual(pr_mod.coerce_carried({"carried": True}), (True, None))
 
 
 class TheShippedFiles(unittest.TestCase):

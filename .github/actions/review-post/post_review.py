@@ -6,8 +6,11 @@
 
 Claude's final message is the review. It ends with a fenced `airia-findings`
 block holding the findings as JSON; the block is parsed here, never trusted to
-a model's formatting. A missing or malformed block fails the job, as a missing
-review does ("green means posted"); an empty list is valid.
+a model's formatting. A finding's text always reaches the PR (airia-ci#98): a
+`carried` that is not a boolean is coerced and the summary names the coercion;
+a finding failing any other field, an unparseable block or a missing block is
+quoted in the summary, which is posted, and then the job fails with the schema
+error named ("green means posted"). An empty list is valid.
 
 - Each finding is posted as an inline review comment on its line, or as a
   file-level comment when the line is not in the diff. Every one carries a
@@ -68,43 +71,95 @@ def load_message(path: str) -> tuple[str, list[str]]:
     return text, lines
 
 
-def parse_findings(text: str) -> tuple[str, list[dict]]:
-    """The summary (the message without its findings block) and the validated findings."""
+def defuse(text: str) -> str:
+    """Text safe to quote in the summary: the review footer inside it would count as a second review."""
+    return text.replace("_Automatic review by", "Automatic review by")
+
+
+def fenced(text: str) -> str:
+    """The text in a code fence longer than any run of backticks inside it."""
+    ticks = "`" * max([3, *(len(run) + 1 for run in re.findall(r"`+", text))])
+    return f"{ticks}text\n{defuse(text)}\n{ticks}"
+
+
+def coerce_carried(f: dict) -> tuple[bool, str | None]:
+    """The `carried` flag of a finding and, when it was not a JSON boolean, what was assumed."""
+    value = f.get("carried")
+    if isinstance(value, bool):
+        return value, None
+    if "carried" not in f:
+        return False, "carried was missing: treated as false (a new finding)"
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        read = value.strip().lower()
+        return read == "true", f"carried was the string {json.dumps(value)}: read as {read}"
+    return False, f"carried was {json.dumps(value)}, not true or false: treated as false (a new finding)"
+
+
+def check_finding(f: object, seen: set[str]) -> str | None:
+    """Why the finding cannot be posted as a comment, or None when it can."""
+    if not isinstance(f, dict):
+        return "is not an object"
+    if not isinstance(f.get("id"), str) or not ID.fullmatch(f["id"]):
+        return "has no usable id (letters, digits, . _ -; at most 40)"
+    if f["id"] in seen:
+        return "the id is used twice"
+    if not isinstance(f.get("file"), str) or not f["file"].strip():
+        return "has no file"
+    line = f.get("line")
+    if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
+        return "line must be a positive integer or absent"
+    if f.get("severity") not in SEVERITIES:
+        return f"severity must be one of {', '.join(SEVERITIES)}"
+    if not isinstance(f.get("text"), str) or not f["text"].strip():
+        return "has no text"
+    if FOOTER_START in f["text"]:
+        return "the text carries the review footer, which would count as a review"
+    return None
+
+
+def recovered(f: object) -> str:
+    """Whatever of a finding that failed validation can still be read, as markdown for the summary."""
+    if isinstance(f, dict) and isinstance(f.get("text"), str) and f["text"].strip():
+        head = " · ".join(str(f[k]) for k in ("id", "severity", "file") if isinstance(f.get(k), (str, int)))
+        quoted = "\n".join("  > " + line for line in defuse(f["text"]).strip().splitlines())
+        return (f"  {head}\n" if head else "") + quoted
+    return fenced(json.dumps(f, indent=1))
+
+
+def parse_findings(text: str) -> tuple[str, list[dict], list[str], list[tuple[str, str]]]:
+    """Never drops a finding's text: (summary, postable findings, coercion notes, problems).
+
+    A problem is (what is wrong, the recovered text to show with it); the job fails after posting when
+    there is one. A message with no usable block is its own summary, and its problem has no recovered text.
+    """
     blocks = list(BLOCK.finditer(text))
     if not blocks or text[blocks[-1].end():].strip():
-        raise ReviewError("the final message does not end with an `airia-findings` block")
+        return defuse(text), [], [], [("the final message does not end with an `airia-findings` block", "")]
     last = blocks[-1]
+    summary = defuse(text[:last.start()] + text[last.end():]).strip()
     try:
         findings = json.loads(last.group(1))["findings"]
+        if not isinstance(findings, list):
+            raise TypeError("`findings` is not a list")
     except (ValueError, KeyError, TypeError) as exc:
-        raise ReviewError(f"the `airia-findings` block is not JSON of the form {{\"findings\": [...]}} ({exc})") from exc
-    if not isinstance(findings, list):
-        raise ReviewError("`findings` in the `airia-findings` block is not a list")
+        return summary, [], [], [(f"the `airia-findings` block is not JSON of the form {{\"findings\": [...]}} ({exc})",
+                                  "The block as the review wrote it:\n\n" + fenced(last.group(1)))]
+    good: list[dict] = []
+    notes: list[str] = []
+    problems: list[tuple[str, str]] = []
     seen: set[str] = set()
     for i, f in enumerate(findings, 1):
-        where = f"finding {i}"
-        if not isinstance(f, dict):
-            raise ReviewError(f"{where} is not an object")
-        if not isinstance(f.get("id"), str) or not ID.fullmatch(f["id"]):
-            raise ReviewError(f"{where} has no usable id (letters, digits, . _ -; at most 40)")
-        where = f"finding {f['id']}"
-        if f["id"] in seen:
-            raise ReviewError(f"{where}: the id is used twice")
+        why = check_finding(f, seen)
+        if why:
+            who = f["id"] if isinstance(f, dict) and isinstance(f.get("id"), str) and ID.fullmatch(f["id"]) else i
+            problems.append((f"finding {who}: {why}", recovered(f)))
+            continue
         seen.add(f["id"])
-        if not isinstance(f.get("file"), str) or not f["file"].strip():
-            raise ReviewError(f"{where} has no file")
-        line = f.get("line")
-        if line is not None and (isinstance(line, bool) or not isinstance(line, int) or line < 1):
-            raise ReviewError(f"{where}: line must be a positive integer or absent")
-        if f.get("severity") not in SEVERITIES:
-            raise ReviewError(f"{where}: severity must be one of {', '.join(SEVERITIES)}")
-        if not isinstance(f.get("text"), str) or not f["text"].strip():
-            raise ReviewError(f"{where} has no text")
-        if not isinstance(f.get("carried"), bool):
-            raise ReviewError(f"{where}: carried must be true or false")
-        if FOOTER_START in f["text"]:
-            raise ReviewError(f"{where}: the text carries the review footer, which would count as a review")
-    return (text[:last.start()] + text[last.end():]).strip(), findings
+        carried, note = coerce_carried(f)
+        if note:
+            notes.append(f"finding {f['id']}: {note}")
+        good.append({**f, "carried": carried})
+    return summary, good, notes, problems
 
 
 def gh(*args: str) -> subprocess.CompletedProcess:
@@ -181,6 +236,18 @@ def findings_section(findings: list[dict], urls: dict[str, str | None], carried:
     return "### Findings\n\nEach finding is its own comment: reply in its thread.\n\n" + "\n".join(rows)
 
 
+def problems_section(notes: list[str], problems: list[tuple[str, str]]) -> str:
+    """The summary's account of what was assumed and what could not be posted as a comment, text included."""
+    parts = []
+    if notes:
+        parts.append("### Assumed in the findings block\n\n" + "\n".join(f"- {n}" for n in notes))
+    if problems:
+        rows = "\n".join(f"- {why}" + (f"\n{shown}" if shown else "") for why, shown in problems)
+        parts.append("### Findings that could not be posted as comments\n\n"
+                     "The findings block broke its schema; the check fails, and what could be read is here.\n\n" + rows)
+    return "".join("\n\n" + p for p in parts)
+
+
 def main() -> int:
     env = os.environ
     repo, pr, run_id = env["GITHUB_REPOSITORY"], env["PR"], env["RUN_ID"]
@@ -190,7 +257,7 @@ def main() -> int:
         if not text:
             raise ReviewError(f"claude-review produced no review text for PR #{pr}. Treat this PR as UNREVIEWED; "
                               "comment `@claude please review` to retry.")
-        summary, findings = parse_findings(text)
+        summary, findings, notes, problems = parse_findings(text)
         earlier: dict[tuple[str, str], str] = {}
         urls: dict[str, str | None] = {}
         if findings:
@@ -204,6 +271,7 @@ def main() -> int:
         carried = {f["id"] for f in findings if f["carried"] and f["id"] in linked}
         orphans = {f["id"] for f in findings if f["carried"]} - carried
         section = findings_section(findings, urls, carried, orphans)
+        section += problems_section(notes, problems)
         version = env.get("CLAUDE_VERSION") or "installed by the action"
         footer = f"\n\n---\n{FOOTER_START} — [run log]({env['RUN_URL']}), Claude Code {version}._\n"
         with tempfile.NamedTemporaryFile("w", suffix=".md", dir=env.get("RUNNER_TEMP"), delete=False) as fh:
@@ -212,6 +280,9 @@ def main() -> int:
             gh_ok("pr", "comment", pr, "--repo", repo, "--body-file", fh.name)
         finally:
             os.unlink(fh.name)
+        if problems:
+            raise ReviewError("the review was posted, but its findings block broke the schema: "
+                              + "; ".join(why for why, _ in problems))
     except ReviewError as exc:
         print(f"::error title=No review posted::{exc}")
         return 1

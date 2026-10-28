@@ -1,0 +1,122 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: AIRIA framework bump, dry run (shared)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE FRAMEWORK BUMP JOB (airia-ci#94), DRY-RUN SLICE. It reads, plans and
+# reports; it writes nothing: no branch, no commit, no pull request, no issue,
+# in any repository. It holds `contents: read` and no App token. The write
+# slice waits on #94 open question 2 (widening the AIRIA commit App).
+#
+# WHY A REUSABLE WORKFLOW. The internal index resolves only inside the estate
+# and airia-ci is public, so the plan must run on a private repository's
+# runner. A scheduled `bump.yml` in AIRIA-framework calls this on its Thor
+# runner (#94 question 1, decided 2026-10-28):
+#
+#   on:
+#     schedule: [{ cron: "7 */3 * * *" }]
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     bump:
+#       permissions: { contents: read }
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-bump-consumers.yml@main
+#       secrets:
+#         CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}   # optional, read only
+#
+# WHAT IT DOES, in one job on the caller's runner: checks out airia-ci at the
+# commit this workflow was called at (`bump-recipients.toml`, `scripts/`),
+# reads each recipient's default-branch pyproject.toml and uv.lock with `gh
+# api`, plans with scripts/bump_plan.py against the index (anonymous read), and
+# writes the plan to the job summary and the `plan` output (JSON).
+#
+# THE CREDENTIAL. None is required. Without `CONFORMANCE_TOKEN` the job reads
+# with the caller's `github.token`, which sees only the caller's own repository
+# and public ones: every other recipient is reported `not-reachable` and the
+# run fails, so a partial plan never reads as "nothing to bump". The token, if
+# given, is used only for reads (contents on the recipients); this workflow
+# never writes with it. No new secret is defined here.
+#
+# THE RUN FAILS when the index cannot be read or answers no package list, a
+# recipient cannot be read, or a lock does not match its pyproject.toml. Every
+# recipient is tried and reported first.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >-
+          The runs-on labels, as a JSON array. It must reach the index. The
+          default is the AIRIA Thor pool, which serves only the organization's
+          private repositories.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","thor"]'
+      index-url:
+        description: The internal simple index the plan reads the latest releases from.
+        required: false
+        type: string
+        default: https://pypi.de.airia.systems/simple/
+      recipients:
+        description: The recipients list, a path inside the airia-ci checkout.
+        required: false
+        type: string
+        default: bump-recipients.toml
+    secrets:
+      CONFORMANCE_TOKEN:
+        description: >-
+          Optional, read only. Contents read on the recipients that are not the
+          caller's repository. Absent: the caller's github.token is used.
+        required: false
+    outputs:
+      moves:
+        description: How many packages the plan would move, over all recipients.
+        value: ${{ jobs.plan.outputs.moves }}
+      failed:
+        description: How many recipients could not be planned (not reachable, or a plan that cannot be trusted).
+        value: ${{ jobs.plan.outputs.failed }}
+      plan:
+        description: The plan as one line of JSON, a list with one entry per recipient.
+        value: ${{ jobs.plan.outputs.plan }}
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      moves: ${{ steps.plan.outputs.moves }}
+      failed: ${{ steps.plan.outputs.failed }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: AIRIA-Systems-GmbH/airia-ci
+          ref: ${{ job.workflow_sha }}
+          path: airia-ci
+          persist-credentials: false
+      - name: Plan the bump of every recipient
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.CONFORMANCE_TOKEN || github.token }}
+          INDEX_URL: ${{ inputs.index-url }}
+          RECIPIENTS: ${{ inputs.recipients }}
+        run: |
+          python3 airia-ci/scripts/bump_dry_run.py --recipients "airia-ci/$RECIPIENTS" --index "$INDEX_URL"
