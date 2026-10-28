@@ -333,6 +333,33 @@ A PR gets at most **three** automatic reviews (airia-ci#62). A newer head after 
 
 Re-running the gate on the same commit (`gh run rerun --failed`) does not post a second review: it rewrites the existing review's gate-results section with the new attempt's results.
 
+## Run the framework bump plan (dry run)
+
+**Dry run until [#94](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/94) question 2 is answered** (whether the AIRIA commit App gets pull-request and issue write). Until then the job reads and reports; it opens no PR, files no issue and pushes nothing.
+
+The internal index resolves only inside the estate and airia-ci is public, so the plan runs on a private repository's runner: a scheduled `bump.yml` in AIRIA-framework calls the reusable workflow on its existing Thor runner (decided 2026-10-28; no new runner).
+
+```yaml
+name: bump
+on:
+  schedule:
+    - cron: "7 */3 * * *"
+  workflow_dispatch:
+permissions: {}
+jobs:
+  bump:
+    permissions:
+      contents: read
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-bump-consumers.yml@main
+    secrets:
+      CONFORMANCE_TOKEN: ${{ secrets.CONFORMANCE_TOKEN }}
+```
+
+- **Inputs**, all optional: `runner` (JSON labels, default the Thor pool), `index-url` (default `https://pypi.de.airia.systems/simple/`), `recipients` (a path in the airia-ci checkout, default `bump-recipients.toml`).
+- **Credential**: none is required. `CONFORMANCE_TOKEN` is optional and used only for reads (contents on the recipients). Without it the job reads with the caller's `github.token`, which sees only the caller's own repository and public ones, so every other private recipient is reported `not-reachable`. Whether `CONFORMANCE_TOKEN` is set on AIRIA-framework was not verified.
+- **Result**: a plan per recipient in the job summary (package, locked, target, `bump`/`current`/`kept`/`not-moved`, and what holds it), and the outputs `moves`, `failed` and `plan` (JSON). The run **fails** when the index cannot be read, a recipient cannot be read, or a lock does not match its `pyproject.toml`; every recipient is tried and reported first, so a partial plan never reads as "nothing to bump".
+- **Try it by hand**: `python3 scripts/bump_plan.py --dry-run --recipient <owner/name> --pyproject … --lock …` plans one recipient from local files.
+
 ## Stay current
 
 - **Call `@main`, never a pinned tag** (Andrea, 2026-10-20). Every fix that merges here reaches your next run; there is nothing to do. A build that turns red because of airia-ci is fixed here, in airia-ci: file it ([CONTRIBUTING.md](CONTRIBUTING.md)) and never pin back to a tag.
