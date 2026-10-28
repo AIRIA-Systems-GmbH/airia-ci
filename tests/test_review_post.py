@@ -437,6 +437,79 @@ class TheStep(unittest.TestCase):
         self.assertIn("No execution file", p.stdout)
 
 
+def errored(result="", **extra) -> list:
+    """A run that ended in an error the way TCC #54's did (run 40724370718): one turn, no model usage, no cost."""
+    return execution(result, **{"is_error": True, "num_turns": 1, "total_cost_usd": 0, "modelUsage": {},
+                                "duration_ms": 433, **extra})
+
+
+USED = {"num_turns": 4, "total_cost_usd": 0.12, "modelUsage": {"claude-sonnet-5-5": {"inputTokens": 900}}}
+RETRY = "re-run this job after the reset or comment `@claude please review`."
+
+
+class AUsageLimit(unittest.TestCase):
+    """airia-ci#103: a usage limit still fails the check (#54), but the check says it was the limit and when to retry.
+
+    While the account is limited every PR's required `claude-review` is red; a bare "no review posted" sent people
+    looking for a broken PR instead of waiting for the reset.
+    """
+
+    post = TheStep.post
+
+    def failed(self, msgs):
+        p, summaries, _ = self.post(msgs)
+        self.assertEqual((p.returncode, summaries, self.reviews), (1, [], []), "fail closed: nothing is posted")
+        return p.stdout
+
+    def test_a_limit_text_with_a_reset_time_names_the_limit_and_the_reset(self):
+        out = self.failed(errored("You've hit your limit · resets 7pm (Europe/Berlin)"))
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn("the limit resets 7pm (Europe/Berlin); " + RETRY, out)
+        self.assertNotIn("No review posted", out)
+
+    def test_the_cli_epoch_form_is_a_reset_time_in_utc(self):
+        out = self.failed(errored("Claude AI usage limit reached|1761674400"))
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn("the limit resets 2025-10-28 18:00 UTC; " + RETRY, out)
+
+    def test_a_limit_text_without_a_reset_time_still_names_the_limit(self):
+        for text in ("Claude usage limit reached. Please try again later.", "5-hour limit reached, resets soon"):
+            with self.subTest(text=text):
+                out = self.failed(errored(text, **USED))
+                self.assertIn("::error title=Claude usage limit::", out)
+                self.assertIn("the text gives no reset time; " + RETRY, out)
+
+    def test_an_api_rate_limit_error_in_the_transcript_names_the_limit(self):
+        limited = {"type": "assistant", "error": "rate_limit",
+                   "message": {"content": [{"type": "text", "text": "API Error: Rate limit reached"}]}}
+        out = self.failed([limited, *errored(num_turns=2)])
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn(RETRY, out)
+
+    def test_the_limit_text_itself_is_never_printed(self):
+        out = self.failed(errored("You've hit your limit · resets 7pm (Europe/Berlin)"))
+        self.assertNotIn("hit your limit", out, "stdout is the job summary: only the reset time leaves the file")
+
+    def test_the_zero_usage_signature_is_a_likely_limit_or_auth_failure(self):
+        out = self.failed(errored())
+        self.assertIn("::error title=Likely Claude usage limit or auth failure::", out)
+        self.assertIn("errored after 1 turn with no model usage and no cost", out)
+        self.assertIn("(the log does not say which); if it is the limit, " + RETRY, out)
+
+    def test_an_error_after_real_model_usage_stays_no_review_posted(self):
+        for extra in (USED, {"num_turns": 0, "total_cost_usd": 0.05, "modelUsage": {"m": {}}}):
+            with self.subTest(extra=extra):
+                out = self.failed(errored("API Error", **extra))
+                self.assertIn("::error title=No review posted::", out)
+                self.assertIn("comment `@claude please review` to retry.", out)
+                self.assertNotIn("usage limit", out)
+
+    def test_a_normal_review_that_discusses_a_rate_limit_is_posted(self):
+        p, summaries, _ = self.post(execution(message([], summary="The 5-hour limit reached check is right.")))
+        self.assertEqual((p.returncode, len(summaries)), (0, 1))
+        self.assertNotIn("::error", p.stdout)
+
+
 class ParseFindings(unittest.TestCase):
     def bad(self, findings, expect):
         _, _, _, problems = pr_mod.parse_findings(message(findings))
