@@ -385,6 +385,7 @@ Every `ci-vN` is frozen, so leaving one means moving to `@main`:
 ## When something goes wrong
 
 - **No review on the PR.** `claude-review` is red with *No review posted*: the run ended without review text, or its final message lacked a well-formed `airia-findings` block (the error says which). Treat the PR as unreviewed and comment `@claude please review`.
+- **Claude usage limit.** `claude-review` is red with *Claude usage limit* (the run's result names a usage or rate limit; the error gives the reset time when the result does) or *Likely Claude usage limit or auth failure* (the run errored after at most one turn with no model usage and no cost). Nothing is wrong with the PR: wait for the reset, then re-run the job or comment `@claude please review`. If it persists past a reset, check the `CLAUDE_CODE_OAUTH_TOKEN` secret.
 - **The review job shows SKIPPED.** Its `if:` lacks `always()`: with a bare `needs:`, one red gate skips the review. The job `init.py` writes has it.
 - **A draft PR was never reviewed.** The gate workflow's `pull_request` types must include `ready_for_review`.
 - **No Claude credential.** The repository has no `CLAUDE_CODE_OAUTH_TOKEN` secret, or the caller does not pass it: `gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>`. An `@claude` retry cannot help until then.

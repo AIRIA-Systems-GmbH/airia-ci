@@ -26,6 +26,10 @@ error named ("green means posted"). An empty list is valid.
 - Every run also posts a pull-request review (event COMMENT, never APPROVE) with `commit_id` the
   reviewed head, so a re-review with no findings still leaves a review on its head (airia-ci#99).
   Its body points at the summary and has no footer, so each run is still counted once.
+- With no review text the check fails (airia-ci#54) and says why: a usage or rate limit named in the
+  result or error text is titled `Claude usage limit` with the reset time when the text gives one, and a
+  run that errored after at most one turn with no model usage and no cost is titled as a likely usage
+  limit or auth failure (airia-ci#103). Only the reset time is printed, never the text itself.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import UTC, datetime
 from urllib.parse import quote, unquote
 
 FOOTER_START = "_Automatic review by `claude-code-review.yml`"
@@ -48,6 +53,15 @@ MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) file=(\S+) -->")
 # the diff"); any other 422 (a stale commit_id, a rejected body) is a real failure.
 NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", re.IGNORECASE)
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
+# A usage or rate limit as Claude Code reports it ("Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙
+# resets 3pm", "You've hit your limit · resets 7pm (Europe/Berlin)", an assistant message's `error: rate_limit`).
+# "limit reached" counts only qualified (a context or budget limit is another failure) or in the epoch form.
+LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached\|\d{9,11}\b"
+                   r"|hit your limit|\blimit (?:will )?resets?\b", re.IGNORECASE)
+EPOCH = re.compile(r"limit reached\|(\d{9,11})\b", re.IGNORECASE)
+# Only a short run of time-like characters after "resets"/"reset at" is ever printed, never the text around it.
+RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+(\w[\w :+/()-]{0,40})", re.IGNORECASE)
+RETRY = "re-run this job after the reset or comment `@claude please review`."
 
 
 class ReviewError(Exception):
@@ -58,14 +72,18 @@ class ReviewError(Exception):
         self.title = title
 
 
-def load_message(path: str) -> tuple[str, list[str]]:
-    """Claude's final message from the execution file, and the diagnostics to print."""
+def last_result(msgs: list) -> dict:
+    return next((m for m in reversed(msgs) if m.get("type") == "result"), {})
+
+
+def load_message(path: str) -> tuple[str, list[str], list]:
+    """Claude's final message from the execution file, the diagnostics to print, and the file's messages."""
     try:
         with open(path) as fh:
             msgs = json.load(fh)
     except (OSError, ValueError) as exc:
-        return "", [f"No execution file ({exc}); Claude did not run to completion."]
-    result = next((m for m in reversed(msgs) if m.get("type") == "result"), {})
+        return "", [f"No execution file ({exc}); Claude did not run to completion."], []
+    result = last_result(msgs)
     lines = [f"subtype: {result.get('subtype')}, turns: {result.get('num_turns')}, is_error: {result.get('is_error')}"]
     # Denials are not failures on their own (a denied push is the settings
     # working), but they are the first thing to read when a review is thin.
@@ -74,8 +92,52 @@ def load_message(path: str) -> tuple[str, list[str]]:
     lines += [f"- {d.get('tool_name')}: {json.dumps(d.get('tool_input'))[:200]}" for d in denials[:20]]
     text = (result.get("result") or "").strip()
     if result.get("is_error") or not text:
-        return "", [*lines, "No review text in the final message."]
-    return text, lines
+        return "", [*lines, "No review text in the final message."], msgs
+    return text, lines, msgs
+
+
+def failure_texts(msgs: list) -> list[str]:
+    """The result and error texts of a run: what a limit is recognised by. Never printed."""
+    result = last_result(msgs)
+    texts = [result.get("result"), result.get("error"), *(result.get("errors") or [])]
+    for m in msgs:
+        # An API error reaches the transcript as an assistant message flagged `error`; its text is the error's.
+        if m.get("type") == "assistant" and m.get("error"):
+            content = (m.get("message") or {}).get("content") or []
+            texts += [m["error"], *(b.get("text") for b in content if isinstance(b, dict))]
+    return [t for t in texts if isinstance(t, str)]
+
+
+def reset_time(texts: list[str]) -> str | None:
+    """When the limit resets, if the text says so: an epoch as UTC, or the time phrase after "resets"."""
+    for t in texts:
+        if m := EPOCH.search(t):
+            return datetime.fromtimestamp(int(m.group(1)), UTC).strftime("%Y-%m-%d %H:%M UTC")
+        for m in RESETS.finditer(t):
+            when = m.group(1).strip()
+            if any(c.isdigit() for c in when):
+                return when
+    return None
+
+
+def no_review_error(msgs: list, pr: str) -> ReviewError:
+    """Why there is no review: a usage limit, its zero-usage signature, or the generic failure (airia-ci#103)."""
+    unreviewed = f"Claude wrote no review for PR #{pr}, so treat it as UNREVIEWED"
+    texts = failure_texts(msgs)
+    if any(LIMIT.search(t) for t in texts):
+        when = reset_time(texts)
+        resets = f"the limit resets {when}" if when else "the text gives no reset time"
+        return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY}",
+                           title="Claude usage limit")
+    result = last_result(msgs)
+    turns = result.get("num_turns")
+    if (result.get("is_error") and not result.get("modelUsage") and result.get("total_cost_usd") == 0
+            and isinstance(turns, int) and turns <= 1):
+        return ReviewError(f"{unreviewed}: the run errored after {turns} turn{'s' if turns != 1 else ''} with no model usage and no cost, "
+                           "which is the signature of a usage limit or an auth failure (the log does not say which); "
+                           f"if it is the limit, {RETRY}", title="Likely Claude usage limit or auth failure")
+    return ReviewError(f"claude-review produced no review text for PR #{pr}. Treat this PR as UNREVIEWED; "
+                       "comment `@claude please review` to retry.")
 
 
 def defuse(text: str) -> str:
@@ -281,12 +343,11 @@ def problems_section(notes: list[str], problems: list[tuple[str, str]]) -> str:
 def main() -> int:
     env = os.environ
     repo, pr, run_id = env["GITHUB_REPOSITORY"], env["PR"], env["RUN_ID"]
-    text, notes = load_message(env["EXECUTION_FILE"])
+    text, notes, msgs = load_message(env["EXECUTION_FILE"])
     print("\n".join(notes))
     try:
         if not text:
-            raise ReviewError(f"claude-review produced no review text for PR #{pr}. Treat this PR as UNREVIEWED; "
-                              "comment `@claude please review` to retry.")
+            raise no_review_error(msgs, pr)
         summary, findings, notes, problems = parse_findings(text)
         earlier: dict[tuple[str, str], str] = {}
         urls: dict[str, str | None] = {}
