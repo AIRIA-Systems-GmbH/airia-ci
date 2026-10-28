@@ -252,8 +252,10 @@ class TheStep(unittest.TestCase):
         self.assertEqual((p.returncode, comments), (1, []))
         (summary,) = summaries
         self.assertIn("Looks right.", summary)
-        self.assertIn("::error title=No review posted::the review was posted, but its findings block broke the schema: "
-                      "the final message does not end with an `airia-findings` block", p.stdout)
+        self.assertIn("::error title=Review posted with a malformed findings block::the review was posted, but its "
+                      "findings block broke the schema: the final message does not end with an `airia-findings` block",
+                      p.stdout)
+        self.assertNotIn("No review posted", p.stdout, "it was posted: the title must not say otherwise")
 
     def test_a_malformed_findings_block_posts_the_raw_block_then_fails(self):
         bad = "Review text.\n\n```airia-findings\n{not json, \"text\": \"the lost finding\"\n```"

@@ -51,7 +51,11 @@ NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
 
 
 class ReviewError(Exception):
-    """The review cannot be posted as it stands; the job fails with this text."""
+    """The review cannot be posted as it stands; the job fails with this text under `title`."""
+
+    def __init__(self, message: str, title: str = "No review posted"):
+        super().__init__(message)
+        self.title = title
 
 
 def load_message(path: str) -> tuple[str, list[str]]:
@@ -311,9 +315,9 @@ def main() -> int:
             os.unlink(fh.name)
         if problems:
             raise ReviewError("the review was posted, but its findings block broke the schema: "
-                              + "; ".join(why for why, _ in problems))
+                              + "; ".join(why for why, _ in problems), title="Review posted with a malformed findings block")
     except ReviewError as exc:
-        print(f"::error title=No review posted::{exc}")
+        print(f"::error title={exc.title}::{exc}")
         return 1
     return 0
 
