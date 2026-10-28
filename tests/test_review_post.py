@@ -52,6 +52,7 @@ INLINE = r"^api --method POST repos/o/r/pulls/9/comments .* -F line="
 FILE_LEVEL = r"^api --method POST repos/o/r/pulls/9/comments .* subject_type=file"
 LISTING = r"^api --paginate repos/o/r/pulls/9/comments"
 SUMMARY = r"^pr comment 9 "
+REVIEWS = r"^api --method POST repos/o/r/pulls/9/reviews "
 UNPROCESSABLE = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\npull_request_review_thread.line could not be resolved"}
 
 # What `gh api` really does on a 422: the one-line summary on stderr, the response body (with the errors[]
@@ -76,6 +77,7 @@ class TheStep(unittest.TestCase):
                  [INLINE, {"json": {"html_url": "https://github.com/o/r/pull/9#discussion_r1"}}],
                  [FILE_LEVEL, {"json": {"html_url": "https://github.com/o/r/pull/9#discussion_r2"}}],
                  [r"^api repos/o/r/pulls/9 ", {"json": {"head": {"sha": HEAD}}}],
+                 [REVIEWS, {"json": {"id": 7}}],
                  [SUMMARY, {"text": "https://github.com/o/r/pull/9#c1\n"}]]
         r = Runner(self, rules)
         exe = r.tmp / "execution.json"
@@ -85,7 +87,8 @@ class TheStep(unittest.TestCase):
                   HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}")
         calls = r.calls()
         summaries = [c["files"]["--body-file"] for c in calls if c["args"][:2] == ["pr", "comment"]]
-        findings = [(c["args"], c["files"]) for c in calls if "--method" in c["args"]]
+        findings = [(c["args"], c["files"]) for c in calls if "--method" in c["args"] and "/comments " in c["args"][3] + " "]
+        self.reviews = [(c["args"], c["files"]) for c in calls if "--method" in c["args"] and c["args"][3].endswith("/reviews")]
         return p, summaries, findings
 
     def test_each_finding_is_its_own_inline_comment_and_the_summary_links_them(self):
@@ -108,6 +111,41 @@ class TheStep(unittest.TestCase):
         self.assertIn("- **F1** (major) `src/a.py:12` — [comment](https://github.com/o/r/pull/9#discussion_r1)", summary)
         self.assertIn("- **F2** (minor) `src/b.py:3`", summary)
         self.assertNotIn("airia-findings", summary, "the machine-readable block is not part of the summary")
+
+    def test_a_review_with_findings_is_a_pr_review_on_the_reviewed_head(self):
+        # Without it only the inline comments exist, and a classifier sees no review on a re-reviewed head.
+        p, _, _ = self.post(execution(message([finding()])))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (args, files), = self.reviews
+        self.assertIn(f"commit_id={HEAD}", args)
+        self.assertIn("event=COMMENT", args)
+        self.assertNotIn("event=APPROVE", args)
+        (body,) = files.values()
+        self.assertIn("1 finding (F1)", body)
+        self.assertNotIn(FOOTER, body, "only the summary comment is counted as a review by the guards")
+
+    def test_a_review_with_no_findings_is_still_a_pr_review_on_the_reviewed_head(self):
+        p, summaries, comments = self.post(execution(message([], summary="Nothing blocking.")))
+        self.assertEqual((p.returncode, comments, len(summaries)), (0, [], 1))
+        (args, files), = self.reviews
+        self.assertIn(f"commit_id={HEAD}", args)
+        self.assertIn("event=COMMENT", args)
+        (body,) = files.values()
+        self.assertIn("no findings", body)
+
+    def test_the_review_is_pinned_to_the_prs_head_when_the_caller_passes_none(self):
+        other = "d" * 40
+        r_rules = [[r"^api repos/o/r/pulls/9 ", {"json": {"head": {"sha": other}}}]]
+        p, _, _ = self.post(execution(message([])), rules=r_rules, head="")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (args, _), = self.reviews
+        self.assertIn(f"commit_id={other}", args)
+
+    def test_a_failing_review_post_fails_the_job_and_leaves_no_summary(self):
+        # No summary means a re-run attempt reviews afresh rather than only refreshing a gate table.
+        p, summaries, _ = self.post(execution(message([])), rules=[[REVIEWS, {"exit": 1, "stderr": "HTTP 403"}]])
+        self.assertEqual((p.returncode, summaries), (1, []))
+        self.assertIn("::error title=No review posted::gh api --method failed: HTTP 403", p.stdout)
 
     def test_each_finding_comment_names_the_run_and_the_finding_in_a_hidden_marker(self):
         _, _, comments = self.post(execution(message([finding("F7")])), run_id="42")
@@ -214,8 +252,10 @@ class TheStep(unittest.TestCase):
         self.assertEqual((p.returncode, comments), (1, []))
         (summary,) = summaries
         self.assertIn("Looks right.", summary)
-        self.assertIn("::error title=No review posted::the review was posted, but its findings block broke the schema: "
-                      "the final message does not end with an `airia-findings` block", p.stdout)
+        self.assertIn("::error title=Review posted with a malformed findings block::the review was posted, but its "
+                      "findings block broke the schema: the final message does not end with an `airia-findings` block",
+                      p.stdout)
+        self.assertNotIn("No review posted", p.stdout, "it was posted: the title must not say otherwise")
 
     def test_a_malformed_findings_block_posts_the_raw_block_then_fails(self):
         bad = "Review text.\n\n```airia-findings\n{not json, \"text\": \"the lost finding\"\n```"
