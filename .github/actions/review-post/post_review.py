@@ -23,6 +23,9 @@ error named ("green means posted"). An empty list is valid.
   as new, and a carried one with no such marker is posted as new and noted.
 - The summary stays ONE issue comment with the footer the once-per-head guard
   counts. A finding comment never carries that footer.
+- Every run also posts a pull-request review (event COMMENT, never APPROVE) with `commit_id` the
+  reviewed head, so a re-review with no findings still leaves a review on its head (airia-ci#99).
+  Its body points at the summary and has no footer, so each run is still counted once.
 """
 
 from __future__ import annotations
@@ -217,6 +220,29 @@ def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> s
         os.unlink(fh.name)
 
 
+def post_review_object(repo: str, pr: str, head: str, run_url: str, findings: list[dict], problems: list) -> None:
+    """Record the verdict as a pull-request review on the reviewed head (airia-ci#99).
+
+    GitHub keeps a review per commit_id; an issue comment is not one, so without this a re-review with no
+    findings leaves no review on its head. Event COMMENT only: a bot approval is not the policy. The body
+    carries no review footer (the summary comment is the one the guards count) and just points at the summary.
+    """
+    ids = ", ".join(f["id"] for f in findings)
+    verdict = (f"{len(findings)} finding{'s' if len(findings) != 1 else ''} ({ids}), each its own comment"
+               if findings else "no findings")
+    if problems:
+        verdict += "; the findings block broke its schema, see the summary"
+    body = (f"Automatic review of `{head[:7]}`: {verdict}. The full review is the summary comment "
+            f"of [this run]({run_url}).")
+    with tempfile.NamedTemporaryFile("w", suffix=".md", dir=os.environ.get("RUNNER_TEMP"), delete=False) as fh:
+        fh.write(body)
+    try:
+        gh_ok("api", "--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", "-f", f"commit_id={head}",
+              "-f", "event=COMMENT", "-F", f"body=@{fh.name}")
+    finally:
+        os.unlink(fh.name)
+
+
 def findings_section(findings: list[dict], urls: dict[str, str | None], carried: set[str], orphans: set[str]) -> str:
     if not findings:
         return ""
@@ -260,8 +286,8 @@ def main() -> int:
         summary, findings, notes, problems = parse_findings(text)
         earlier: dict[tuple[str, str], str] = {}
         urls: dict[str, str | None] = {}
+        head = env.get("HEAD_SHA") or gh_ok("api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha")
         if findings:
-            head = env.get("HEAD_SHA") or gh_ok("api", f"repos/{repo}/pulls/{pr}", "--jq", ".head.sha")
             earlier = posted_findings(repo, pr)
             # Only a finding the review calls carried is linked to a comment already on the PR, and only
             # when that comment is for the same id and file; a new one is always posted, even on a collision.
@@ -274,6 +300,9 @@ def main() -> int:
         section += problems_section(notes, problems)
         version = env.get("CLAUDE_VERSION") or "installed by the action"
         footer = f"\n\n---\n{FOOTER_START} — [run log]({env['RUN_URL']}), Claude Code {version}._\n"
+        # The review object first: if it fails no summary is posted, so a re-run attempt reviews afresh
+        # instead of finding a summary and only refreshing its gate table.
+        post_review_object(repo, pr, head, env["RUN_URL"], findings, problems)
         with tempfile.NamedTemporaryFile("w", suffix=".md", dir=env.get("RUNNER_TEMP"), delete=False) as fh:
             fh.write(summary + ("\n\n" + section if section else "") + footer)
         try:
