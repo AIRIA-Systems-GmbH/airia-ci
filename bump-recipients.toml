@@ -1,0 +1,83 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Who the framework bump job (#94) moves, and what it must leave alone. Read
+# from each default branch's root pyproject.toml on 2026-10-28.
+#
+# This is its own list, not `scripts/consumers.py`: that finds callers of
+# airia-ci, and ParlAIment is not one while agile42-TCC has no airia-* package.
+# tests/test_bump_plan.py fails when a repository the scan finds is neither
+# [[recipient]] nor [[excluded]] here.
+#
+# packages   the framework packages the recipient already declares (extras kept
+#            by the recipient, not listed). The job moves only these.
+# not_moved  an airia-* name the recipient declares but the job never touches,
+#            with why (a path, workspace or find-links source; a decision).
+# holds      an upper bound the job respects on top of the recipient's own
+#            specifier; the job never edits a ceiling.
+
+[[recipient]]
+repo = "AIRIA-Systems-GmbH/AIRIA-SiteBuilder"
+packages = ["airia-commons", "airia-auth", "airia-client"]
+[recipient.not_moved]
+airia-image-management = "workspace member, not a framework package"
+airia-website-management = "workspace member, not a framework package"
+
+[[recipient]]
+repo = "AIRIA-Systems-GmbH/AIRIA-process"
+note = "control held, DES-138"
+packages = ["airia-commons", "airia-control", "airia-auth", "airia-client"]
+[recipient.holds]
+airia-control = { ceiling = "<0.8.0", why = "held until the daemon moves (DES-138)" }
+
+[[recipient]]
+repo = "AIRIA-Systems-GmbH/AIRIA-DevTools"
+packages = [
+  "airia-auth", "airia-client", "airia-commons", "airia-control", "airia-data", "airia-events",
+  "airia-persistence", "airia-plugins", "airia-query", "airia-release", "airia-surrealdb-embedded",
+]
+[recipient.not_moved]
+airia-surrealdb = "not on the index: resolves from the vendored wheel in deps/ via find-links"
+
+[[recipient]]
+repo = "tumma72/Portfolio-Dashboard"
+packages = [
+  "airia-control", "airia-server", "airia-iam", "airia-auth", "airia-client", "airia-commons",
+  "airia-credentials", "airia-data", "airia-query", "airia-events", "airia-persistence",
+]
+
+[[recipient]]
+repo = "AIRIA-Systems-GmbH/ParlAIment"
+note = "not an airia-ci caller"
+packages = [
+  "airia-auth", "airia-commons", "airia-data", "airia-iam", "airia-persistence", "airia-query", "airia-server",
+]
+
+[[recipient]]
+repo = "tumma72/CryptoStudio"
+packages = [
+  "airia-control", "airia-server", "airia-iam", "airia-persistence", "airia-auth", "airia-commons",
+  "airia-client", "airia-events", "airia-release",
+]
+[recipient.not_moved]
+airia-data = "transitive-only by the recipient's decision 0107"
+
+[[recipient]]
+repo = "AIRIA-Systems-GmbH/CookieGusto"
+packages = [
+  "airia-server", "airia-persistence", "airia-control", "airia-iam", "airia-auth", "airia-credentials",
+  "airia-data", "airia-commons", "airia-client", "airia-events", "airia-query",
+]
+
+[[recipient]]
+repo = "tumma72/agile42-TCC"
+note = "a Django app with no airia-* dependency"
+packages = []
+
+[[excluded]]
+repo = "AIRIA-Systems-GmbH/AIRIA-framework"
+why = "publishes the packages and is the Issue target"
+
+[[excluded]]
+repo = "AIRIA-Systems-GmbH/Second-Memory-System"
+why = "has no root pyproject.toml"
