@@ -154,6 +154,23 @@ class Targets(unittest.TestCase):
         self.assertIn("airia-commons is declared but not in bump-recipients.toml", notes[0])
         self.assertIn("airia-data is listed in bump-recipients.toml but not declared", notes[1])
 
+    def held_count(self, rec, py, lk):
+        rows, notes = bump.plan(rec, py, lk, fake_index(INDEX))
+        return bump.render("o/r", rows, notes).splitlines()[-1]
+
+    def test_the_summary_counts_a_real_hold_once(self):
+        self.assertEqual(self.held_count(recipient(packages=["airia-control"]), pyproject("airia-control>=0.7.0,<0.8.0"),
+                                         lock(**{"airia-control": "0.7.0"})), "  1 to move, 1 held")
+
+    def test_a_not_moved_package_is_not_counted_as_held(self):
+        rec = recipient(packages=[], not_moved={"airia-data": "find-links"})
+        self.assertEqual(self.held_count(rec, pyproject("airia-data==0.8.1"), lock(**{"airia-data": "0.8.1"})),
+                         "  0 to move, 0 held")
+
+    def test_a_kept_package_is_not_counted_as_held(self):
+        self.assertEqual(self.held_count(recipient(packages=["airia-auth"]), pyproject("airia-auth>=0.9.0"),
+                                         lock(**{"airia-auth": "0.9.5"})), "  0 to move, 0 held")
+
     def test_nothing_to_bump_is_said_with_its_reason(self):
         self.assertEqual(bump.plan(recipient(), None, None), ([], ["no root pyproject.toml: nothing to bump"]))
         self.assertEqual(bump.plan(recipient(), pyproject("django>=5"), None),
@@ -173,6 +190,11 @@ class Index(unittest.TestCase):
     def test_a_release_with_one_yanked_file_and_one_live_file_is_live(self):
         got = self.releases(wheel("airia-auth", "0.9.0"), "airia_auth-0.9.0.tar.gz", yanked=("airia_auth-0.9.0.tar.gz",))
         self.assertEqual(got, ["0.9.0"])
+
+    def test_an_empty_yanked_anchor_does_not_lend_its_flag_to_later_text(self):
+        parser = bump.Anchors()
+        parser.feed('<a href="/x" data-yanked="gone"></a>stray text<a href="/f">' + wheel("airia-auth", "0.9.0") + "</a>")
+        self.assertEqual(parser.files, [(wheel("airia-auth", "0.9.0"), False)])
 
     def test_files_of_another_package_do_not_count(self):
         with self.assertRaisesRegex(bump.PlanError, "no released, unyanked version of airia-auth"):

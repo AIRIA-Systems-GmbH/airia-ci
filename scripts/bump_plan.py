@@ -54,6 +54,7 @@ class Row(NamedTuple):
     target: str
     state: str  # bump | current | kept | not-moved
     why: str
+    held: bool = False  # a ceiling (the recipient's or its hold) keeps the target under the newest release
 
 
 def norm(name: str) -> str:
@@ -82,6 +83,10 @@ class Anchors(HTMLParser):
         if self._yanked is not None and data.strip():
             self.files.append((data.strip(), self._yanked))
             self._yanked = None
+
+    def handle_endtag(self, tag):
+        if tag == "a":
+            self._yanked = None  # an anchor with no text must not lend its flag to later text
 
 
 def fetch(url: str) -> str:
@@ -180,17 +185,17 @@ def plan(recipient: dict, pyproject_text: str | None, lock_text: str | None,
         bounds = ceilings(wanted[name], holds.get(name))
         inside = [v for v in every if allowed(v, bounds)]
         target = inside[-1] if inside else current
-        why = ""
+        why, held = "", False
         if inside and inside[-1] != every[-1]:
-            held = ",".join(f"{op}{v}" for op, v in bounds)
-            why = f"held at {held}: newest is {every[-1]}"
+            held = True
+            why = f"held at {','.join(f'{op}{v}' for op, v in bounds)}: newest is {every[-1]}"
         if key(target) < key(current):
             rows.append(Row(name, current, current, "kept",
                             f"the index offers {target} under the locked {current}; never lowered"))
         elif key(target) == key(current):
-            rows.append(Row(name, current, target, "current", why))
+            rows.append(Row(name, current, target, "current", why, held))
         else:
-            rows.append(Row(name, current, target, "bump", why))
+            rows.append(Row(name, current, target, "bump", why, held))
     return rows, notes
 
 
@@ -198,7 +203,7 @@ def render(repo: str, rows: list[Row], notes: list[str]) -> str:
     out = [repo, *[f"  note: {n}" for n in notes]]
     out += [f"  {r.package}\t{r.current}\t{r.target}\t{r.state}\t{r.why}".rstrip("\t") for r in rows]
     moves = sum(r.state == "bump" for r in rows)
-    out.append(f"  {moves} to move, {sum(bool(r.why) for r in rows)} held")
+    out.append(f"  {moves} to move, {sum(r.held for r in rows)} held")
     return "\n".join(out)
 
 
