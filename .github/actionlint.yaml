@@ -7,8 +7,13 @@ self-hosted-runner:
 
 # job.workflow_ref / job.workflow_sha name the reusable workflow a job runs
 # from (GitHub's contexts reference, "job context"); actionlint 1.7.12 does not
-# know them yet. Only those two properties, only in the two shared workflows.
+# know them yet. Only those two properties, only in the shared workflows that
+# read them (the two Claude ones, and the bump plan, which checks out airia-ci
+# at the commit it was called at).
 paths:
   .github/workflows/**/reusable-claude-*.yml:
+    ignore:
+      - 'property "workflow_(ref|sha)" is not defined in object type'
+  .github/workflows/**/reusable-bump-consumers.yml:
     ignore:
       - 'property "workflow_(ref|sha)" is not defined in object type'
