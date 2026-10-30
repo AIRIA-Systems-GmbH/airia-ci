@@ -40,8 +40,13 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import quote, unquote
+
+# The usage-limit classifier is shared with the responder; a consumer's `uses: .../review-post@main` downloads the
+# whole repository, so the sibling action's directory is beside this one.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-limit"))
+from claude_limit import failure_texts, hit_limit, last_result, reset_time, zero_usage_turns  # noqa: E402
 
 FOOTER_START = "_Automatic review by `claude-code-review.yml`"
 SEVERITIES = ("blocker", "major", "minor", "nit")
@@ -53,15 +58,7 @@ MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) file=(\S+) -->")
 # the diff"); any other 422 (a stale commit_id, a rejected body) is a real failure.
 NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", re.IGNORECASE)
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
-# A usage or rate limit as Claude Code reports it ("Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙
-# resets 3pm", "You've hit your limit · resets 7pm (Europe/Berlin)", an assistant message's `error: rate_limit`).
-# "limit reached" counts only qualified (a context or budget limit is another failure) or in the epoch form.
-LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached\|\d{9,11}\b"
-                   r"|hit your limit|\blimit (?:will )?resets?\b", re.IGNORECASE)
-EPOCH = re.compile(r"limit reached\|(\d{9,11})\b", re.IGNORECASE)
-# Only a short run of time-like characters after "resets"/"reset at" is ever printed, never the text around it.
-RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+(\w[\w :+/()-]{0,40})", re.IGNORECASE)
-RETRY = "re-run this job after the reset or comment `@claude please review`."
+RETRY ="re-run this job after the reset or comment `@claude please review`."
 
 
 class ReviewError(Exception):
@@ -70,10 +67,6 @@ class ReviewError(Exception):
     def __init__(self, message: str, title: str = "No review posted"):
         super().__init__(message)
         self.title = title
-
-
-def last_result(msgs: list) -> dict:
-    return next((m for m in reversed(msgs) if m.get("type") == "result"), {})
 
 
 def load_message(path: str) -> tuple[str, list[str], list]:
@@ -96,43 +89,15 @@ def load_message(path: str) -> tuple[str, list[str], list]:
     return text, lines, msgs
 
 
-def failure_texts(msgs: list) -> list[str]:
-    """The result and error texts of a run: what a limit is recognised by. Never printed."""
-    result = last_result(msgs)
-    texts = [result.get("result"), result.get("error"), *(result.get("errors") or [])]
-    for m in msgs:
-        # An API error reaches the transcript as an assistant message flagged `error`; its text is the error's.
-        if m.get("type") == "assistant" and m.get("error"):
-            content = (m.get("message") or {}).get("content") or []
-            texts += [m["error"], *(b.get("text") for b in content if isinstance(b, dict))]
-    return [t for t in texts if isinstance(t, str)]
-
-
-def reset_time(texts: list[str]) -> str | None:
-    """When the limit resets, if the text says so: an epoch as UTC, or the time phrase after "resets"."""
-    for t in texts:
-        if m := EPOCH.search(t):
-            return datetime.fromtimestamp(int(m.group(1)), UTC).strftime("%Y-%m-%d %H:%M UTC")
-        for m in RESETS.finditer(t):
-            when = m.group(1).strip()
-            if any(c.isdigit() for c in when):
-                return when
-    return None
-
-
 def no_review_error(msgs: list, pr: str) -> ReviewError:
     """Why there is no review: a usage limit, its zero-usage signature, or the generic failure (airia-ci#103)."""
     unreviewed = f"Claude wrote no review for PR #{pr}, so treat it as UNREVIEWED"
-    texts = failure_texts(msgs)
-    if any(LIMIT.search(t) for t in texts):
-        when = reset_time(texts)
+    if hit_limit(msgs):
+        when = reset_time(failure_texts(msgs))
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
         return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY}",
                            title="Claude usage limit")
-    result = last_result(msgs)
-    turns = result.get("num_turns")
-    if (result.get("is_error") and not result.get("modelUsage") and result.get("total_cost_usd") == 0
-            and isinstance(turns, int) and turns <= 1):
+    if (turns := zero_usage_turns(msgs)) is not None:
         return ReviewError(f"{unreviewed}: the run errored after {turns} turn{'s' if turns != 1 else ''} with no model usage and no cost, "
                            "which is the signature of a usage limit or an auth failure (the log does not say which); "
                            f"if it is the limit, {RETRY}", title="Likely Claude usage limit or auth failure")

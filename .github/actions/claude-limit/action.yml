@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: Say why Claude failed
+description: >-
+  After a failed Claude run, name a usage limit as the cause: an error annotation
+  titled `Claude usage limit` with the reset time and a retry hint. It never fails
+  the job itself and never prints the model's text. A generic failure prints nothing.
+
+# Why: a usage limit made the @claude responder fail with the action's own opaque
+# error (airia-ci#103). The classifier is claude_limit.py beside this file, which
+# the automatic review (review-post) uses too.
+
+inputs:
+  execution-file:
+    description: The claude-code-action's execution_file output.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Classify the failure
+      shell: bash
+      env:
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+      run: python3 "$GITHUB_ACTION_PATH/claude_limit.py"

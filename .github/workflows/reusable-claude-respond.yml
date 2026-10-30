@@ -366,3 +366,10 @@ jobs:
             actions: read
           settings: ${{ steps.settings.outputs.path }}
           claude_args: ${{ steps.prompt.outputs.args }}
+
+      # The job is already failing; this only says why when it was a usage limit.
+      - name: Say why Claude failed
+        if: failure() && steps.claude.outcome == 'failure'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
+        with:
+          execution-file: ${{ steps.claude.outputs.execution_file }}
