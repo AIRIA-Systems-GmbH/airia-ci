@@ -4,9 +4,10 @@
 
     python3 post_review.py        (configured by the environment, see main())
 
-Claude's final message is the review. It ends with a fenced `airia-findings`
-block holding the findings as JSON; the block is parsed here, never trusted to
-a model's formatting. A finding's text always reaches the PR (airia-ci#98): a
+Claude's final message is the review. It holds a fenced `airia-findings`
+block with the findings as JSON, expected last; the last such block is parsed
+here wherever it sits (text after it joins the summary, with a notice), never
+trusted to a model's formatting (airia-ci#109). A finding's text always reaches the PR (airia-ci#98): a
 `carried` that is not a boolean is coerced and the summary names the coercion;
 a finding failing any other field, an unparseable block or a missing block is
 quoted in the summary, which is posted, and then the job fails with the schema
@@ -167,9 +168,13 @@ def parse_findings(text: str) -> tuple[str, list[dict], list[str], list[tuple[st
     there is one. A message with no usable block is its own summary, and its problem has no recovered text.
     """
     blocks = list(BLOCK.finditer(text))
-    if not blocks or text[blocks[-1].end():].strip():
+    if not blocks:
         return defuse(text), [], [], [("the final message does not end with an `airia-findings` block", "")]
     last = blocks[-1]
+    if text[last.end():].strip():
+        # The block is read wherever it sits (airia-ci#109); the drift stays visible without failing a clean review.
+        print("::notice title=Findings block not last::the `airia-findings` block was not the last thing in the "
+              "final message; it was read where it sits and the text after it is part of the summary.")
     summary = defuse(text[:last.start()] + text[last.end():]).strip()
     try:
         findings = json.loads(last.group(1))["findings"]
