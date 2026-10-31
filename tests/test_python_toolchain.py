@@ -39,6 +39,7 @@ import sys
 import tarfile
 import textwrap
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from steps import FAKE_RUFF, ROOT, Runner
@@ -246,6 +247,11 @@ FAKE_UV = """\
 #!/bin/sh
 echo "$UV_TOOL_DIR|$UV_TOOL_BIN_DIR|$*" >> "$(dirname "$0")/uv-calls"
 case "$*" in *broken*) echo "no such version" >&2; exit 2;; esac
+# Like uv: an existing env without a Python is refused, not recreated (#111).
+for env in "$UV_TOOL_DIR"/*/; do
+  [ -d "$env" ] || continue
+  [ -f "${env}bin/python" ] || { echo "error: Invalid environment at $env: missing Python executable" >&2; exit 2; }
+done
 """
 
 
@@ -302,6 +308,44 @@ class Install(unittest.TestCase):
         pins = {**PINS, "tools": {**T, "ruff": "broken"}}
         with self.assertRaises(tc.Refused) as cm:
             self.install("ruff", pins)
+        self.assertIn("no such version", cm.exception.args[0])
+
+    def tool_env(self, tool: str, python: str | None) -> Path:
+        """envs/<tool> as an earlier job left it: bin/python a file, a dangling link, or absent."""
+        env = self.r.tmp / tc.TOOLS_DIR / "envs" / tool
+        (env / "bin").mkdir(parents=True)
+        (env / "marker").write_text("")
+        if python == "file":
+            (env / "bin/python").write_text("")
+        elif python == "dangling":
+            (env / "bin/python").symlink_to(self.r.tmp / "uv-python-removed/bin/python3")
+        return env
+
+    def test_an_env_whose_python_is_gone_is_rebuilt(self):
+        # A RUNNER_TEMP kept between jobs (org-orlando-1) failed every job that landed there.
+        for python in ("dangling", None):
+            with self.subTest(python=python):
+                self.setUp()
+                env = self.tool_env("reuse", python)
+                with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+                    self.assertEqual(self.install("reuse"), ["reuse 99.1 (locked)"])
+                self.assertFalse(env.exists())
+                self.assertEqual(len(self.uv_calls()), 1)
+                self.assertIn(f"reuse: rebuilt the tool env {env}", out.getvalue())
+
+    def test_a_healthy_env_is_left_alone(self):
+        env = self.tool_env("reuse", "file")
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(self.install("reuse"), ["reuse 99.1 (locked)"])
+        self.assertTrue((env / "marker").exists())
+        self.assertEqual(out.getvalue(), "")
+
+    def test_a_failed_install_after_a_rebuild_is_still_refused_with_uvs_reason(self):
+        env = self.tool_env("ruff", None)
+        pins = {**PINS, "tools": {**T, "ruff": "broken"}}
+        with mock.patch("sys.stdout", new_callable=io.StringIO), self.assertRaises(tc.Refused) as cm:
+            self.install("ruff", pins)
+        self.assertFalse(env.exists())
         self.assertIn("no such version", cm.exception.args[0])
 
     def gitleaks_pins(self, digest: str | None) -> dict:
