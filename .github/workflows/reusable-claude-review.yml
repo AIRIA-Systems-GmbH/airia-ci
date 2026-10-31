@@ -141,7 +141,8 @@ name: Claude Code Review (shared)
 # lives in the App-token exchange), so a PR that edits this file IS reviewed.
 #
 # THE REVIEW'S SHAPE (airia-ci#73). Claude's final message ends with a fenced
-# `airia-findings` JSON block; the review-post action posts ONE summary issue
+# `airia-findings` JSON block (the parser tolerates a block that is not last,
+# airia-ci#109); the review-post action posts ONE summary issue
 # comment (the message above the block, the footer below it, a link to each
 # finding) plus ONE PR comment per finding: inline on its line, or file-level
 # when the line is not in the diff, each with a hidden marker naming the run,

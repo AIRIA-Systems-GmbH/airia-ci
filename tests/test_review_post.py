@@ -253,7 +253,7 @@ class TheStep(unittest.TestCase):
         (summary,) = summaries
         self.assertIn("Looks right.", summary)
         self.assertIn("::error title=Review posted with a malformed findings block::the review was posted, but its "
-                      "findings block broke the schema: the final message does not end with an `airia-findings` block",
+                      "findings block broke the schema: the final message contains no `airia-findings` block",
                       p.stdout)
         self.assertNotIn("No review posted", p.stdout, "it was posted: the title must not say otherwise")
 
@@ -264,6 +264,38 @@ class TheStep(unittest.TestCase):
         (summary,) = summaries
         self.assertIn("Review text.", summary)
         self.assertIn('{not json, "text": "the lost finding"', summary, "the raw block reaches the PR")
+        self.assertIn("is not JSON of the form", p.stdout)
+
+    def test_a_clean_block_in_the_middle_passes_with_its_trailing_text_and_a_notice(self):
+        # Portfolio-Dashboard PR #147: a clean review failed Claude Review because the block was not last.
+        mid = message([], summary="## Review\n\nNothing to fix.") + "\n\nSummary table follows: all gates green."
+        p, summaries, comments = self.post(execution(mid))
+        self.assertEqual((p.returncode, comments), (0, []), p.stdout)
+        (summary,) = summaries
+        self.assertIn("Nothing to fix.", summary)
+        self.assertIn("all gates green.", summary)
+        self.assertNotIn("airia-findings", summary)
+        self.assertIn("::notice title=Findings block not last::", p.stdout)
+        self.assertNotIn("::error", p.stdout)
+
+    def test_a_block_with_findings_in_the_middle_posts_every_finding(self):
+        both = [finding("F1", "src/a.py", 12), finding("F2", "src/b.py", 3, "minor", "Rename it.")]
+        p, summaries, comments = self.post(execution(message(both) + "\n\nClosing remarks."))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertEqual(len(comments), 2)
+        self.assertIn("Closing remarks.", summaries[0])
+        self.assertIn("::notice title=Findings block not last::", p.stdout)
+
+    def test_a_block_that_is_last_prints_no_notice(self):
+        p, _, _ = self.post(execution(message([])))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertNotIn("::notice", p.stdout)
+
+    def test_a_malformed_block_in_the_middle_still_fails(self):
+        bad = "Review.\n\n```airia-findings\n{not json\n```\n\nTrailing text."
+        p, summaries, comments = self.post(execution(bad))
+        self.assertEqual((p.returncode, comments), (1, []))
+        self.assertIn("Trailing text.", summaries[0])
         self.assertIn("is not JSON of the form", p.stdout)
 
     def test_a_carried_that_is_not_a_boolean_still_posts_the_finding_and_names_the_coercion(self):
@@ -533,12 +565,12 @@ class ParseFindings(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("Format:", summary)
 
-    def test_text_after_the_block_is_a_problem_and_the_whole_message_is_the_summary(self):
+    def test_text_after_the_block_joins_the_summary_and_the_finding_is_kept(self):
         full = message([finding(text="Kept.")]) + "\n\nAnd one more thing."
         summary, found, _, problems = pr_mod.parse_findings(full)
-        self.assertEqual((found, len(problems)), ([], 1))
-        self.assertIn("Kept.", summary)
+        self.assertEqual(([f["id"] for f in found], problems), (["F1"], []))
         self.assertIn("And one more thing.", summary)
+        self.assertNotIn("airia-findings", summary)
 
     def test_findings_that_are_not_a_list_or_not_objects_are_problems(self):
         for block in ("{\"findings\": {}}", "[]"):
