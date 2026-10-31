@@ -62,6 +62,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -79,6 +80,8 @@ STANDALONE = {"ruff": "ruff", "pyright": "pyright", "reuse": "reuse", "pip-audit
 # What `uv tool install` gets for a tool: pyright brings its own Node.js.
 SPEC = {"pyright": "pyright[nodejs]"}
 TOOLS_DIR = "airia-tools"
+# A tool env without a working interpreter here is stale: removed and installed fresh.
+ENV_PYTHON = "bin/python"
 TEMPLATE = HERE.parents[2] / "templates/python/pyproject.toml"
 BASELINE = ".airia/ruff-baseline.json"
 RULE = re.compile(r"\(([A-Z]+[0-9]+)\)")
@@ -303,6 +306,12 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
             done.append(f"{tool} {lock[tool]} (locked, from the project environment)")
             continue
         v, why = (lock[tool], "locked") if tool in lock else (pins["tools"][tool], "pinned")
+        # A RUNNER_TEMP kept between jobs can hold an env whose Python is gone, which uv refuses (#111).
+        # uv names the env after the package, extras dropped: `pyright[nodejs]` lives in envs/pyright.
+        env_dir = base / "envs" / tool
+        if env_dir.is_dir() and not (env_dir / ENV_PYTHON).is_file():
+            shutil.rmtree(env_dir)
+            print(f"{tool}: rebuilt the tool env {env_dir}: its {ENV_PYTHON} is missing or dangling")
         p = subprocess.run(["uv", "tool", "install", "--quiet", f"{SPEC.get(tool, tool)}=={v}"],
                            env={**env, "UV_TOOL_DIR": str(base / "envs"), "UV_TOOL_BIN_DIR": str(bin_dir)},
                            capture_output=True, text=True, check=False)
