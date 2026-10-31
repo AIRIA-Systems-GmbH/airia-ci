@@ -22,8 +22,11 @@ from datetime import UTC, datetime
 LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached\|\d{9,11}\b"
                    r"|hit your limit|\blimit (?:will )?resets?\b", re.IGNORECASE)
 EPOCH = re.compile(r"limit reached\|(\d{9,11})\b", re.IGNORECASE)
-# Only a short run of time-like characters after "resets"/"reset at" is ever printed, never the text around it.
-RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+(\w[\w :+/()-]{0,40})", re.IGNORECASE)
+# Only a time after "resets"/"reset at" is ever printed, never the text around it (#113): an optional ISO date, then
+# "15:00" or "3pm", then an optional "UTC"/"GMT" or "(Europe/Berlin)". Anything else after "resets" is no reset time.
+RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+((?:\d{4}-\d{2}-\d{2}[ T])?"
+                    r"(?:\d{1,2}(?::\d{2}){1,2}(?:\s?[ap]m)?|\d{1,2}\s?[ap]m)\b"
+                    r"(?:\s?(?:UTC|GMT)\b|\s?\([A-Za-z_]+(?:/[A-Za-z_+-]+)*\))?)", re.IGNORECASE)
 RETRY = "comment `@claude` again after the limit resets."
 
 
@@ -48,10 +51,8 @@ def reset_time(texts: list[str]) -> str | None:
     for t in texts:
         if m := EPOCH.search(t):
             return datetime.fromtimestamp(int(m.group(1)), UTC).strftime("%Y-%m-%d %H:%M UTC")
-        for m in RESETS.finditer(t):
-            when = m.group(1).strip()
-            if any(c.isdigit() for c in when):
-                return when
+        if m := RESETS.search(t):
+            return m.group(1)
     return None
 
 

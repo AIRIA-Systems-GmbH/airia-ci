@@ -48,6 +48,27 @@ class SayWhyClaudeFailed(unittest.TestCase):
         self.assertNotIn(SECRET, out, "stdout is the job log: only the reset time leaves the file")
         self.assertNotIn("hit your limit", out)
 
+    def test_the_text_after_the_reset_time_never_reaches_the_job_log(self):
+        # airia-ci#113: the job log is public to the repo's readers; only the reset time may leave the execution file.
+        out = self.say(execution("You've hit your limit · resets 7pm (Europe/Berlin) and the account id 4711 is shown"))
+        self.assertIn("the limit resets 7pm (Europe/Berlin); " + RETRY, out,
+                      "the annotation names the reset time and nothing after it")
+        self.assertNotIn("account", out, "the text after the reset time leaked into the public job log")
+        self.assertNotIn("4711", out, "the text after the reset time leaked into the public job log")
+
+    def test_a_plain_reset_time_followed_by_prose_prints_only_the_time(self):
+        # airia-ci#113: "resets 3pm" stays "3pm" however the sentence goes on.
+        out = self.say(execution("5-hour limit reached ∙ resets 3pm and then more words"))
+        self.assertIn("the limit resets 3pm; " + RETRY, out, "only the reset time leaves the execution file")
+        self.assertNotIn("more words", out, "the text after the reset time leaked into the public job log")
+
+    def test_a_resets_phrase_that_is_not_a_time_is_no_reset_time(self):
+        # airia-ci#113: a digit after "resets" does not make the phrase a time; printing it would leak the text.
+        out = self.say(execution("5-hour limit reached. The daemon resets 2 workers in repo owner/private-thing then stops"))
+        self.assertIn("the text gives no reset time; " + RETRY, out, "a phrase not shaped like a time is not a reset time")
+        self.assertNotIn("workers", out, "the text after 'resets' leaked into the public job log")
+        self.assertNotIn("private-thing", out, "a private repository name leaked into the public job log")
+
     def test_the_cli_epoch_form_is_a_reset_time_in_utc(self):
         out = self.say(execution("Claude AI usage limit reached|1761674400"))
         self.assertIn("the limit resets 2025-10-28 18:00 UTC; " + RETRY, out)
