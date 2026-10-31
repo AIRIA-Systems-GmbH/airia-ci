@@ -58,7 +58,7 @@ MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) file=(\S+) -->")
 # the diff"); any other 422 (a stale commit_id, a rejected body) is a real failure.
 NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", re.IGNORECASE)
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
-RETRY ="re-run this job after the reset or comment `@claude please review`."
+RETRY = "re-run this job after the reset or comment `@claude please review`."
 
 
 class ReviewError(Exception):
