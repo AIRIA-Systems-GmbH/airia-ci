@@ -253,7 +253,7 @@ class TheStep(unittest.TestCase):
         (summary,) = summaries
         self.assertIn("Looks right.", summary)
         self.assertIn("::error title=Review posted with a malformed findings block::the review was posted, but its "
-                      "findings block broke the schema: the final message does not end with an `airia-findings` block",
+                      "findings block broke the schema: the final message contains no `airia-findings` block",
                       p.stdout)
         self.assertNotIn("No review posted", p.stdout, "it was posted: the title must not say otherwise")
 

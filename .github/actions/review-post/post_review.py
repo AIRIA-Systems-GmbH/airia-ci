@@ -169,7 +169,7 @@ def parse_findings(text: str) -> tuple[str, list[dict], list[str], list[tuple[st
     """
     blocks = list(BLOCK.finditer(text))
     if not blocks:
-        return defuse(text), [], [], [("the final message does not end with an `airia-findings` block", "")]
+        return defuse(text), [], [], [("the final message contains no `airia-findings` block", "")]
     last = blocks[-1]
     if text[last.end():].strip():
         # The block is read wherever it sits (airia-ci#109); the drift stays visible without failing a clean review.
