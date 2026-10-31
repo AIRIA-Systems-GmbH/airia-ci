@@ -11,6 +11,7 @@ Run: python3 -m unittest discover -s tests
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import unittest
@@ -19,6 +20,9 @@ import yaml
 from steps import ROOT, Runner, step
 
 ACTION = ROOT / ".github/actions/claude-limit/action.yml"
+_spec = importlib.util.spec_from_file_location("claude_limit", ROOT / ".github/actions/claude-limit/claude_limit.py")
+claude_limit = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(claude_limit)
 RESPOND = ROOT / ".github/workflows/reusable-claude-respond.yml"
 RETRY = "comment `@claude` again after the limit resets."
 SECRET = "the model transcript must stay out of the log"
@@ -108,6 +112,44 @@ class SayWhyClaudeFailed(unittest.TestCase):
 
     def test_a_non_object_message_is_skipped(self):
         self.assertIn("title=Claude usage limit::", self.say(["junk", *execution("5-hour limit reached, resets 3pm")]))
+
+
+class TheResetTime(unittest.TestCase):
+    """airia-ci#113: what reset_time returns is printed into a public job log, in a one-line ::error annotation.
+
+    So it must be the reset time and nothing else (no prose, no repository name, no newline), and a real
+    reset time in any shape Claude prints must not be lost: losing it drops the one fact the reader needs.
+    """
+
+    CASES = (
+        # Real reset times: each must come back whole, and only it.
+        ("5-hour limit reached ∙ resets 3pm", "3pm"),
+        ("You've hit your limit · resets 7pm (Europe/Berlin)", "7pm (Europe/Berlin)"),
+        ("limit resets at 3:00 PM", "3:00 PM"),
+        ("limit resets 15:00 UTC", "15:00 UTC"),
+        ("limit resets on 2026-11-01 15:00", "2026-11-01 15:00"),
+        ("limit resets 2026-11-01T15:00:00Z", "2026-11-01T15:00:00Z"),
+        ("Opus weekly limit reached ∙ resets Oct 6, 1pm", "Oct 6, 1pm"),
+        ("weekly limit reached, resets Oct 6", "Oct 6"),
+        ("limit resets Monday 3pm", "Monday 3pm"),
+        ("limit resets in 2 hours", "in 2 hours"),
+        ("limit resets 3pm (America/New_York)", "3pm (America/New_York)"),
+        # A newline must never enter the one-line ::error annotation.
+        ("limit resets 3pm\n(Europe/Berlin)", "3pm"),
+        # A parenthesis that is not an IANA zone (a repository name) is not printed.
+        ("limit resets 3pm (owner/private-thing)", "3pm"),
+        ("limit resets 3pm (Owner/Private)", "3pm"),
+        # No time after "resets": nothing is printed rather than the text that follows.
+        ("limit resets soon", None),
+        ("the daemon resets 2 workers in repo owner/private-thing", None),
+        # A word that is not a weekday or month is not part of a reset time.
+        ("limit resets daemon 3pm", None),
+    )
+
+    def test_only_the_reset_time_is_returned_and_a_real_one_is_never_lost(self):
+        for text, expected in self.CASES:
+            with self.subTest(text=text):
+                self.assertEqual(claude_limit.reset_time([text]), expected)
 
 
 class WiredIntoTheResponder(unittest.TestCase):
