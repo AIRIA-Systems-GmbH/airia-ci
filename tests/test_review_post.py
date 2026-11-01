@@ -499,6 +499,14 @@ class AUsageLimit(unittest.TestCase):
         self.assertIn("the limit resets 7pm (Europe/Berlin); " + RETRY, out)
         self.assertNotIn("No review posted", out)
 
+    def test_the_text_after_the_reset_time_never_reaches_the_job_summary(self):
+        # airia-ci#113: the job log is public to the repo's readers; only the reset time may leave the execution file.
+        out = self.failed(errored("You've hit your limit · resets 7pm (Europe/Berlin) and the account id 4711 is shown"))
+        self.assertIn("the limit resets 7pm (Europe/Berlin); " + RETRY, out,
+                      "the failure message names the reset time and nothing after it")
+        self.assertNotIn("account", out, "the text after the reset time leaked into the public job log")
+        self.assertNotIn("4711", out, "the text after the reset time leaked into the public job log")
+
     def test_the_cli_epoch_form_is_a_reset_time_in_utc(self):
         out = self.failed(errored("Claude AI usage limit reached|1761674400"))
         self.assertIn("::error title=Claude usage limit::", out)

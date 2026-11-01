@@ -22,8 +22,18 @@ from datetime import UTC, datetime
 LIMIT = re.compile(r"\b(?:usage|rate|5-hour|five-hour|session|weekly)[ _-]limit|\blimit reached\|\d{9,11}\b"
                    r"|hit your limit|\blimit (?:will )?resets?\b", re.IGNORECASE)
 EPOCH = re.compile(r"limit reached\|(\d{9,11})\b", re.IGNORECASE)
-# Only a short run of time-like characters after "resets"/"reset at" is ever printed, never the text around it.
-RESETS = re.compile(r"\bresets?(?:\s+at|\s+on)?\s+(\w[\w :+/()-]{0,40})", re.IGNORECASE)
+# Only a time after "resets"/"reset at" is ever printed, never the text around it (#113): "3pm", "15:00:00Z",
+# "2026-11-01 15:00", "Oct 6, 1pm", "Monday 3pm" or "in 2 hours", then an optional " UTC" or an IANA zone in
+# parentheses ("(Europe/Berlin)"). Anything else after "resets" is no reset time, and no newline is ever taken.
+_TIME = r"(?:\d{1,2}(?::\d{2}){1,2}(?: ?(?i:[ap]m)\b|(?i:z)\b|\b)|\d{1,2} ?(?i:[ap]m)\b)"
+_MONTH = (r"(?i:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?"
+          r"|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?")
+_DAY = r"(?i:mon|tues?|wed(?:nes)?|thu(?:rs)?|fri|sat(?:ur)?|sun)(?i:day)?\.?"
+_ZONE = (r"(?: (?:UTC|GMT)\b| \((?:Africa|America|Antarctica|Asia|Atlantic|Australia|Europe|Indian|Pacific|Etc)"
+         r"(?:/[A-Z][A-Za-z_+-]*)+\))?")
+RESETS = re.compile(rf"(?i:\bresets?(?:\s+at|\s+on)?)\s+((?:\d{{4}}-\d{{2}}-\d{{2}}(?:[ T]{_TIME})?"
+                    rf"|{_MONTH} \d{{1,2}}\b(?:,? (?i:at )?{_TIME})?|(?:{_DAY},? (?i:at )?)?{_TIME}"
+                    rf"|(?i:in \d{{1,3}} (?:minutes?|hours?|days?))\b){_ZONE})")
 RETRY = "comment `@claude` again after the limit resets."
 
 
@@ -48,10 +58,8 @@ def reset_time(texts: list[str]) -> str | None:
     for t in texts:
         if m := EPOCH.search(t):
             return datetime.fromtimestamp(int(m.group(1)), UTC).strftime("%Y-%m-%d %H:%M UTC")
-        for m in RESETS.finditer(t):
-            when = m.group(1).strip()
-            if any(c.isdigit() for c in when):
-                return when
+        if m := RESETS.search(t):
+            return m.group(1)
     return None
 
 
