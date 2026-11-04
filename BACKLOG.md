@@ -1,6 +1,6 @@
 ---
 roadmap: Roadmap-airia-ci
-updated: 2026-11-02
+updated: 2026-11-04
 ---
 <!--
 SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
@@ -10,6 +10,10 @@ SPDX-License-Identifier: Apache-2.0
 # airia-ci backlog
 
 The order in which to do the work. Milestones are those of the Roadmap note `Roadmap-airia-ci`, kept in its order. Issues are GitHub issues on AIRIA-Systems-GmbH/airia-ci. Each Issue sits above the milestone it blocks. An Issue that breaks something already released goes at the very top.
+
+2026-11-04 (cut from `main` at 47b59ce): merged since 1b87652: only #118 (47b59ce, 2026-11-04 08:22 UTC), dependabot's action bump in `.github/actions/python-toolchain/action.yml` and `.github/workflows/conformance.yml`, merged by a maintainer under the standing dependabot rule. It is not an Issue. This branch carries #117's 2026-11-03 paragraph below, and #117 and #119 were closed in favour of this PR. The same 8 Issues are open, none updated since 2026-11-01, none closed since then. The order is unchanged and no item was added or dropped.
+
+2026-11-03 (cut from `main` at 1b87652): merged since 4af2796: only #116 (1b87652), last night's backlog triage. Nothing else moved. The same 8 Issues are open, none has been updated since 2026-11-01, no Issue was closed since #111 and #113 on 2026-11-01, and there are no open PRs. The order is unchanged and no item was added or dropped. #116's body said "closed" directly before #113's number. That did no harm, because #114 had already closed #113, but it broke the rule in the 2026-10-30 paragraph, and this PR's body does not repeat it.
 
 2026-11-02 (cut from `main` at 4af2796): merged since c7ecda8: #114 (4af2796), last night's PR, which fixed and closed #113. #111 was closed by a maintainer on 2026-11-01 at 14:15 UTC on the evidence after #112 (two passing orlando-org-1 runs; reopen with the job link if it returns), so it leaves the backlog. #115 is new (filed 2026-10-31 by the framework night, `runner`, `from:AIRIA-framework`): Thor lane timeouts on AIRIA-framework PR #1067. A read-only API analysis on the Issue (2026-11-01) concludes "undetermined" and implicates no code in this repository; see item 2. No open PRs; no other open Issue changed since 2026-11-01.
 
@@ -41,7 +45,7 @@ Andrea's order (2026-10-21) of the open Issues: #54 (closed 2026-10-23), #37, #5
 
 ## Pick
 
-2026-11-02: none. Every open Issue waits on someone outside tonight's run: Andrea, the operator, another repository, or a Requirement still being elicited. Last night's pick, #113, merged as #114.
+2026-11-04: none, for the same reasons as 2026-11-02 (below): no open Issue has changed since 2026-11-01. Every open Issue waits on someone outside tonight's run: Andrea, the operator, another repository, or a Requirement still being elicited. The last fix a night picked was #113, which merged as #114.
 
 Passed over, from the top:
 - #103: what is left is (a), the reviewer credential, a call-contract change and Andrea's.
