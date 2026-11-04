@@ -42,7 +42,9 @@ name: Claude (shared @claude responder)
 # first step is, before any checkout: it asks the collaborator-permission API
 # for `github.actor` and stops unless the answer is `write` or `admin` —
 # claude-code-action's own rule, which it applies only after the checkout and
-# toolchain steps have already run on the Thor production host.
+# toolchain steps have already run on the Thor production host. On a pull
+# request it answers only one whose head branch is in this repository: the
+# step after that check stops a branch from another repository.
 #
 # WHAT IT MAY RUN. The `respond` profile of the shared policy in the
 # claude-settings action: the review's Bash allowlist, plus Write/Edit and
@@ -199,6 +201,25 @@ jobs:
           case "${permission}" in
             write|admin) echo "${ACTOR} has ${permission} access to ${GITHUB_REPOSITORY}" ;;
             *) echo "::error title=Not permitted::${ACTOR} has ${permission:-no readable} access to ${GITHUB_REPOSITORY}; @claude runs only for write or admin."
+               exit 1 ;;
+          esac
+
+      # Pull requests only: a plain Issue has no branch and is answered as before.
+      - name: Require a branch in this repository
+        if: github.event.issue.pull_request || github.event.pull_request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          if ! cross="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json isCrossRepository --jq .isCrossRepository)"; then
+            echo "::error title=Not answered::Could not look up where the branch of pull request #${PR} lives, so @claude does not answer it."
+            exit 1
+          fi
+          case "${cross}" in
+            false) echo "pull request #${PR} has its branch in ${GITHUB_REPOSITORY}" ;;
+            true) echo "::error title=Not answered::@claude answers only pull requests whose branch is in this repository; push the branch here to use it."
+                  exit 1 ;;
+            *) echo "::error title=Not answered::Could not tell where the branch of pull request #${PR} lives (got '${cross}'), so @claude does not answer it."
                exit 1 ;;
           esac
 
