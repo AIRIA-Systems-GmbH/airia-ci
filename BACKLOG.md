@@ -45,7 +45,7 @@ Andrea's order (2026-10-21) of the open Issues: #54 (closed 2026-10-23), #37, #5
 
 ## Pick
 
-2026-11-04: none, for the same reasons as 2026-11-02 (below): no open Issue has changed since 2026-11-01. Every open Issue waits on someone outside tonight's run: Andrea, the operator, another repository, or a Requirement still being elicited. The last fix a night picked was #113, which merged as #114.
+2026-11-04: none: no open Issue has changed since 2026-11-01. Every open Issue waits on someone outside tonight's run: Andrea, the operator, another repository, or a Requirement still being elicited. The last fix a night picked was #113, which merged as #114.
 
 Passed over, from the top:
 - #103: what is left is (a), the reviewer credential, a call-contract change and Andrea's.
