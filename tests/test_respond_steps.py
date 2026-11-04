@@ -14,7 +14,7 @@ import subprocess
 import sys
 import unittest
 
-from steps import ROOT, Runner, bare, heredoc
+from steps import ROOT, Runner, bare, heredoc, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-respond.yml"
 
@@ -43,6 +43,38 @@ class RequireWriteAccess(unittest.TestCase):
         p = self.check({"stderr": "HTTP 404\n", "exit": 1})
         self.assertEqual(p.returncode, 1)
         self.assertIn("alice has no readable access", p.stdout)
+
+
+class RequireSameRepositoryBranch(unittest.TestCase):
+    STEP = "Require a branch in this repository"
+
+    def check(self, reply):
+        r = Runner(self, [[r"^pr view 9 --repo o/r --json isCrossRepository", reply]])
+        return r.run(WORKFLOW, self.STEP, PR="9")
+
+    def test_a_branch_in_this_repository_is_answered(self):
+        p = self.check({"json": {"isCrossRepository": False}})
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("pull request #9 has its branch in o/r", p.stdout)
+
+    def test_a_branch_in_another_repository_is_not(self):
+        p = self.check({"json": {"isCrossRepository": True}})
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Not answered::@claude answers only pull requests whose branch is in this repository;"
+                      " push the branch here to use it.", p.stdout)
+
+    def test_a_failed_lookup_fails_closed(self):
+        p = self.check({"stderr": "HTTP 502\n", "exit": 1})
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Could not look up where the branch of pull request #9 lives", p.stdout)
+
+    def test_an_unreadable_answer_fails_closed(self):
+        p = self.check({"json": {"isCrossRepository": None}})
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("Could not tell where the branch", p.stdout)
+
+    def test_the_step_is_skipped_for_an_issue(self):
+        self.assertEqual(step(WORKFLOW, self.STEP)["if"],"github.event.issue.pull_request || github.event.pull_request")
 
 
 class RequireTheCredential(unittest.TestCase):
