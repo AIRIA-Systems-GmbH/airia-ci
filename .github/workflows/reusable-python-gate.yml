@@ -69,7 +69,8 @@ name: AIRIA Python gate (shared)
 # and must not leak a secret), and so does every extra job. A rename counts
 # both its old and its new path, an empty diff counts as code, and any event
 # but a pull request (a push to the default branch) runs everything. Some paths
-# are never docs, whatever the patterns say: `.airia/` (suites read it),
+# are never docs, whatever the patterns say: `.airia/` (suites read it; with
+# `memory-is-docs`, `.airia/memory/**` may be docs),
 # `.github/`, any `tests/` or `test/` directory, Python sources, and the files
 # that configure the tools or the build (any `*.toml`, `uv.lock`,
 # `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`,
@@ -169,6 +170,14 @@ on:
         required: false
         type: string
         default: ""
+      memory-is-docs:
+        description: >-
+          true lets `docs-paths` count `.airia/memory/**` as docs, for a repository
+          whose suites do not read it; the rest of `.airia/` stays code. false (the
+          default): all of `.airia/` is never docs.
+        required: false
+        type: boolean
+        default: false
       extra-allow:
         description: The review's extra permission-allow rules (see reusable-claude-review.yml).
         required: false
@@ -210,6 +219,7 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           DOCS_PATHS: ${{ inputs.docs-paths }}
+          MEMORY_IS_DOCS: ${{ inputs.memory-is-docs }}
         run: |
           code=true
           read -ra patterns <<< "$(tr '\n' ' ' <<< "$DOCS_PATHS")"
@@ -225,11 +235,19 @@ jobs:
               excluded+=(":(glob,exclude)$p")
             done
             not_docs="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- . "${excluded[@]}")"
-            # Never docs, whatever docs-paths says.
-            always_code=(.airia .github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/*.toml' '**/uv.lock'
+            # Never docs, whatever docs-paths says. `.airia/` is read by suites, so it
+            # is code, except `.airia/memory/` where the caller opts in (#124). The
+            # exclude is a pathspec of its own diff: in one diff it would also lift
+            # the patterns below (a `.py` or `.toml` under memory stays code).
+            airia=(':(glob).airia')
+            if [ "$MEMORY_IS_DOCS" = true ]; then
+              airia+=(':(glob,exclude).airia/memory/**')
+            fi
+            always_code=(.github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/*.toml' '**/uv.lock'
               '**/.python-version' '**/setup.cfg' '**/*.ini' '**/.importlinter' '**/.coveragerc'
               '**/requirements*.txt' '**/Dockerfile*')
-            never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
+            never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${airia[@]}"
+                     git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
             if [ -z "$changed" ]; then
               echo "Every gate runs: the pull request changes no file."
             elif [ -n "$not_docs$never" ]; then

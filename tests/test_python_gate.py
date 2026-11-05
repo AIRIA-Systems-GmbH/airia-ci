@@ -62,12 +62,13 @@ class Shape(unittest.TestCase):
             self.assertNotRegex(name, r"skip|disable|no-|allow-fail|continue")
         self.assertEqual(set(INPUTS), {
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
-            "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
-            "extra-prompt"})
+            "qdrant-image", "job-env", "runner", "durations", "docs-paths", "memory-is-docs", "extra-allow",
+            "extra-deny", "extra-prompt"})
 
     def test_the_new_inputs_change_nothing_by_default(self):
         # Every existing caller keeps today's behaviour: no fast path, the 25 slowest tests listed.
         self.assertEqual(INPUTS["docs-paths"]["default"], "")
+        self.assertIs(INPUTS["memory-is-docs"]["default"], False)
         self.assertEqual(INPUTS["durations"]["default"], 25)
 
     def test_the_defaults_are_the_standard(self):
@@ -323,8 +324,9 @@ class Changes(unittest.TestCase):
         git(self.repo, "checkout", "-q", "main")
         git(self.repo, "merge", "-q", "--no-ff", "-m", "merge", "pr")
 
-    def code(self, docs: str | None = None, event: str = "pull_request"):
-        p = self.r.run(WORKFLOW, self.STEP, cwd=self.repo, EVENT=event, DOCS_PATHS=self.DOCS if docs is None else docs)
+    def code(self, docs: str | None = None, event: str = "pull_request", memory: str = "false"):
+        p = self.r.run(WORKFLOW, self.STEP, cwd=self.repo, EVENT=event, DOCS_PATHS=self.DOCS if docs is None else docs,
+                       MEMORY_IS_DOCS=memory)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         return self.r.outputs()["code"], p.stdout
 
@@ -386,6 +388,35 @@ class Changes(unittest.TestCase):
                 code, out = self.code(docs="**")
                 self.assertEqual(code, "true")
                 self.assertIn(f"  {path}", out)
+
+    def test_memory_notes_are_code_unless_the_caller_opts_in(self):
+        # #124: by default all of `.airia/` is code, even when docs-paths names it.
+        self.pr({".airia/memory/note.md": "m", "docs/guide.md": "g2"})
+        code, out = self.code(docs="docs/** .airia/memory/**")
+        self.assertEqual(code, "true")
+        self.assertIn("  .airia/memory/note.md", out)
+
+    def test_an_opted_in_memory_note_is_docs(self):
+        self.pr({".airia/memory/note.md": "m", ".airia/memory/sub/day.md": "d", "docs/guide.md": "g2"})
+        code, out = self.code(docs="docs/** .airia/memory/**", memory="true")
+        self.assertEqual(code, "false", out)
+
+    def test_opting_in_lifts_only_memory(self):
+        # The rest of `.airia/` stays code, and so does a tool file or source under memory.
+        for path in (".airia/notes.md", ".airia/memory/check.py", ".airia/memory/conf.toml"):
+            with self.subTest(path=path):
+                git(self.repo, "reset", "-q", "--hard", self.base)
+                git(self.repo, "branch", "-qD", "pr") if "pr" in git(self.repo, "branch") else None
+                self.pr({path: "changed"})
+                code, out = self.code(docs="**", memory="true")
+                self.assertEqual(code, "true")
+                self.assertIn(f"  {path}", out)
+
+    def test_opting_in_without_naming_memory_in_docs_paths_is_code(self):
+        self.pr({".airia/memory/note.md": "m"})
+        code, out = self.code(docs="docs/**", memory="true")
+        self.assertEqual(code, "true")
+        self.assertIn("  .airia/memory/note.md", out)
 
     def test_a_checkout_that_is_not_a_merge_commit_runs_everything(self):
         self.write({"docs/guide.md": "g2"})

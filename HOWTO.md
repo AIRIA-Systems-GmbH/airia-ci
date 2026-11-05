@@ -240,6 +240,7 @@ uvx zizmor@<pin> --offline .github
 | `runner` | GitHub's runners (`'["ubuntu-24.04"]'`) for a public repository or one outside AIRIA-Systems-GmbH | |
 | `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
 | `docs-paths` | the docs-only fast path, see below | some paths are never docs |
+| `memory-is-docs` | `true` lets `docs-paths` count `.airia/memory/**`, for a repository whose suites do not read it (default `false`) | the rest of `.airia/` stays code |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
 
 There is no `skip-*` input, and none will be added.
@@ -253,7 +254,7 @@ There is no `skip-*` input, and none will be added.
         **/*.md
 ```
 
-When every path a pull request changes matches one (for a rename, both the old and the new path), `ci / lint` and `ci / test` are skipped and `ci / gate` passes on the rest: `security`, which still checks the docs for REUSE information and secrets, and every extra job. In glob pathspecs `*` stops at `/`, so `*.md` is the top level only and `**/*.md` is every directory. Everything still runs on a push to the default branch, on any event but a pull request, and on a PR that changes no file. Some paths are never docs, whatever the patterns say: `.airia/` (suites read it), `.github/`, every `tests/` or `test/` directory, Python sources, and the files that configure the tools or the build (any `*.toml`, `uv.lock`, `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`, `requirements*.txt`, `Dockerfile*`). Name your documentation narrowly all the same: anything else a pattern matches, such as a fixture outside `tests/`, skips the tests. The required checks stay `ci / gate` and the review, so the ruleset does not change.
+When every path a pull request changes matches one (for a rename, both the old and the new path), `ci / lint` and `ci / test` are skipped and `ci / gate` passes on the rest: `security`, which still checks the docs for REUSE information and secrets, and every extra job. In glob pathspecs `*` stops at `/`, so `*.md` is the top level only and `**/*.md` is every directory. Everything still runs on a push to the default branch, on any event but a pull request, and on a PR that changes no file. Some paths are never docs, whatever the patterns say: `.airia/` (suites read it; with `memory-is-docs: true`, `.airia/memory/**` may be docs if a pattern names it), `.github/`, every `tests/` or `test/` directory, Python sources, and the files that configure the tools or the build (any `*.toml`, `uv.lock`, `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`, `requirements*.txt`, `Dockerfile*`). Name your documentation narrowly all the same: anything else a pattern matches, such as a fixture outside `tests/`, skips the tests. The required checks stay `ci / gate` and the review, so the ruleset does not change.
 
 An extra job of your own goes before the gate, and its result is handed in:
 
