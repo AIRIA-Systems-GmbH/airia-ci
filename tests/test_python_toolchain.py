@@ -537,8 +537,13 @@ class RuffFloor(unittest.TestCase):
 
     def test_the_baseline_is_never_docs_so_a_pr_that_raises_it_runs_lint(self):
         gate = (ROOT / ".github/workflows/reusable-python-gate.yml").read_text()
-        always_code = re.search(r"always_code=\((.*?)\)", gate, re.S).group(1).split()
-        self.assertIn(tc.BASELINE.split("/")[0], always_code)
+        airia = re.search(r"^\s*airia=\((.*)\)$", gate, re.M).group(1).split()
+        self.assertEqual(tc.BASELINE.split("/")[0], ".airia")
+        self.assertIn("':(glob).airia'", airia)
+        # memory-is-docs (#124) lifts only .airia/memory/, so the baseline stays code even when a caller opts in.
+        self.assertNotIn("':(glob,exclude).airia/memory/**'", airia, "the exclude is added only on opt-in, below")
+        self.assertIn("airia+=(':(glob,exclude).airia/memory/**')", gate)
+        self.assertFalse(tc.BASELINE.startswith(".airia/memory/"))
 
     def test_a_project_on_the_template_passes(self):
         # init.py writes the template's [tool.ruff] where a project has none, so no select means this.
