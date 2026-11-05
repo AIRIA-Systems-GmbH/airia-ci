@@ -79,11 +79,30 @@ runs:
         # written some pages before it failed, and the head_sha read appends.
         # A knob that is not a plain number takes its default: `three` would retry
         # forever, and `1s` would end the step in an arithmetic error.
+        # A listing that succeeds but holds no completed job is asked again too.
+        # The caller needs every gate, so at least one has finished: an empty answer
+        # is GitHub's, as twice on 2026-11-04, when a re-run collected the same gates.
+        # Each attempt logs what the API returned, so that a repeat can be told apart.
         list_jobs() {
-          local attempt=1 attempts="${CI_RESULTS_ATTEMPTS:-}" backoff="${CI_RESULTS_RETRY_SLEEP:-}"
+          local attempt=1 attempts="${CI_RESULTS_ATTEMPTS:-}" backoff="${CI_RESULTS_RETRY_SLEEP:-}" statuses
           case "$attempts" in ''|*[!0-9]*) attempts=3 ;; esac
           case "$backoff" in ''|*[!0-9]*) backoff=10 ;; esac
-          until gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all" \
+          while :; do
+            if list_once; then
+              statuses="$(cut -f2 "$OUT/jobs.tsv" | sort | uniq -c | awk '{printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2}')"
+              echo "CI results: attempt $attempt listed $(wc -l < "$OUT/jobs.tsv" | tr -d ' ') jobs (${statuses:-none}); $(wc -l < "$OUT/results.tsv" | tr -d ' ') completed results"
+              if [ -s "$OUT/results.tsv" ] || [ "$attempt" -ge "$attempts" ]; then
+                return 0
+              fi
+            elif [ "$attempt" -ge "$attempts" ] || ! grep -q 'HTTP 5[0-9][0-9]' "$OUT/jobs.err"; then
+              return 1
+            fi
+            sleep $((10#$backoff * attempt))
+            attempt=$((attempt + 1))
+          done
+        }
+        list_once() {
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all" \
                --jq '.jobs[]
                      # First, to choose the newest execution of each name below:
                      # --jq runs per page, so the choice cannot be made here.
@@ -104,13 +123,14 @@ runs:
                           | .name + (if .conclusion == "cancelled" then " (cancelled)" else "" end)]
                          | join("; "))]
                      | @tsv' > "$OUT/jobs.tsv" 2> "$OUT/jobs.err" \
-             && head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")"; do
-            if [ "$attempt" -ge "$attempts" ] || ! grep -q 'HTTP 5[0-9][0-9]' "$OUT/jobs.err"; then
-              return 1
-            fi
-            sleep $((10#$backoff * attempt))
-            attempt=$((attempt + 1))
-          done
+            && head_sha="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq .head_sha 2>> "$OUT/jobs.err")" \
+            || return 1
+          # Per name, the newest execution (attempt, then id) is the job's result,
+          # if it completed. Rows keep GitHub's order; the two leading fields go.
+          awk -F'\t' -v OFS='\t' '
+            NR == FNR { if (!($4 in a) || $1 > a[$4] || ($1 == a[$4] && $3 > id[$4])) { a[$4] = $1; id[$4] = $3 } ; next }
+            $3 == id[$4] && $2 == "completed" { $1 = $2 = ""; sub(/^\t\t/, ""); print }
+          ' "$OUT/jobs.tsv" "$OUT/jobs.tsv" > "$OUT/results.tsv"
         }
         # This step is context for a Claude job, never a gate: if it fails, every
         # later step of the caller's job is skipped and the Claude run silently
@@ -125,19 +145,13 @@ runs:
             cat "$OUT/jobs.err"
             echo '```'
           } > "$index"
-          rm -f "$OUT/jobs.tsv" "$OUT/jobs.err"
+          rm -f "$OUT/jobs.tsv" "$OUT/jobs.err" "$OUT/results.tsv"
           echo "::warning title=CI results::the jobs of run $RUN_ID could not be listed"
           echo "collected=0" >> "$GITHUB_OUTPUT"
           cat "$index" >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
         rm -f "$OUT/jobs.err"
-        # Per name, the newest execution (attempt, then id) is the job's result,
-        # if it completed. Rows keep GitHub's order; the two leading fields go.
-        awk -F'\t' -v OFS='\t' '
-          NR == FNR { if (!($4 in a) || $1 > a[$4] || ($1 == a[$4] && $3 > id[$4])) { a[$4] = $1; id[$4] = $3 } ; next }
-          $3 == id[$4] && $2 == "completed" { $1 = $2 = ""; sub(/^\t\t/, ""); print }
-        ' "$OUT/jobs.tsv" "$OUT/jobs.tsv" > "$OUT/results.tsv"
         mv "$OUT/results.tsv" "$OUT/jobs.tsv"
         {
           echo "# CI results — run $run_url"

@@ -64,7 +64,7 @@ class Collect(unittest.TestCase):
         r.tool("sleep", FAKE_SLEEP)
         p = r.run(ACTION, STEP, RUN_ID="42", OUT=str(r.tmp / "ci"), **(env or {}))
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.r = r
+        self.r, self.p = r, p
         return r.outputs(), (r.tmp / "ci/jobs.md").read_text()
 
     def log(self, id_):
@@ -260,6 +260,52 @@ class CollectRetriesATransientServerError(Collect):
         out, md = self.collect(listing, {1: "ok\n"}, env={"CI_RESULTS_ATTEMPTS": "1"})
         self.assertIn("could not be listed", md)
         self.assertEqual(self.calls_to("actions/runs/42/jobs"), 1)
+
+
+class CollectRetriesAListingWithNoFinishedJob(Collect):
+    """Two consumer runs on 2026-11-04.
+
+    Both gates had succeeded, yet jobs.md had no row, and the review failed with
+    "no finished gate job". `gh run rerun --failed` collected the same gates. The
+    caller needs every gate, so a listing with no completed job is GitHub's.
+    """
+
+    REVIEW = {**job(9, "Claude Review / claude-review", None, [], run_attempt=1), "status": "in_progress"}
+    GATES = [job(1, "Pytest", "success", RAN), job(2, "Shell syntax", "success", RAN)]
+
+    def test_an_empty_listing_is_asked_again(self):
+        listing = {"json": {"jobs": [*self.GATES, self.REVIEW]}, "first": 1, "before": {"json": {"jobs": []}}}
+        out, md = self.collect(listing, {1: "ok\n", 2: "ok\n"})
+        self.assertEqual(out["collected"], "2")
+        self.assertIn("| Pytest | success |", md)
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 2)
+        self.assertEqual(self.sleeps(), ["10"])
+
+    def test_a_listing_of_only_the_calling_job_is_asked_again(self):
+        listing = {"json": {"jobs": [*self.GATES, self.REVIEW]}, "first": 2, "before": {"json": {"jobs": [self.REVIEW]}}}
+        out, md = self.collect(listing, {1: "ok\n", 2: "ok\n"})
+        self.assertEqual(out["collected"], "2")
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3, "the third attempt is still made")
+
+    def test_each_attempt_logs_what_the_api_returned(self):
+        # Before, the raw answer was not logged, so the two failures could not be diagnosed.
+        listing = {"json": {"jobs": [*self.GATES, self.REVIEW]}, "first": 1, "before": {"json": {"jobs": [self.REVIEW]}}}
+        self.collect(listing, {1: "ok\n", 2: "ok\n"})
+        self.assertIn("CI results: attempt 1 listed 1 jobs (1 in_progress); 0 completed results", self.p.stdout)
+        self.assertIn("CI results: attempt 2 listed 3 jobs (2 completed, 1 in_progress); 2 completed results", self.p.stdout)
+
+    def test_a_listing_that_stays_empty_is_bounded_and_collects_nothing(self):
+        out, md = self.collect([self.REVIEW], {})
+        self.assertEqual(out, {"collected": "0"}, "the caller's Require step then fails, naming the re-run")
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 3)
+        self.assertEqual(self.sleeps(), ["10", "20"])
+        self.assertNotIn("could not be listed", md, "the listing succeeded; it held no result")
+        self.assertIn("Commit: abc123.", md)
+
+    def test_a_listing_with_a_result_is_not_asked_again(self):
+        out, md = self.collect([*self.GATES, self.REVIEW], {1: "ok\n", 2: "ok\n"})
+        self.assertEqual(self.calls_to("actions/runs/42/jobs"), 1)
+        self.assertEqual(self.sleeps(), [])
 
 
 class CollectAPartialReRunInFlight(Collect):
