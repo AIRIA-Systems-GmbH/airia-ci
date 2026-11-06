@@ -3,8 +3,9 @@
 """The debt baseline of the shared Python gate: `.airia/debt-baseline.json`.
 
     debt.py [--file PATH] [--today YYYY-MM-DD] check
+    debt.py [--today YYYY-MM-DD] compare [--event NAME] BASE HEAD
 
-Design: design/gate-debt-ratchet.md (sections 2 to 4). The file is a dated,
+Design: design/gate-debt-ratchet.md (sections 1 to 4). The file is a dated,
 tighten-only exception to the standard; this module loads it and decides
 whether it may be relied on at all.
 
@@ -17,9 +18,20 @@ the baselined sections no longer apply and the standard does. Within 14 days of
 it, a `::warning` gives the days left. A `set` after the run date fails too, so
 the horizon cannot be pushed out by a future `set`. `--today` injects the run date for tests.
 
+`compare` holds the head's file to the base branch's copy (amendment A): it
+exits 1, one `::error` per cause, when the head raises a `types.pyright` rule
+count (a rule absent counts as 0), adds a test id to `tests.failing`, lowers
+`coverage.floor` (or adds one where the base has none: the base is then at the
+standard), or moves `expires` or `set` later. Dropping an id, a rule or a
+section, lowering a count, raising the floor and an earlier date all pass.
+Both files are validated with `load` first. BASE may be absent (no such file):
+on a pull request that is a first file, and its `set` must be within 1 day of
+the run date so a far-future `set` cannot buy extra days. On a push an absent
+base passes with a notice: the PR that added the file was held to that rule on
+its own run date, and `check` holds the horizon on every run.
+
 `dumps` is the writer's canonical serialisation (the replacement JSON of
-section 5); the writer itself, and the comparison with the base branch, are
-later slices.
+section 5); the writer itself is a later slice.
 
 Standard library only: it runs before any project environment exists.
 """
@@ -189,13 +201,71 @@ def check(path: Path, today: datetime.date) -> int:
     return 0
 
 
+def loosened(base: dict | None, head: dict, today: datetime.date, event: str) -> list[str]:
+    """Every way `head` is looser than `base`; `base` None is a first file."""
+    if base is None:
+        first = datetime.date.fromisoformat(head["set"])
+        if event == "push" or abs((first - today).days) <= 1:
+            return []
+        return [f"the base has no debt baseline, so this is a first file; its `set` ({first}) must be "
+                f"within 1 day of the run date ({today})"]
+    reasons = []
+    base_rules = base.get("types", {}).get("pyright", {})
+    for rule, n in sorted(head.get("types", {}).get("pyright", {}).items()):
+        if n > base_rules.get(rule, 0):
+            reasons.append(f"`types.pyright.{rule}` rose from {base_rules.get(rule, 0)} to {n}")
+    base_ids = set(base.get("tests", {}).get("failing", []))
+    for i in sorted(set(head.get("tests", {}).get("failing", [])) - base_ids):
+        reasons.append(f"`tests.failing` gained a test id the base does not have: {i}")
+    head_floor = head.get("coverage", {}).get("floor")
+    base_floor = base.get("coverage", {}).get("floor")
+    if head_floor is not None:
+        if base_floor is None:
+            reasons.append(f"`coverage.floor` ({head_floor}) is new; the base has none, so the standard applies there")
+        elif head_floor < base_floor:
+            reasons.append(f"`coverage.floor` fell from {base_floor} to {head_floor}")
+    for name in ("expires", "set"):
+        if head[name] > base[name]:
+            reasons.append(f"`{name}` moved later, from {base[name]} to {head[name]}")
+    return reasons
+
+
+def compare(base: Path, head: Path, today: datetime.date, event: str) -> int:
+    errors = []
+    loaded = {}
+    for role, path in (("head", head), ("base", base)):
+        if role == "base" and not path.is_file():
+            loaded[role] = None
+            continue
+        try:
+            loaded[role] = load(path)
+        except Invalid as e:
+            errors += [f"{role}: {reason}" for reason in e.args[0]]
+    if not errors:
+        if loaded["base"] is None and event == "push":
+            print(f"::notice title=Debt baseline::no base copy at {base} on a push: nothing to compare; "
+                  f"`check` holds the horizon")
+        errors = loosened(loaded["base"], loaded["head"], today, event)
+    for reason in errors:
+        print(f"::error title=Debt baseline only tightens::{reason}")
+    return 1 if errors else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--file", type=Path, default=Path(DEFAULT_FILE))
     ap.add_argument("--today", type=datetime.date.fromisoformat, help="the run date (UTC); default today")
-    ap.add_argument("command", choices=["check"])
+    sub = ap.add_subparsers(dest="command", required=True)
+    sub.add_parser("check")
+    cmp = sub.add_parser("compare", help="hold HEAD's baseline to BASE's copy")
+    cmp.add_argument("--event", default="pull_request",
+                     help="the GitHub event; only `push` lets an absent BASE pass without the first-file rule")
+    cmp.add_argument("base", type=Path, help="the base branch's copy; may be absent")
+    cmp.add_argument("head", type=Path)
     args = ap.parse_args(argv)
     today = args.today or datetime.datetime.now(datetime.UTC).date()
+    if args.command == "compare":
+        return compare(args.base, args.head, today, args.event)
     return check(args.file, today)
 
 
