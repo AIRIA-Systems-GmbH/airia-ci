@@ -63,7 +63,28 @@ class Shape(unittest.TestCase):
         self.assertEqual(set(INPUTS), {
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
-            "extra-prompt"})
+            "extra-prompt", "debt-ratchet"})
+
+    def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
+        """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
+        or a job would hold the standard while another held the baseline."""
+        self.assertEqual(INPUTS["debt-ratchet"]["type"], "boolean")
+        self.assertIs(INPUTS["debt-ratchet"]["default"], False)
+        for name in ("lint", "test", "security"):
+            with self.subTest(job=name):
+                toolchain = next(s for s in JOBS[name]["steps"] if "python-toolchain" in s.get("uses", ""))
+                self.assertEqual(toolchain["with"]["debt-ratchet"], "${{ inputs.debt-ratchet }}")
+
+    def test_the_pytest_floor_is_the_toolchains_with_the_input_as_the_fallback(self):
+        """Without the ratchet the toolchain output is empty and the step holds the input, as before."""
+        steps = JOBS["test"]["steps"]
+        toolchain = next(s for s in steps if "python-toolchain" in s.get("uses", ""))
+        pytest = next(s for s in steps if s.get("name") == "Pytest at the coverage floor")
+        self.assertEqual(pytest["env"]["FLOOR"],
+                         f"${{{{ steps.{toolchain['id']}.outputs.coverage-floor || inputs.coverage-floor }}}}")
+
+    def test_the_lint_checkout_has_the_base_commit_for_the_compare(self):
+        self.assertEqual(JOBS["lint"]["steps"][0]["with"]["fetch-depth"], 2)
 
     def test_the_new_inputs_change_nothing_by_default(self):
         # Every existing caller keeps today's behaviour: no fast path, the 25 slowest tests listed.

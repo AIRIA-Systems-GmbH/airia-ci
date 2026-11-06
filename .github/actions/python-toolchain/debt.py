@@ -30,6 +30,10 @@ the run date so a far-future `set` cannot buy extra days. On a push an absent
 base passes with a notice: the PR that added the file was held to that rule on
 its own run date, and `check` holds the horizon on every run.
 
+`coverage_floor` (called by toolchain.py's `standard`) turns the `coverage` section into the floor the test
+job's pytest step holds. Only that section and the dates are enforced so far; `types` and `tests` are
+validated and compared but not yet enforced (later slices).
+
 `dumps` is the writer's canonical serialisation (the replacement JSON of
 section 5); the writer itself is a later slice.
 
@@ -175,6 +179,24 @@ def dumps(baseline: dict) -> str:
     if "coverage" in baseline:
         out["coverage"] = dict(baseline["coverage"])
     return json.dumps(out, indent=2) + "\n"
+
+
+def coverage_floor(path: Path, requested: float, standard: float, today: datetime.date) -> float:
+    """The coverage floor pytest must hold with the ratchet on (design section 2, "Coverage").
+
+    `requested` is the caller's `coverage-floor` input, already refused if under `standard`. The baseline's
+    `coverage.floor` replaces the standard, so it is the only way under it: while the file is valid and in date
+    it is the floor. A caller that raised its input above the standard keeps the higher of the two. A file
+    with no `coverage` section, or one outside `set`..`expires`, leaves `requested` (past `expires` the
+    standard applies; `check` is what turns that red). Raises Invalid when the file cannot be relied on.
+    """
+    data = load(path)
+    floor = data.get("coverage", {}).get("floor")
+    if floor is None:
+        return requested
+    if not datetime.date.fromisoformat(data["set"]) <= today <= datetime.date.fromisoformat(data["expires"]):
+        return requested
+    return max(requested, floor) if requested > standard else floor
 
 
 def check(path: Path, today: datetime.date) -> int:

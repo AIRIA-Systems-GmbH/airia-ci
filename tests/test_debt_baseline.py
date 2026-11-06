@@ -20,11 +20,15 @@ import datetime
 import importlib.util
 import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from steps import ROOT
+import yaml
+from steps import ROOT, Runner
+from test_python_gate import FAKE_PYTEST
 
 SCRIPT = ROOT / ".github/actions/python-toolchain/debt.py"
 spec = importlib.util.spec_from_file_location("debt", SCRIPT)
@@ -399,6 +403,256 @@ class Dumps(unittest.TestCase):
         text = debt.dumps({"version": 1, "set": "a", "expires": "b", "tests": {}, "types": {}})
         self.assertEqual(json.loads(text)["tests"], {"failing": []})
         self.assertEqual(json.loads(text)["types"], {"pyright": {}})
+
+
+GATE = ROOT / ".github/workflows/reusable-python-gate.yml"
+TOOLCHAIN = ROOT / ".github/actions/python-toolchain/toolchain.py"
+FLOOR_STEP = "Pytest at the coverage floor"
+
+
+class CoverageFloor(unittest.TestCase):
+    """Slice 3: the toolchain turns the baseline into the floor, and the sliced pytest step holds it.
+
+    Each case runs the shipped `toolchain.py standard` and then the shipped `Pytest at the coverage floor`
+    block with the floor the first printed, so what is proved is the wiring, not a copy of it.
+    """
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.r.tool("pytest", FAKE_PYTEST)
+        self.project = self.r.tmp / "project"
+        (self.project / ".airia").mkdir(parents=True)
+        (self.project / ".python-version").write_text("3.12\n")
+        self.file = self.project / ".airia/debt-baseline.json"
+
+    def baseline(self, floor, **changes):
+        content = {"version": 1, "set": "2026-11-06", "expires": "2027-02-04", **changes}
+        if floor is not None:
+            content["coverage"] = {"floor": floor}
+        self.file.write_text(json.dumps(content))
+
+    def standard(self, ratchet="true", requested="90", today=TODAY):
+        return subprocess.run(
+            [sys.executable, str(TOOLCHAIN), "standard"], cwd=self.project, capture_output=True, text=True,
+            env=self.r.env(TYPE_CHECKER="pyright", COVERAGE_FLOOR=requested, DEBT_RATCHET=ratchet,
+                           DEBT_TODAY=today, PYTHON_VERSION="", GITHUB_REPOSITORY="o/r"))
+
+    def pytest_step(self, floor, percent):
+        (self.r.bin / "calls").unlink(missing_ok=True)
+        return self.r.run(GATE, FLOOR_STEP, cwd=self.project, FLOOR=floor, FAKE_PERCENT=percent, DURATIONS="25")
+
+    def test_a_baseline_floor_under_90_is_the_floor_pytest_holds(self):
+        """The point of the ratchet: a consumer with known debt is green at its measured figure, red under it.
+
+        0 and 41 are floors the `coverage-floor` input refuses; only a valid baseline may carry them. 90 is the
+        standard itself: the baseline must not be able to loosen it."""
+        for floor, below, above in ((0, None, "0.0"), (41, "40.9", "41.0"), (90, "89.9", "90.0")):
+            with self.subTest(floor=floor):
+                self.baseline(floor)
+                p = self.standard()
+                self.assertEqual(p.returncode, 0, p.stdout)
+                self.assertEqual(self.r.outputs()["coverage-floor"], str(floor))
+                self.r.output.unlink()
+                if below is not None:
+                    low = self.pytest_step(str(floor), below)
+                    self.assertEqual(low.returncode, 1, low.stdout)
+                high = self.pytest_step(str(floor), above)
+                self.assertEqual(high.returncode, 0, high.stdout + high.stderr)
+                self.assertIn(f"--cov-fail-under={floor}", (self.r.bin / "calls").read_text())
+
+    def test_a_floor_of_zero_still_needs_a_coverage_report(self):
+        """Floor 0 must not mean "not measured": a suite with no report fails whatever the floor says."""
+        self.baseline(0)
+        self.standard()
+        p = self.pytest_step("0", "")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No coverage figure::", p.stdout)
+
+    def test_with_the_input_off_the_file_is_ignored_and_said_so(self):
+        """Default `false` leaves every existing caller as today; a stray file must neither lower the floor
+        nor fail the run, and the notice tells its owner why nothing happened."""
+        self.baseline(41)
+        p = self.standard(ratchet="false")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertNotIn("coverage-floor", self.r.outputs())
+        self.assertIn("::notice title=Debt baseline::", p.stdout)
+        self.file.write_text("not json")
+        self.assertEqual(self.standard(ratchet="false").returncode, 0)
+
+    def test_with_the_input_off_and_no_file_nothing_is_said(self):
+        p = self.standard(ratchet="false")
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+
+    def test_with_the_input_on_a_missing_file_fails_loud(self):
+        """Never a fallback to the standard: a deleted file with the input on is a red build, not a quiet 90."""
+        p = self.standard()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=AIRIA standard::debt baseline:", p.stdout)
+        self.assertIn("is missing", p.stdout)
+        self.assertNotIn("coverage-floor", self.r.outputs())
+
+    def test_with_the_input_on_a_malformed_file_fails_loud(self):
+        """A floor read from a file that does not validate would be a floor anyone could type."""
+        self.file.write_text("{")
+        p = self.standard()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("not valid JSON", p.stdout)
+        self.baseline(101)
+        p = self.standard()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("must be within [0, 100]", p.stdout)
+        self.assertEqual(self.r.outputs(), {})
+
+    def test_the_coverage_floor_input_is_refused_under_90_in_both_modes(self):
+        """Only the baseline can go under 90; a valid baseline must not open the input as well."""
+        self.baseline(41)
+        for ratchet in ("true", "false"):
+            with self.subTest(ratchet=ratchet):
+                p = self.standard(ratchet=ratchet, requested="41")
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("below the standard's 90", p.stdout)
+                self.assertEqual(self.r.outputs(), {})
+
+    def test_a_raised_input_is_kept_over_a_lower_baseline_floor(self):
+        """A project that asked for 95 gave that promise itself; a baseline of 41 must not talk it down."""
+        self.baseline(41)
+        self.assertEqual(self.standard(requested="95").returncode, 0)
+        self.assertEqual(self.r.outputs()["coverage-floor"], "95")
+
+    def test_a_baseline_without_a_coverage_section_leaves_the_standard(self):
+        """Every section is optional; an absent one means the standard for that gate."""
+        self.baseline(None)
+        self.assertEqual(self.standard().returncode, 0)
+        self.assertEqual(self.r.outputs()["coverage-floor"], "90")
+
+    def test_past_the_expiry_the_standard_floor_applies(self):
+        """The date is a hard stop: after it the 41 is gone and the 90 is back (`check` is what turns red)."""
+        self.baseline(41)
+        self.assertEqual(self.standard(today="2027-02-04").returncode, 0)
+        self.assertEqual(self.r.outputs()["coverage-floor"], "41")
+        self.r.output.unlink()
+        self.assertEqual(self.standard(today="2027-02-05").returncode, 0)
+        self.assertEqual(self.r.outputs()["coverage-floor"], "90")
+
+    def test_the_action_checks_the_file_only_with_the_input_on(self):
+        """The action's own step runs `debt.py check`, which is the red past the expiry."""
+        action = ROOT / ".github/actions/python-toolchain/action.yml"
+        now = datetime.datetime.now(datetime.UTC).date()
+        env = dict(GITHUB_ACTION_PATH=str(action.parent))
+        self.baseline(41, set=now.isoformat(), expires=(now + datetime.timedelta(days=60)).isoformat())
+        p = self.r.run(action, "Check the debt baseline", cwd=self.project, **env)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.baseline(41, set="2026-01-01", expires="2026-01-02")
+        p = self.r.run(action, "Check the debt baseline", cwd=self.project, **env)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("expired", p.stdout)
+        step = next(s for s in yaml.safe_load(action.read_text())["runs"]["steps"] if s.get("name") == "Check the debt baseline")
+        self.assertEqual(step["if"], "inputs.debt-ratchet == 'true'")
+
+
+class CompareStep(unittest.TestCase):
+    """The lint job's `Debt baseline only tightens` step: the base is HEAD^1 of the PR's merge commit."""
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.project = self.r.tmp / "project"
+        (self.project / ".airia").mkdir(parents=True)
+        self.today = datetime.datetime.now(datetime.UTC).date()
+        self.file = self.project / ".airia/debt-baseline.json"
+        self.git("init", "-q", "-b", "base")
+
+    def git(self, *args):
+        env = {**self.r.env(), "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.org",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.org"}
+        p = subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=self.project, env=env,
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def content(self, floor, days=30, **extra):
+        return json.dumps({"version": 1, "set": self.today.isoformat(),
+                           "expires": (self.today + datetime.timedelta(days=days)).isoformat(),
+                           "coverage": {"floor": floor}, **extra})
+
+    def merge(self, base: str | None, head: str):
+        """A pull request's merge commit: HEAD^1 is the base with `base` committed, HEAD has `head`."""
+        (self.project / "README").write_text("x")
+        if base is not None:
+            self.file.write_text(base)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        self.git("checkout", "-q", "-b", "pr")
+        self.file.write_text(head)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "pr")
+        self.git("checkout", "-q", "base")
+        (self.project / "other").write_text("y")  # the base moved on, so the merge is a real one
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "moved")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", "pr")
+
+    def run_step(self, ratchet="true", event="pull_request"):
+        return self.r.run(GATE, "Debt baseline only tightens", cwd=self.project, RATCHET=ratchet, EVENT=event,
+                          AIRIA_DEBT=str(SCRIPT))
+
+    def test_a_raise_against_the_base_fails_on_a_pull_request(self):
+        """The file alone cannot tell a raise from a first write: only the base's copy can (amendment A)."""
+        self.merge(self.content(60), self.content(41))
+        p = self.run_step()
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("`coverage.floor` fell from 60 to 41", p.stdout)
+
+    def test_a_new_failing_id_against_the_base_fails(self):
+        self.merge(self.content(41), self.content(41, tests={"failing": ["tests/t.py::a"]}))
+        p = self.run_step()
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("gained a test id", p.stdout)
+
+    def test_a_tighter_head_passes(self):
+        self.merge(self.content(41), self.content(55))
+        self.assertEqual(self.run_step().returncode, 0)
+
+    def test_a_first_file_passes_when_set_is_today(self):
+        self.merge(None, self.content(41))
+        self.assertEqual(self.run_step().returncode, 0)
+
+    def test_a_first_file_with_a_far_future_set_fails(self):
+        """Otherwise a first file could buy extra days by dating itself ahead."""
+        head = json.loads(self.content(41))
+        head["set"] = (self.today + datetime.timedelta(days=10)).isoformat()
+        head["expires"] = (self.today + datetime.timedelta(days=40)).isoformat()
+        self.merge(None, json.dumps(head))
+        self.assertEqual(self.run_step().returncode, 1)
+
+    def test_a_missing_head_file_fails_loud(self):
+        """Deleting the file with the input on is red, not a skipped comparison."""
+        self.merge(self.content(41), self.content(42))
+        self.file.unlink()
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "delete")
+        p = self.run_step()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("head:", p.stdout)
+
+    def test_with_the_input_off_nothing_is_compared(self):
+        """Default `false` changes nothing for existing callers, even with a raised file in the tree."""
+        self.merge(self.content(60), self.content(41))
+        p = self.run_step(ratchet="false")
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("::error", p.stdout)
+
+    def test_on_a_push_nothing_is_compared(self):
+        self.merge(self.content(60), self.content(41))
+        self.assertEqual(self.run_step(event="push").returncode, 0)
+
+    def test_a_checkout_without_a_first_parent_fails_loud(self):
+        """A shallow single-commit checkout would otherwise pass every raise unseen."""
+        (self.project / "README").write_text("x")
+        self.file.write_text(self.content(41))
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "only")
+        p = self.run_step()
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("no first parent", p.stdout)
 
 
 if __name__ == "__main__":
