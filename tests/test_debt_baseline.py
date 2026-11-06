@@ -7,6 +7,8 @@ ratchet on, a baseline that is missing, unreadable or malformed fails loud with
 an `::error`, never a silent fallback to the standard or a silent pass; the
 horizon is capped at 90 days so the first date cannot be set far away; past
 `expires` the gate is red and names the date, and the last 14 days warn.
+`debt.py compare` (amendment A, section 3) holds the head's file to the base
+branch's copy: it may only tighten.
 
 Run: python3 -m unittest discover -s tests
 """
@@ -219,6 +221,158 @@ class Check(unittest.TestCase):
     def test_the_default_path_is_the_airia_baseline(self):
         """The ratchet has one fixed path (design section 4), not a path input."""
         self.assertEqual(debt.DEFAULT_FILE, ".airia/debt-baseline.json")
+
+
+class Compare(unittest.TestCase):
+    """debt.py compare: on a pull request the baseline may only tighten against the base's copy (amendment A).
+
+    Without this, one commit could raise a figure and move the expiry together, and
+    the dated, shrinking exception would be neither dated nor shrinking.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name) / "base.json"
+        self.head = Path(tmp.name) / "head.json"
+
+    def run_compare(self, base, head, today=TODAY, event=None):
+        """(exit code, output) of `debt.py compare`; `base` None writes no base file, a str is written as it is."""
+        for path, content in ((self.base, base), (self.head, head)):
+            if isinstance(content, str):
+                path.write_text(content)
+            elif content is not None:
+                path.write_text(json.dumps(content))
+        argv = ["--today", today, "compare"] + (["--event", event] if event else []) + [str(self.base), str(self.head)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = debt.main(argv)
+        return code, out.getvalue()
+
+    def fails(self, base, head, *needles, **kw):
+        code, out = self.run_compare(base, head, **kw)
+        self.assertEqual(code, 1, out)
+        self.assertIn("::error", out)
+        for n in needles:
+            self.assertIn(n, out)
+        return out
+
+    def head_with(self, **changes):
+        return {**GOOD, **changes}
+
+    def test_an_unchanged_file_passes_silently(self):
+        """Most PRs do not touch the baseline; they must see no annotation from it."""
+        self.assertEqual(self.run_compare(GOOD, GOOD), (0, ""))
+
+    def test_a_raised_count_fails(self):
+        """A rule's count rising is new type debt carried in under the old exception."""
+        head = self.head_with(types={"pyright": {"reportAttributeAccessIssue": 121, "reportArgumentType": 31}})
+        self.fails(GOOD, head, "`types.pyright.reportAttributeAccessIssue` rose from 120 to 121")
+
+    def test_a_rule_absent_at_base_counts_as_zero(self):
+        """A rule the base does not list is held at 0: adding it is a raise, not a new allowance."""
+        head = self.head_with(types={"pyright": {**GOOD["types"]["pyright"], "reportCallIssue": 1}})
+        self.fails(GOOD, head, "`types.pyright.reportCallIssue` rose from 0 to 1")
+        no_types = {k: v for k, v in GOOD.items() if k != "types"}
+        self.fails(no_types, GOOD, "reportArgumentType` rose from 0 to 31")
+
+    def test_a_new_test_id_fails(self):
+        """A new failure must not hide in the baseline, even when another one is fixed in the same PR."""
+        head = self.head_with(tests={"failing": ["tests/test_a.py::test_x", "tests/test_new.py::test_z"]})
+        out = self.fails(GOOD, head, "gained a test id", "tests/test_new.py::test_z")
+        self.assertNotIn("test_y", out)
+
+    def test_a_lower_floor_fails(self):
+        """The coverage floor only rises; a lower one lets coverage slide under the exception."""
+        self.fails(GOOD, self.head_with(coverage={"floor": 40.5}), "`coverage.floor` fell from 41 to 40.5")
+
+    def test_a_floor_added_where_the_base_has_none_fails(self):
+        """A base without a floor is at the standard; adding one is how a floor under 90 would sneak in."""
+        no_cov = {k: v for k, v in GOOD.items() if k != "coverage"}
+        self.fails(no_cov, GOOD, "`coverage.floor` (41) is new")
+
+    def test_a_later_expires_fails(self):
+        """A renewable date is not an expiry (amendment B): the end may only come sooner."""
+        base = self.head_with(expires="2027-01-01")
+        self.fails(base, GOOD, "`expires` moved later, from 2027-01-01 to 2027-02-04")
+
+    def test_a_later_set_fails(self):
+        """A later `set` would let a later `expires` pass the 90-day horizon: the window would slide."""
+        self.fails(GOOD, self.head_with(set="2026-11-07"), "`set` moved later, from 2026-11-06 to 2026-11-07")
+
+    def test_every_cause_is_reported_at_once(self):
+        """A red gate names all its causes, not one per push."""
+        head = self.head_with(
+            set="2026-11-07", expires="2027-02-05", coverage={"floor": 40},
+            tests={"failing": ["tests/new.py::t"]}, types={"pyright": {"reportArgumentType": 32}})
+        code, out = self.run_compare(GOOD, head)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.count("::error"), 5, out)
+
+    def test_each_tightened_pair_passes(self):
+        """Paying debt down must never be red, or nobody would commit the lower figure."""
+        cases = {
+            "an id dropped": self.head_with(tests={"failing": ["tests/test_a.py::test_x"]}),
+            "a count lower": self.head_with(types={"pyright": {"reportAttributeAccessIssue": 119, "reportArgumentType": 31}}),
+            "a rule dropped": self.head_with(types={"pyright": {"reportArgumentType": 31}}),
+            "a floor higher": self.head_with(coverage={"floor": 41.5}),
+            "an earlier expires": self.head_with(expires="2027-01-01"),
+            "an earlier set": self.head_with(set="2026-11-05", expires="2027-02-03"),
+            "sections dropped": {"version": 1, "set": "2026-11-06", "expires": "2027-02-04"},
+        }
+        for name, head in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.run_compare(GOOD, head), (0, ""))
+
+    def test_a_first_file_set_today_passes(self):
+        """The PR that adds the file is written today; refusing it would make the ratchet unadoptable."""
+        self.assertEqual(self.run_compare(None, GOOD, today="2026-11-06"), (0, ""))
+
+    def test_a_first_file_set_one_day_off_passes(self):
+        """1 day either way is tolerated: the author's date and the runner's UTC date can differ by one."""
+        self.assertEqual(self.run_compare(None, GOOD, today="2026-11-07"), (0, ""))
+        self.assertEqual(self.run_compare(None, GOOD, today="2026-11-05"), (0, ""))
+
+    def test_a_first_file_set_two_days_off_fails(self):
+        """A `set` far from the run date would buy days past the 90-day horizon: fail loud on either side."""
+        self.fails(None, GOOD, "first file", "`set` (2026-11-06)", "run date (2026-11-08)", today="2026-11-08")
+        self.fails(None, GOOD, "first file", "run date (2026-11-04)", today="2026-11-04")
+
+    def test_the_first_file_rule_applies_to_any_event_but_push(self):
+        """Only a push is relaxed; an unknown event gets the strict rule, the safe direction."""
+        self.fails(None, GOOD, "first file", today="2026-11-20", event="pull_request")
+        self.fails(None, GOOD, "first file", today="2026-11-20", event="workflow_dispatch")
+
+    def test_no_base_on_a_push_passes_with_a_notice(self):
+        """The merge of the PR that added the file can land days after its run; that push must not go red.
+
+        The PR was held to the first-file rule on its own run date, and `check` holds
+        the horizon on every run (design section 3), so the push only says there was nothing to compare.
+        """
+        code, out = self.run_compare(None, GOOD, today="2026-11-20", event="push")
+        self.assertEqual(code, 0, out)
+        self.assertIn("::notice", out)
+        self.assertIn("nothing to compare", out)
+        self.assertNotIn("::error", out)
+
+    def test_a_push_with_a_base_is_still_compared(self):
+        """A direct push to the default branch must not raise a figure the PR route would refuse."""
+        self.fails(self.head_with(expires="2027-01-01"), GOOD, "`expires` moved later", event="push")
+
+    def test_both_files_are_validated_first(self):
+        """Comparing a malformed file would crash or compare nonsense; each error names the file it is in."""
+        out = self.fails(GOOD, self.head_with(version=2), "head: `version` must be 1")
+        self.assertNotIn("base:", out)
+        self.fails('{"version":', GOOD, "base: ", "not valid JSON")
+        code, out = self.run_compare({"version": 2}, self.head_with(coverage={"floor": 101}))
+        self.assertEqual(code, 1)
+        self.assertIn("head: `coverage.floor` must be within", out)
+        self.assertIn("base: `version` must be 1", out)
+        self.assertNotIn("moved later", out)
+
+    def test_a_missing_head_fails_loud(self):
+        """Only the base may be absent: with the ratchet on, the head's file is required."""
+        self.fails(GOOD, None, "head: ", "is missing")
 
 
 class Dumps(unittest.TestCase):
