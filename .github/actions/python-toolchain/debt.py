@@ -14,7 +14,8 @@ missing, is not valid JSON, has an unknown key or a wrong type, has a
 horizon over 90 days, a negative count, a coverage floor outside [0, 100] or a
 duplicate test id. Past `expires` (UTC run date) it exits 1 and names the date:
 the baselined sections no longer apply and the standard does. Within 14 days of
-it, a `::warning` gives the days left. `--today` injects the run date for tests.
+it, a `::warning` gives the days left. A `set` after the run date fails too, so
+the horizon cannot be pushed out by a future `set`. `--today` injects the run date for tests.
 
 `dumps` is the writer's canonical serialisation (the replacement JSON of
 section 5); the writer itself, and the comparison with the base branch, are
@@ -170,6 +171,11 @@ def check(path: Path, today: datetime.date) -> int:
     except Invalid as e:
         for reason in e.args[0]:
             print(f"::error title=Debt baseline::{reason}")
+        return 1
+    first = datetime.date.fromisoformat(data["set"])
+    if first > today:
+        print(f"::error title=Debt baseline::`set` ({first}) is after the run date ({today}); "
+              f"a baseline cannot be set in the future")
         return 1
     expires = datetime.date.fromisoformat(data["expires"])
     left = (expires - today).days

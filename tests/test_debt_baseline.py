@@ -176,6 +176,15 @@ class Check(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out.count("::error"), 3, out)
 
+    def test_set_in_the_future_fails(self):
+        """A far-future `set` would carry `expires` (capped only relative to `set`) out of reach: the baseline would never expire."""
+        self.fails(self.with_(set="2026-11-08"), "after the run date")
+        self.fails(self.with_(set="2030-01-01", expires="2030-03-31"), "after the run date", "2030-01-01")
+
+    def test_set_today_passes(self):
+        """The day the file is written is the day it is set; refusing it would break the first commit."""
+        self.assertEqual(self.run_check(self.with_(set=TODAY, expires="2027-02-05")), (0, ""))
+
     def test_an_expired_file_is_red_and_names_the_date(self):
         """Past `expires` the standard applies again; the run must say which date ended the exception."""
         code, out = self.run_check(today="2027-02-05")
