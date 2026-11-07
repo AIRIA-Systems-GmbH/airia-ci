@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import platform
@@ -132,6 +133,16 @@ def python_version(pins: dict, requested: str, root: Path) -> str:
     return requested
 
 
+def debt_module():
+    """debt.py beside this file (standard library only; loaded by path so it needs no sys.path)."""
+    if "airia_debt" not in sys.modules:
+        spec = importlib.util.spec_from_file_location("airia_debt", HERE / "debt.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["airia_debt"] = mod
+        spec.loader.exec_module(mod)
+    return sys.modules["airia_debt"]
+
+
 def standard(pins: dict, env: dict, root: Path) -> dict[str, str]:
     """Validate the inputs the standard constrains; return what the next steps need."""
     errors = []
@@ -143,12 +154,28 @@ def standard(pins: dict, env: dict, root: Path) -> dict[str, str]:
         errors.append(f"type-checker mypy-strict is accepted only where it was already the gate "
                       f"({', '.join(pins['standard']['mypy-strict-repositories'])}); use pyright")
     floor = pins["standard"]["coverage-floor"]
+    requested = None
     try:
-        if float(env.get("COVERAGE_FLOOR", "")) < floor:
+        requested = float(env.get("COVERAGE_FLOOR", ""))
+        if requested < floor:
             errors.append(f"coverage-floor {env['COVERAGE_FLOOR']} is below the standard's {floor}: "
                           "a project may raise it, never lower it")
+            requested = None
     except ValueError:
         errors.append(f"coverage-floor {env.get('COVERAGE_FLOOR', '')!r} is not a number")
+    ratchet_floor = None
+    debt_file = root / debt_module().DEFAULT_FILE
+    if env.get("DEBT_RATCHET", "") != "true":
+        if debt_file.exists():
+            print(f"::notice title=Debt baseline::{debt_file.name} is ignored: `debt-ratchet` is not on")
+    elif requested is not None:
+        # Only a valid baseline may take the floor under the standard's; `--today` of debt.py, for tests.
+        today = datetime.date.fromisoformat(env["DEBT_TODAY"]) if env.get("DEBT_TODAY") else datetime.datetime.now(
+            datetime.UTC).date()
+        try:
+            ratchet_floor = debt_module().coverage_floor(debt_file, requested, floor, today)
+        except debt_module().Invalid as exc:
+            errors += [f"debt baseline: {reason}" for reason in exc.args[0]]
     try:
         python = python_version(pins, env.get("PYTHON_VERSION", ""), root)
     except Refused as exc:
@@ -156,7 +183,11 @@ def standard(pins: dict, env: dict, root: Path) -> dict[str, str]:
         python = ""
     if errors:
         raise Refused(*errors)
-    return {"uv": pins["tools"]["uv"], "python": python, "pyyaml": pins["harness"]["pyyaml"]}
+    result = {"uv": pins["tools"]["uv"], "python": python, "pyyaml": pins["harness"]["pyyaml"]}
+    if ratchet_floor is not None:
+        # Absent without the ratchet: an existing caller's outputs are what they were.
+        result["coverage-floor"] = f"{ratchet_floor:g}"
+    return result
 
 
 def locked(root: Path) -> dict[str, str]:
@@ -320,6 +351,7 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
         done.append(f"{tool} {v} ({why})")
     # The later steps of the job run this file's `ruff` command by this name.
     output("AIRIA_TOOLCHAIN", str(HERE / "toolchain.py"), "GITHUB_ENV")
+    output("AIRIA_DEBT", str(HERE / "debt.py"), "GITHUB_ENV")
     if "zizmor" in env.get("TOOLS", "").split():
         # The standard's zizmor policy: hash pins, except this harness, followed at `@main`.
         output("ZIZMOR_CONFIG", str(HERE / "zizmor.yml"), "GITHUB_ENV")
