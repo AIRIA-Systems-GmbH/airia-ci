@@ -114,6 +114,15 @@ on:
         required: false
         type: number
         default: 90
+      debt-ratchet:
+        description: >-
+          Hold the baselined gates to `.airia/debt-baseline.json`: a dated, tighten-only exception to
+          the standard (design/gate-debt-ratchet.md). Only its `coverage` section is enforced so far;
+          `types` and `tests` are validated but not yet enforced. With false (the default) a baseline
+          file is ignored.
+        required: false
+        type: boolean
+        default: false
       python-versions:
         description: >-
           The Pythons to test on, as a JSON array from pins.toml's allowed list
@@ -254,12 +263,35 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # On a pull request: the merge commit and its first parent (the base), for the debt baseline's compare.
+          fetch-depth: 2
           persist-credentials: false
       - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
+          debt-ratchet: ${{ inputs.debt-ratchet }}
           tools: ${{ inputs.type-checker == 'pyright' && 'ruff pyright' || 'ruff' }}
+      - name: Debt baseline only tightens
+        env:
+          RATCHET: ${{ inputs.debt-ratchet }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$RATCHET" != true ] || [ "$EVENT" != pull_request ]; then
+            echo "No debt baseline comparison: debt-ratchet is $RATCHET, event is $EVENT."
+            exit 0
+          fi
+          file=.airia/debt-baseline.json
+          base="$RUNNER_TEMP/debt-baseline.base.json"
+          rm -f "$base"
+          if ! git rev-parse -q --verify 'HEAD^1' > /dev/null; then
+            echo "::error title=Debt baseline::the checkout has no first parent, so the base branch's baseline cannot be read"
+            exit 1
+          fi
+          if git cat-file -e "HEAD^1:$file" 2> /dev/null; then
+            git show "HEAD^1:$file" > "$base"
+          fi
+          python3 "$AIRIA_DEBT" compare --event "$EVENT" "$base" "$file"
       - name: Ruff
         env:
           PATHS: ${{ inputs.paths }}
@@ -328,16 +360,19 @@ jobs:
           # Full history: a suite may read past commits, and a shallow clone has none.
           fetch-depth: 0
           persist-credentials: false
-      - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+      - id: toolchain
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
         with:
           python-version: ${{ matrix.python }}
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
+          debt-ratchet: ${{ inputs.debt-ratchet }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
       - name: Pytest at the coverage floor
         env:
-          FLOOR: ${{ inputs.coverage-floor }}
+          # With debt-ratchet the toolchain's floor (a valid baseline's, maybe under 90); else the input.
+          FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
           DURATIONS: ${{ inputs.durations }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
@@ -366,6 +401,7 @@ jobs:
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
+          debt-ratchet: ${{ inputs.debt-ratchet }}
           tools: reuse pip-audit zizmor gitleaks
           sync: "false"
       - name: Licences (REUSE)
