@@ -4,6 +4,8 @@
 
     debt.py [--file PATH] [--today YYYY-MM-DD] check
     debt.py [--today YYYY-MM-DD] compare [--event NAME] BASE HEAD
+    debt.py [--file PATH] [--today YYYY-MM-DD] pyright REPORT
+    debt.py [--file PATH] mypy-guard
 
 Design: design/gate-debt-ratchet.md (sections 1 to 4). The file is a dated,
 tighten-only exception to the standard; this module loads it and decides
@@ -30,9 +32,13 @@ the run date so a far-future `set` cannot buy extra days. On a push an absent
 base passes with a notice: the PR that added the file was held to that rule on
 its own run date, and `check` holds the horizon on every run.
 
+`pyright REPORT` is the lint job's type-check pass rule with the ratchet on: pyright's `--outputjson` report, errors
+counted per rule, each at or below `types.pyright` (a rule absent counts 0). Below passes with a `::notice`; a report
+that is not pyright's JSON fails. `mypy-guard` fails when the file has a `types` section and the checker is mypy.
+
 `coverage_floor` (called by toolchain.py's `standard`) turns the `coverage` section into the floor the test
 job's pytest step holds. Only that section and the dates are enforced so far; `types` and `tests` are
-validated and compared but not yet enforced (later slices).
+validated and compared; `types` is enforced by `pyright` above, `tests` not yet (a later slice).
 
 `dumps` is the writer's canonical serialisation (the replacement JSON of
 section 5); the writer itself is a later slice.
@@ -199,6 +205,75 @@ def coverage_floor(path: Path, requested: float, standard: float, today: datetim
     return max(requested, floor) if requested > standard else floor
 
 
+def pyright_errors(report: Path) -> dict[str, list[str]]:
+    """Pyright's `--outputjson` report as {rule: [one line per error]}; only `severity == "error"` counts.
+
+    An error with no rule (a syntax error) is keyed `(no rule)`, which no baseline can hold. Raises Invalid when
+    the report is not pyright's JSON: the step must not read an empty or truncated report as "no errors".
+    """
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise Invalid([f"{report} is not pyright's JSON output: {e}"]) from None
+    diagnostics = data.get("generalDiagnostics") if isinstance(data, dict) else None
+    if not isinstance(diagnostics, list) or not all(isinstance(d, dict) for d in diagnostics):
+        raise Invalid([f"{report} has no `generalDiagnostics` list: it is not pyright's JSON output"])
+    errors: dict[str, list[str]] = {}
+    for d in diagnostics:
+        if d.get("severity") != "error":
+            continue
+        start = d.get("range", {}).get("start", {}) if isinstance(d.get("range"), dict) else {}
+        where = f"{d.get('file', '?')}:{start.get('line', 0) + 1}"
+        errors.setdefault(str(d.get("rule", "(no rule)")), []).append(f"{where} {d.get('message', '')}")
+    return errors
+
+
+def pyright(baseline: Path, report: Path, today: datetime.date) -> int:
+    """Hold pyright's errors per rule to `types.pyright` (design section 2, "Types").
+
+    A rule above its baseline (absent counts 0) is an `::error` and exit 1; below is a `::notice` and passes.
+    A file with no `types` section, or one outside `set`..`expires`, holds the standard: no errors at all
+    (past `expires` `check` is what turns red).
+    """
+    try:
+        data = load(baseline)
+        errors = pyright_errors(report)
+    except Invalid as e:
+        for reason in e.args[0]:
+            print(f"::error title=Debt baseline::{reason}")
+        return 1
+    in_date = datetime.date.fromisoformat(data["set"]) <= today <= datetime.date.fromisoformat(data["expires"])
+    allowed = data.get("types", {}).get("pyright", {}) if in_date else {}
+    failed = False
+    for rule in sorted(errors):
+        if len(errors[rule]) > allowed.get(rule, 0):
+            failed = True
+            print(f"::error title=Pyright above the debt baseline::{rule}: {len(errors[rule])} errors, "
+                  f"the baseline allows {allowed.get(rule, 0)}")
+            for line in errors[rule]:
+                print(f"  {line} ({rule})")
+    better = [f"{rule} {allowed[rule]} -> {len(errors.get(rule, []))}" for rule in sorted(allowed)
+              if len(errors.get(rule, [])) < allowed[rule]]
+    if better and not failed:
+        print(f"::notice title=Debt baseline can tighten::pyright errors fell below the baseline: {', '.join(better)}")
+    return 1 if failed else 0
+
+
+def mypy_guard(baseline: Path) -> int:
+    """mypy --strict has no per-rule count here: a `types` section with the ratchet on fails loud (design §6.4)."""
+    try:
+        data = load(baseline)
+    except Invalid as e:
+        for reason in e.args[0]:
+            print(f"::error title=Debt baseline::{reason}")
+        return 1
+    if "types" in data:
+        print("::error title=Debt baseline::`types` baselines pyright errors, and `type-checker` is mypy-strict; "
+              "remove the section or use pyright")
+        return 1
+    return 0
+
+
 def check(path: Path, today: datetime.date) -> int:
     try:
         data = load(path)
@@ -284,8 +359,15 @@ def main(argv: list[str] | None = None) -> int:
                      help="the GitHub event; only `push` lets an absent BASE pass without the first-file rule")
     cmp.add_argument("base", type=Path, help="the base branch's copy; may be absent")
     cmp.add_argument("head", type=Path)
+    pyr = sub.add_parser("pyright", help="hold a pyright --outputjson report to the baseline's types.pyright")
+    pyr.add_argument("report", type=Path)
+    sub.add_parser("mypy-guard", help="fail when the baseline has a types section and the checker is mypy-strict")
     args = ap.parse_args(argv)
     today = args.today or datetime.datetime.now(datetime.UTC).date()
+    if args.command == "pyright":
+        return pyright(args.file, args.report, today)
+    if args.command == "mypy-guard":
+        return mypy_guard(args.file)
     if args.command == "compare":
         return compare(args.base, args.head, today, args.event)
     return check(args.file, today)
