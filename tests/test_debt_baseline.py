@@ -655,5 +655,165 @@ class CompareStep(unittest.TestCase):
         self.assertIn("no first parent", p.stdout)
 
 
+# A pyright that prints $FAKE_PYRIGHT_REPORT (a file) as --outputjson does, and records its argv.
+FAKE_PYRIGHT = """\
+#!/bin/sh
+echo "pyright $*" >> "$(dirname "$0")/calls"
+cat "$FAKE_PYRIGHT_REPORT"
+exit "${FAKE_PYRIGHT_EXIT:-0}"
+"""
+
+
+def diagnostic(rule="reportArgumentType", severity="error", **extra):
+    d = {"file": "/p/src/a.py", "severity": severity, "message": "bad", "range": {"start": {"line": 3, "character": 0}}}
+    if rule is not None:
+        d["rule"] = rule
+    return {**d, **extra}
+
+
+class PyrightStep(unittest.TestCase):
+    """The lint job's `Type check` step with the ratchet on: pyright's errors per rule against `types.pyright`."""
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.r.tool("pyright", FAKE_PYRIGHT)
+        self.r.tool("mypy", "#!/bin/sh\necho \"mypy $*\" >> \"$(dirname \"$0\")/calls\"\nexit \"${FAKE_MYPY_EXIT:-0}\"\n")
+        self.project = self.r.tmp / "project"
+        (self.project / ".airia").mkdir(parents=True)
+        self.report = self.r.tmp / "report.json"
+        self.today = datetime.datetime.now(datetime.UTC).date()
+
+    def baseline(self, pyright_rules=None, **extra):
+        data = {"version": 1, "set": self.today.isoformat(),
+                "expires": (self.today + datetime.timedelta(days=60)).isoformat(), **extra}
+        if pyright_rules is not None:
+            data["types"] = {"pyright": pyright_rules}
+        (self.project / ".airia/debt-baseline.json").write_text(json.dumps(data))
+
+    def run_step(self, diagnostics, exit_code="1", checker="pyright", ratchet="true"):
+        text = diagnostics if isinstance(diagnostics, str) else json.dumps({"generalDiagnostics": diagnostics})
+        self.report.write_text(text)
+        return self.r.run(GATE, "Type check", cwd=self.project, PATHS="src", TYPE_CHECKER=checker, RATCHET=ratchet,
+                          AIRIA_DEBT=str(SCRIPT), FAKE_PYRIGHT_REPORT=str(self.report), FAKE_PYRIGHT_EXIT=exit_code)
+
+    def calls(self):
+        f = self.r.bin / "calls"
+        return f.read_text().splitlines() if f.exists() else []
+
+    def test_a_rule_above_its_baseline_fails_and_names_the_rule_and_the_error(self):
+        self.baseline({"reportArgumentType": 1})
+        p = self.run_step([diagnostic(), diagnostic(line=1)])
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("reportArgumentType: 2 errors, the baseline allows 1", p.stdout)
+        self.assertIn("/p/src/a.py:4 bad (reportArgumentType)", p.stdout)
+
+    def test_a_rule_at_its_baseline_passes_silently(self):
+        self.baseline({"reportArgumentType": 2})
+        p = self.run_step([diagnostic(), diagnostic()])
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+
+    def test_a_rule_below_its_baseline_passes_and_reports_the_tightening(self):
+        self.baseline({"reportArgumentType": 3, "reportAttributeAccessIssue": 2})
+        p = self.run_step([diagnostic(), diagnostic(rule="reportAttributeAccessIssue"),
+                           diagnostic(rule="reportAttributeAccessIssue")])
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("::notice", p.stdout)
+        self.assertIn("reportArgumentType 3 -> 1", p.stdout)
+        self.assertNotIn("reportAttributeAccessIssue", p.stdout)
+
+    def test_a_rule_that_vanished_is_a_tightening(self):
+        self.baseline({"reportArgumentType": 2})
+        p = self.run_step([], exit_code="0")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("reportArgumentType 2 -> 0", p.stdout)
+
+    def test_a_rule_absent_from_the_file_counts_as_zero(self):
+        """One rule falling must not pay for another rising from nothing."""
+        self.baseline({"reportArgumentType": 5})
+        p = self.run_step([diagnostic(rule="reportCallIssue")])
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("reportCallIssue: 1 errors, the baseline allows 0", p.stdout)
+
+    def test_a_file_without_a_types_section_allows_no_error(self):
+        self.baseline(None)
+        self.assertEqual(self.run_step([diagnostic()]).returncode, 1)
+
+    def test_an_error_with_no_rule_cannot_be_baselined(self):
+        self.baseline({"reportArgumentType": 9})
+        p = self.run_step([diagnostic(rule=None, message="syntax")])
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("(no rule): 1 errors", p.stdout)
+
+    def test_a_non_error_severity_is_ignored(self):
+        self.baseline({})
+        p = self.run_step([diagnostic(severity="warning"), diagnostic(severity="information"),
+                           diagnostic(severity="hint")], exit_code="0")
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+
+    def test_output_that_is_not_json_fails_loud(self):
+        """A crashed or truncated report must not read as 'no errors'."""
+        self.baseline({})
+        p = self.run_step("Traceback (most recent call last):", exit_code="0")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Debt baseline::", p.stdout)
+        self.assertIn("not pyright's JSON output", p.stdout)
+
+    def test_json_without_diagnostics_fails_loud(self):
+        self.baseline({})
+        for text in ("[]", '{"summary": {}}', '{"generalDiagnostics": [1]}'):
+            with self.subTest(text=text):
+                p = self.run_step(text, exit_code="0")
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("not pyright's JSON output", p.stdout)
+
+    def test_pyright_failing_to_run_fails_even_with_a_valid_report(self):
+        self.baseline({"reportArgumentType": 9})
+        p = self.run_step([], exit_code="2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("pyright exited 2", p.stdout)
+
+    def test_a_missing_baseline_fails_loud(self):
+        p = self.run_step([], exit_code="0")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("is missing", p.stdout)
+
+    def test_past_the_expiry_the_baselined_counts_no_longer_apply(self):
+        self.baseline({"reportArgumentType": 5}, set="2026-01-01", expires="2026-01-02")
+        p = self.run_step([diagnostic()])
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("the baseline allows 0", p.stdout)
+
+    def test_pyright_runs_with_the_json_flag_against_the_project_environment(self):
+        self.baseline({})
+        self.run_step([], exit_code="0")
+        self.assertEqual(self.calls(), [f"pyright --outputjson --pythonpath {self.project.resolve()}/.venv/bin/python src"])
+
+    def test_with_the_input_off_pyright_exit_code_decides_and_the_file_is_ignored(self):
+        """Byte-for-byte as today: no --outputjson, no baseline read, pyright's own exit code."""
+        self.baseline({"reportArgumentType": 9})
+        self.assertEqual(self.run_step([diagnostic()], exit_code="1", ratchet="false").returncode, 1)
+        self.assertEqual(self.run_step([diagnostic()], exit_code="0", ratchet="false").returncode, 0)
+        self.assertNotIn("--outputjson", " ".join(self.calls()))
+
+    def test_mypy_strict_with_a_types_section_fails_loud_before_mypy_runs(self):
+        self.baseline({"reportArgumentType": 1})
+        p = self.run_step([], checker="mypy-strict")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("mypy-strict", p.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_mypy_strict_without_a_types_section_runs_as_before(self):
+        self.baseline(None, coverage={"floor": 41})
+        self.assertEqual(self.run_step([], checker="mypy-strict").returncode, 0)
+        self.assertEqual(self.calls(), ["mypy --strict src"])
+        self.assertEqual(self.run_step([], checker="mypy-strict", ratchet="false").returncode, 0)
+
+    def test_mypy_strict_with_an_unreadable_baseline_fails_loud(self):
+        p = self.run_step([], checker="mypy-strict")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("is missing", p.stdout)
+        self.assertEqual(self.calls(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -117,9 +117,10 @@ on:
       debt-ratchet:
         description: >-
           Hold the baselined gates to `.airia/debt-baseline.json`: a dated, tighten-only exception to
-          the standard (design/gate-debt-ratchet.md). Only its `coverage` section is enforced so far;
-          `types` and `tests` are validated but not yet enforced. With false (the default) a baseline
-          file is ignored.
+          the standard (design/gate-debt-ratchet.md). Its `coverage` section and the dates are
+          enforced, and `types` is enforced for pyright (errors per rule, in the type-check step);
+          mypy-strict with a `types` section fails. `tests` is validated but not yet enforced. With
+          false (the default) a baseline file is ignored.
         required: false
         type: boolean
         default: false
@@ -311,11 +312,33 @@ jobs:
         env:
           PATHS: ${{ inputs.paths }}
           TYPE_CHECKER: ${{ inputs.type-checker }}
+          RATCHET: ${{ inputs.debt-ratchet }}
         run: |
           read -ra paths <<< "$PATHS"
           case "$TYPE_CHECKER" in
-            pyright) pyright --pythonpath "$PWD/.venv/bin/python" "${paths[@]}" ;;
-            mypy-strict) mypy --strict "${paths[@]}" ;;
+            pyright)
+              if [ "$RATCHET" = true ]; then
+                # Debt ratchet: pyright still runs; only its pass rule changes (errors per rule, debt.py).
+                report="$RUNNER_TEMP/pyright.json"
+                rm -f "$report"
+                status=0
+                pyright --outputjson --pythonpath "$PWD/.venv/bin/python" "${paths[@]}" > "$report" || status=$?
+                # Exit 1 is "errors found", which the baseline judges; anything above is pyright failing to run.
+                if [ "$status" -gt 1 ]; then
+                  echo "::error title=Type check::pyright exited $status without a report"
+                  exit 1
+                fi
+                python3 "$AIRIA_DEBT" pyright "$report"
+              else
+                pyright --pythonpath "$PWD/.venv/bin/python" "${paths[@]}"
+              fi
+              ;;
+            mypy-strict)
+              if [ "$RATCHET" = true ]; then
+                python3 "$AIRIA_DEBT" mypy-guard
+              fi
+              mypy --strict "${paths[@]}"
+              ;;
             *) echo "::error title=AIRIA standard::no type checker $TYPE_CHECKER"; exit 1 ;;
           esac
       - name: Import contracts
