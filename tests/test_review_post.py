@@ -591,6 +591,24 @@ class AUsageLimit(unittest.TestCase):
                 self.assertEqual((p.returncode, len(summaries)), (0, 1))
                 self.assertNotIn("::error", p.stdout)
 
+    def test_a_paid_run_with_a_rejected_event_and_an_error_is_not_called_a_usage_limit(self):
+        # The watchdog emits `rejected`, waits, then the run carries on and fails for another reason. The paid
+        # signature (more than one turn, a cost) means the rejection was waited out; the error keeps its own title.
+        out = self.failed([self.event("rejected", resetsAt=1794384000), *errored("API Error", **USED)])
+        self.assertIn("::error title=No review posted::", out)
+        self.assertNotIn("usage limit", out)
+        self.assertNotIn(self.TOKEN_OK, out)
+
+    def test_a_paid_run_with_a_rejected_event_and_no_findings_block_is_a_malformed_review(self):
+        p, summaries, _ = self.post([self.event("rejected", resetsAt=1794384000),
+                                     *execution("## Review\n\nLooks right.", **USED)])
+        self.assertEqual((p.returncode, len(summaries)), (1, 1))
+        self.assertIn("::error title=Review posted with a malformed findings block::the review was posted, but its "
+                      "findings block broke the schema: the final message contains no `airia-findings` block",
+                      p.stdout)
+        self.assertNotIn("usage limit", p.stdout)
+        self.assertNotIn(self.TOKEN_OK, p.stdout)
+
     def test_a_non_limit_error_is_never_called_a_limit_nor_told_the_token_is_fine(self):
         out = self.failed(errored("API Error", **USED))
         self.assertIn("::error title=No review posted::", out)

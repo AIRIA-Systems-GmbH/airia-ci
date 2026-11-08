@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Was a failed Claude run a usage limit? Shared by the review (post_review.py) and the @claude responder (airia-ci#103).
 
-A limit is recognised by the CLI's `rate_limit_event` with status `rejected` (claude-code-action writes every SDK
-message into the execution file) or by the result and error texts; the texts are never printed, only the reset time
-is (the event's `resetsAt` as UTC, else the time phrase in the text). As a step it reads EXECUTION_FILE and, when
-the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits a titled `::error::`
+A limit is recognised by the CLI's `rate_limit_event` with status `rejected` only when the run also has the unpaid
+signature (at most one turn, `total_cost_usd` 0) — claude-code-action writes every SDK message into the execution
+file, and the retry watchdog emits `rejected`, waits, then carries on, so a paid run that later fails keeps its
+real cause — or by the result and error texts, which count on any run. The texts are never printed, only the reset
+time is (the event's `resetsAt` as UTC, else the time phrase in the text). As a step it reads EXECUTION_FILE and,
+when the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits a titled `::error::`
 annotation. It always exits 0: the step that ran Claude has already failed, and this one only says why. A generic
 failure prints nothing.
 """
@@ -50,7 +52,9 @@ def rejected_limit(msgs: list) -> dict | None:
     """The `rate_limit_info` of the last `rate_limit_event` with status `rejected`, or None.
 
     Claude Code emits `{"type": "rate_limit_event", "rate_limit_info": {"status": ..., "resetsAt": <epoch>, ...}}`
-    on every turn; `allowed` (and `allowed_warning`) carry a `resetsAt` too and mean nothing. Only `rejected` is a limit.
+    on every turn; `allowed` (and `allowed_warning`) carry a `resetsAt` too and mean nothing. Only `rejected` can be
+    a limit, and only together with the unpaid signature (`hit_limit`): the retry watchdog emits the same event
+    while it waits, then the run carries on.
     """
     for m in reversed(msgs):
         info = m.get("rate_limit_info")
@@ -118,7 +122,13 @@ def zero_usage_turns(msgs: list) -> int | None:
 
 
 def hit_limit(msgs: list) -> bool:
-    return rejected_limit(msgs) is not None or any(LIMIT.search(t) for t in failure_texts(msgs))
+    """A rejected event on an unpaid run, or a usage or rate limit named in the result or error text.
+
+    The text match counts on any run. The event alone counts only with `unpaid` (at most one turn, no cost): a paid
+    run that waited the rejection out and then failed for another reason is not a limit.
+    """
+    return ((rejected_limit(msgs) is not None and unpaid(msgs))
+            or any(LIMIT.search(t) for t in failure_texts(msgs)))
 
 
 def load(path: str) -> list:

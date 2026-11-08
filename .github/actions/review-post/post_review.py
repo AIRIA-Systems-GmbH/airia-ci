@@ -28,11 +28,11 @@ error named ("green means posted"). An empty list is valid.
   reviewed head, so a re-review with no findings still leaves a review on its head (airia-ci#99).
   Its body points at the summary and has no footer, so each run is still counted once.
 - With no review text the check fails (airia-ci#54) and says why: a usage or rate limit (a rejected
-  `rate_limit_event`, or named in the result or error text) is titled `Claude usage limit` with the reset
-  time when the payload gives one, and a run that errored after at most one turn with no model usage and
-  no cost is titled as a likely usage limit or auth failure (airia-ci#103). A limit that ends the run as a
-  "success" whose final message is the limit notice is the same failure, never posted. Only the reset
-  time is printed, never the text itself.
+  `rate_limit_event` on an unpaid run — at most one turn and no cost — or named in the result or error text)
+  is titled `Claude usage limit` with the reset time when the payload gives one, and a run that errored
+  after at most one turn with no model usage and no cost is titled as a likely usage limit or auth failure
+  (airia-ci#103). A limit that ends the run as a "success" whose final message is the limit notice is the
+  same failure, never posted. Only the reset time is printed, never the text itself.
 """
 
 from __future__ import annotations
