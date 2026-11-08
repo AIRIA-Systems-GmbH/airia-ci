@@ -119,7 +119,8 @@ on:
           Hold the baselined gates to `.airia/debt-baseline.json`: a dated, tighten-only exception to
           the standard (design/gate-debt-ratchet.md). Its `coverage` section and the dates are
           enforced, and `types` is enforced for pyright (errors per rule, in the type-check step);
-          mypy-strict with a `types` section fails. `tests` is validated but not yet enforced. With
+          mypy-strict with a `types` section fails. `tests` is enforced too: every failing or erroring
+          test id of the test job (each Python on its own) must be in the file. With
           false (the default) a baseline file is ignored.
         required: false
         type: boolean
@@ -397,6 +398,7 @@ jobs:
           # With debt-ratchet the toolchain's floor (a valid baseline's, maybe under 90); else the input.
           FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
           DURATIONS: ${{ inputs.durations }}
+          RATCHET: ${{ inputs.debt-ratchet }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
             echo "::error title=durations::durations must be a whole number of tests to list (0 lists all), not '$DURATIONS'"
@@ -404,7 +406,17 @@ jobs:
           fi
           report="$RUNNER_TEMP/coverage.json"
           rm -f "$report"
-          pytest "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+          if [ "$RATCHET" = true ]; then
+            # Debt ratchet: pytest still runs once; only its pass rule changes (failing ids against the baseline, debt.py).
+            # -rfE lists every failing and erroring id. The coverage floor below still holds, whatever the ids say.
+            output="$RUNNER_TEMP/pytest.out"
+            # The step runs under `bash -e` without pipefail, so the pipeline ends in tee's status; pytest's is read after it.
+            pytest "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
+            status=${PIPESTATUS[0]}
+            python3 "$AIRIA_DEBT" tests "$status" "$output"
+          else
+            pytest "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+          fi
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
             exit 1

@@ -6,6 +6,7 @@
     debt.py [--today YYYY-MM-DD] compare [--event NAME] BASE HEAD
     debt.py [--file PATH] [--today YYYY-MM-DD] pyright REPORT
     debt.py [--file PATH] mypy-guard
+    debt.py [--file PATH] [--today YYYY-MM-DD] tests STATUS OUTPUT
 
 Design: design/gate-debt-ratchet.md (sections 1 to 4). The file is a dated,
 tighten-only exception to the standard; this module loads it and decides
@@ -36,9 +37,16 @@ its own run date, and `check` holds the horizon on every run.
 counted per rule, each at or below `types.pyright` (a rule absent counts 0). Below passes with a `::notice`; a report
 that is not pyright's JSON fails. `mypy-guard` fails when the file has a `types` section and the checker is mypy.
 
+`tests STATUS OUTPUT` is the test job's pass rule with the ratchet on: STATUS is pytest's exit code and OUTPUT its
+text, run with `-rfE`. The failing and erroring ids come from the `short test summary info` block (`FAILED id - msg`,
+`ERROR id - msg`, normalised to the id) and every one must be in `tests.failing`; an id in the baseline that did not
+fail passes with a `::notice`. Exit codes 2-5 (and anything but 0 or 1) fail outright, and exit 1 with no parsed id
+fails: a crash, or a coverage miss with nothing failing, is not "no failures". A file with no `tests` section, or one
+outside `set`..`expires`, holds the standard: nothing may fail.
+
 `coverage_floor` (called by toolchain.py's `standard`) turns the `coverage` section into the floor the test
-job's pytest step holds. Only that section and the dates are enforced so far; `types` and `tests` are
-validated and compared; `types` is enforced by `pyright` above, `tests` not yet (a later slice).
+job's pytest step holds. The `coverage` section, `types` (by `pyright` above) and `tests` (by `tests` above) are
+enforced; all are validated and compared.
 
 `dumps` is the writer's canonical serialisation (the replacement JSON of
 section 5); the writer itself is a later slice.
@@ -259,6 +267,76 @@ def pyright(baseline: Path, report: Path, today: datetime.date) -> int:
     return 1 if failed else 0
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+EXIT_NAMES = {2: "was interrupted", 3: "hit an internal error", 4: "was used wrongly", 5: "collected no tests"}
+
+
+def node_id(rest: str) -> str:
+    """The node id of a summary line after its `FAILED `/`ERROR `: the text up to the first ` - ` outside brackets.
+
+    A parametrised id may hold spaces and ` - ` inside `[...]`. An id with unbalanced brackets is never cut, so it
+    reads as an id nobody baselined: the safe direction.
+    """
+    depth = 0
+    for i, ch in enumerate(rest):
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and rest.startswith(" - ", i):
+            return rest[:i]
+    return rest
+
+
+def failing_ids(text: str) -> set[str]:
+    """The ids on `FAILED`/`ERROR` lines of pytest's `short test summary info` block (`-rfE`); only that block counts,
+    so a line a test printed cannot add or hide an id."""
+    ids: set[str] = set()
+    inside = False
+    for line in ANSI.sub("", text).splitlines():
+        if line.startswith("="):
+            inside = "short test summary info" in line
+        elif inside and (m := re.match(r"(?:FAILED|ERROR) (\S.*)$", line)):
+            ids.add(node_id(m.group(1).rstrip()))
+    return ids
+
+
+def tests(baseline: Path, status: int, output: Path, today: datetime.date) -> int:
+    """Hold pytest's failing ids to `tests.failing` (design section 2, "Tests"), as sets.
+
+    Every failing id must be in the baseline; a baseline id that did not fail is a `::notice`. See the module doc
+    for the exit codes.
+    """
+    try:
+        data = load(baseline)
+        text = output.read_text(encoding="utf-8", errors="replace")
+    except Invalid as e:
+        for reason in e.args[0]:
+            print(f"::error title=Debt baseline::{reason}")
+        return 1
+    except OSError as e:
+        print(f"::error title=Pytest output::cannot read pytest's output: {e}")
+        return 1
+    if status not in (0, 1):
+        print(f"::error title=Pytest::pytest exited {status} and {EXIT_NAMES.get(status, 'failed to run')}; "
+              "the debt baseline holds failing tests, not a run that did not finish")
+        return 1
+    failing = failing_ids(text) if status == 1 else set()
+    if status == 1 and not failing:
+        print("::error title=Pytest::pytest exited 1 but no FAILED or ERROR line was found in its summary; a crash, or "
+              "a coverage miss with nothing failing, is not 'no failures'. The run must pass -rfE.")
+        return 1
+    in_date = datetime.date.fromisoformat(data["set"]) <= today <= datetime.date.fromisoformat(data["expires"])
+    allowed = set(data.get("tests", {}).get("failing", [])) if in_date else set()
+    new = sorted(failing - allowed)
+    for test_id in new:
+        print(f"::error title=Test outside the debt baseline::{test_id} fails and is not in tests.failing")
+    fixed = sorted(allowed - failing)
+    if fixed and not new:
+        print(f"::notice title=Debt baseline can tighten::{len(fixed)} baselined test(s) did not fail: {', '.join(fixed)}")
+    return 1 if new else 0
+
+
 def mypy_guard(baseline: Path) -> int:
     """mypy --strict has no per-rule count here: a `types` section with the ratchet on fails loud (design §6.4)."""
     try:
@@ -362,8 +440,13 @@ def main(argv: list[str] | None = None) -> int:
     pyr = sub.add_parser("pyright", help="hold a pyright --outputjson report to the baseline's types.pyright")
     pyr.add_argument("report", type=Path)
     sub.add_parser("mypy-guard", help="fail when the baseline has a types section and the checker is mypy-strict")
+    tst = sub.add_parser("tests", help="hold pytest's failing ids (-rfE) to the baseline's tests.failing")
+    tst.add_argument("status", type=int, help="pytest's exit code")
+    tst.add_argument("output", type=Path, help="pytest's output")
     args = ap.parse_args(argv)
     today = args.today or datetime.datetime.now(datetime.UTC).date()
+    if args.command == "tests":
+        return tests(args.file, args.status, args.output, today)
     if args.command == "pyright":
         return pyright(args.file, args.report, today)
     if args.command == "mypy-guard":
