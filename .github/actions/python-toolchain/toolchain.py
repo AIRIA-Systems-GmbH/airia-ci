@@ -68,9 +68,14 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
+
+DOWNLOAD_TRIES = 3  # the gitleaks archive: one transient 5xx must not fail a security job (#133)
+DOWNLOAD_BACKOFF = 2  # seconds, times the attempt number: 2s, then 4s
 
 HERE = Path(__file__).resolve().parent
 PINS = HERE.parents[2] / "pins.toml"
@@ -297,6 +302,22 @@ def check(pins: dict, env: dict, root: Path) -> None:
         raise Refused(*errors)
 
 
+def download(url: str) -> bytes:
+    """Fetch url, trying DOWNLOAD_TRIES times with a growing pause on a 5xx or a network error; a 4xx fails at once."""
+    for attempt in range(1, DOWNLOAD_TRIES + 1):
+        try:
+            with urllib.request.urlopen(url) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or attempt == DOWNLOAD_TRIES:
+                raise
+        except urllib.error.URLError:
+            if attempt == DOWNLOAD_TRIES:
+                raise
+        time.sleep(DOWNLOAD_BACKOFF * attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def gitleaks(pins: dict, bin_dir: Path) -> None:
     """Download the pinned gitleaks for this platform and refuse it unless its digest matches the pin."""
     v = pins["tools"]["gitleaks"]
@@ -308,8 +329,7 @@ def gitleaks(pins: dict, bin_dir: Path) -> None:
     url = os.environ.get("AIRIA_GITLEAKS_URL") or (
         f"https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_{key}.tar.gz")
     archive = bin_dir.parent / "gitleaks.tar.gz"
-    with urllib.request.urlopen(url) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
-        archive.write_bytes(r.read())
+    archive.write_bytes(download(url))
     got = hashlib.sha256(archive.read_bytes()).hexdigest()
     if got != digest:
         raise Refused(f"gitleaks {v} for {key} has sha256 {got}, not the pinned {digest}: refused")

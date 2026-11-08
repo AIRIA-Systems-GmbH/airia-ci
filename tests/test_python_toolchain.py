@@ -39,6 +39,8 @@ import sys
 import tarfile
 import textwrap
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -371,6 +373,66 @@ class Install(unittest.TestCase):
             self.install("gitleaks", self.gitleaks_pins("0" * 64))
         self.assertIn("not the pinned", cm.exception.args[0])
         self.assertFalse((self.r.tmp / tc.TOOLS_DIR / "bin/gitleaks").exists())
+
+    def flaky_download(self, failures: list):
+        """Patch urlopen to raise each of failures in turn, then serve the real archive; return (calls, sleeps)."""
+        real = urllib.request.urlopen
+        calls, sleeps = [], []
+
+        def fake(url):
+            calls.append(url)
+            if len(calls) <= len(failures):
+                raise failures[len(calls) - 1]
+            return real(url)
+
+        for target, new in ((urllib.request, "urlopen"), (tc.time, "sleep")):
+            patcher = mock.patch.object(target, new, fake if new == "urlopen" else sleeps.append)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return calls, sleeps
+
+    @staticmethod
+    def http(code: int) -> urllib.error.HTTPError:
+        return urllib.error.HTTPError("https://example.invalid/gl.tar.gz", code, "x", {}, None)
+
+    def test_a_5xx_on_the_gitleaks_download_is_retried_until_it_succeeds(self):
+        # Portfolio-Dashboard PR #196: one transient 504 failed ci / security (#133).
+        pins = self.gitleaks_pins(None)
+        calls, sleeps = self.flaky_download([self.http(504), urllib.error.URLError("reset")])
+        self.assertEqual(self.install("gitleaks", pins), [f"gitleaks {T['gitleaks']} (pinned, digest checked)"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [tc.DOWNLOAD_BACKOFF, 2 * tc.DOWNLOAD_BACKOFF], "a growing, bounded pause")
+
+    def test_a_5xx_on_every_try_fails_after_exactly_three_tries(self):
+        pins = self.gitleaks_pins(None)
+        calls, sleeps = self.flaky_download([self.http(503)] * 5)
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.install("gitleaks", pins)
+        self.assertEqual(cm.exception.code, 503)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(sleeps), 2, "no pause after the last try")
+
+    def test_a_network_error_on_every_try_fails_after_exactly_three_tries(self):
+        pins = self.gitleaks_pins(None)
+        calls, _ = self.flaky_download([urllib.error.URLError("down")] * 5)
+        with self.assertRaises(urllib.error.URLError):
+            self.install("gitleaks", pins)
+        self.assertEqual(len(calls), 3)
+
+    def test_a_4xx_on_the_gitleaks_download_fails_at_once(self):
+        pins = self.gitleaks_pins(None)
+        calls, sleeps = self.flaky_download([self.http(404)] * 5)
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self.install("gitleaks", pins)
+        self.assertEqual(cm.exception.code, 404)
+        self.assertEqual((len(calls), sleeps), (1, []))
+
+    def test_a_digest_mismatch_is_refused_at_once_and_not_downloaded_again(self):
+        pins = self.gitleaks_pins("0" * 64)
+        calls, sleeps = self.flaky_download([])
+        with self.assertRaises(tc.Refused):
+            self.install("gitleaks", pins)
+        self.assertEqual((len(calls), sleeps), (1, []))
 
     def test_gitleaks_on_a_platform_with_no_digest_is_refused(self):
         with self.assertRaises(tc.Refused) as cm:
