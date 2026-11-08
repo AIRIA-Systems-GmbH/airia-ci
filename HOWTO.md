@@ -88,6 +88,29 @@ ruff-floor = "error"
 
 `"error"` is its only value: no repository can stay on warnings past the cut-over.
 
+### Debt baseline: a dated exception that only shrinks
+
+A repository that cannot yet meet the standard (90 % coverage, no failing test, no type error) may carry the gap for a limited time. The standard does not move for anyone else; the repository holds a dated exception to it. The design and its rulings are in [`design/gate-debt-ratchet.md`](design/gate-debt-ratchet.md). It is the ruff baseline's shape (committed figures that may only fall), with an expiry and a stricter check.
+
+Set `debt-ratchet: true` on the gate call and commit `.airia/debt-baseline.json`; every section is optional, and an absent one means the standard for that gate:
+
+```json
+{
+  "version": 1,
+  "set": "2026-11-06",
+  "expires": "2027-02-04",
+  "tests": {"failing": ["tests/test_a.py::test_x"]},
+  "types": {"pyright": {"reportArgumentType": 31}},
+  "coverage": {"floor": 41}
+}
+```
+
+- **Tests** are failing node ids, not a count: every id that fails (or errors) must be in `tests.failing`, so a new failure cannot hide behind a fixed one. **Types** are pyright errors per rule (a rule absent counts 0; `type-checker: mypy-strict` with a `types` section fails). **Coverage** is a floor in `[0, 100]` that replaces 90 while the file is valid; the `coverage-floor` input stays refused under 90.
+- **It only shrinks.** On a pull request the lint job compares the file with the base branch's copy and fails on a raised count, a new test id, a lower coverage floor, or a later `set` or `expires`. No input, label or comment raises a figure.
+- **It expires.** `expires` is at most 90 days after `set`, with no renewal. Within 14 days the lint job warns; after the day the baselined sections are ignored and the standard applies, so the job is red until the repository meets it. An extension is a ruling in an airia-ci issue and a change to the gate, never a consumer edit.
+- **A malformed file fails loud.** A missing file, bad JSON, an unknown key, a wrong type, a bad or reversed date, a horizon over 90 days, a negative count, a floor outside `[0, 100]` or a duplicate id is an `::error` in the lint and test jobs, never a fallback to the standard or a silent pass.
+- **Lowering it.** When a figure is better than its baseline (a baselined test now passes, a rule's count fell, coverage reached a whole point above the floor), the gate passes, and writes to the job summary and as a `::notice` what improved and the replacement JSON. Run `ci-local.sh --write-debt-baseline` to write the same lower figures, and commit the file. The writer never raises a figure: it takes the minimum of the file and what it measures (pyright, pytest with `-rfE`, coverage), drops fixed ids and rules at 0, keeps `set` and `expires`, never adds a section, and refuses to write anything if a measurement is worse than the file. A person commits it; no bot does. The lint job's notice holds the pyright figures and the test job's the test ids and the coverage floor, each as a whole file; the writer does all three at once.
+
 ### Django
 
 The gate has nothing Django-specific. The template needs three additions:
@@ -232,6 +255,7 @@ uvx zizmor@<pin> --offline .github
 | Input | What it adds | Limit |
 |---|---|---|
 | `coverage-floor` | a higher floor | refused under 90 |
+| `debt-ratchet` | `true` holds failing tests, pyright errors and the coverage floor to a dated, shrinking `.airia/debt-baseline.json` | [Debt baseline](#debt-baseline-a-dated-exception-that-only-shrinks); expires within 90 days |
 | `type-checker` | `mypy-strict` instead of `pyright` | only where pins.toml allows it (AIRIA-process); `ty` is refused until its 1.0 |
 | `python-versions` | more Pythons, e.g. `'["3.12", "3.13"]'` | each from `pins.toml`'s allowed list |
 | `paths` | what ruff and the type checker read | |
@@ -275,8 +299,8 @@ jobs:
 
 ### May add, may not weaken
 
-- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin; enable more ruff rules than the floor; switch floor rules off per file for test paths _(proposed)_ and for `migrations/`, which ruff skips; lower `.airia/ruff-baseline.json`; fail on the ruff floor before the 2026-10-22 cut-over (`[tool.airia] ruff-floor = "error"`).
-- **May not:** lower the coverage floor, in the input or in `pyproject.toml`; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check; enable fewer ruff rules than the floor (a narrower `select`, no `select`, or a global `ignore` of a floor rule); switch a floor rule off per file outside tests and `migrations/`; suppress a rule with `# noqa` more often than `.airia/ruff-baseline.json` records. Until 2026-10-22 (UTC) the last three only warn; from that day on they fail the lint job, so onboard first: `ruff check --fix`, `ruff format`, `ruff check --add-noqa`, then record the baseline, all in one `ci-local.sh --onboard`.
+- **May:** raise the floor; skip lint and test on a docs-only PR (`docs-paths`); test on more allowed Pythons; add your own jobs through `extra-jobs`; add review rules (`.github/claude-review.md`, `extra-allow`, `extra-deny`); lock a newer version of a tool than the pin; enable more ruff rules than the floor; switch floor rules off per file for test paths _(proposed)_ and for `migrations/`, which ruff skips; lower `.airia/ruff-baseline.json` and `.airia/debt-baseline.json`; fail on the ruff floor before the 2026-10-22 cut-over (`[tool.airia] ruff-floor = "error"`).
+- **May not:** lower the coverage floor, in the input or in `pyproject.toml`, except through a valid [debt baseline](#debt-baseline-a-dated-exception-that-only-shrinks) (`debt-ratchet: true`): its `coverage.floor` may be under 90 until its `expires`, at most 90 days after `set` (the Architect's design, `design/gate-debt-ratchet.md`, amendments A to C), and may only rise; switch a gate off; use a type checker outside the list; lock a tool below its pin; run a tool unpinned; add a bypass to the ruleset or drop a required check; enable fewer ruff rules than the floor (a narrower `select`, no `select`, or a global `ignore` of a floor rule); switch a floor rule off per file outside tests and `migrations/`; suppress a rule with `# noqa` more often than `.airia/ruff-baseline.json` records. Until 2026-10-22 (UTC) the last three only warn; from that day on they fail the lint job, so onboard first: `ruff check --fix`, `ruff format`, `ruff check --add-noqa`, then record the baseline, all in one `ci-local.sh --onboard`.
 
 The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
 

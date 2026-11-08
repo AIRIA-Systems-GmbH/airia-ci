@@ -20,6 +20,11 @@
 #
 # and `--write-baseline` to lower the baseline after removing suppressions.
 #
+# With `debt-ratchet: true`, `--write-debt-baseline` lowers .airia/debt-baseline.json to what this machine
+# measures (pyright errors per rule, failing test ids, coverage), the way the gate's notice says. It runs
+# nothing else, only ever lowers a figure (a worse measurement refuses the write), and keeps the dates.
+# You commit the file.
+#
 # The gate's inputs, when your ci.yml sets them: AIRIA_COVERAGE_FLOOR (90),
 # AIRIA_TYPE_CHECKER (pyright, or mypy-strict), AIRIA_PATHS (.),
 # AIRIA_DURATIONS (25). AIRIA_XDIST_WORKERS (4) is what `-n auto` resolves to
@@ -30,8 +35,8 @@ set -euo pipefail
 REF=main
 mode="${1:-}"
 case "$mode" in
-  "" | --onboard | --write-baseline) ;;
-  *) echo "ci-local: unknown option $mode (--onboard or --write-baseline)" >&2; exit 2 ;;
+  "" | --onboard | --write-baseline | --write-debt-baseline) ;;
+  *) echo "ci-local: unknown option $mode (--onboard, --write-baseline or --write-debt-baseline)" >&2; exit 2 ;;
 esac
 
 floor="${AIRIA_COVERAGE_FLOOR:-90}"
@@ -64,6 +69,32 @@ done
 # The gate's own ruff check, from airia-ci's main like this script, laid out as in the repository.
 harness="$(mktemp -d)"
 trap 'rm -rf "$harness"' EXIT
+if [ "$mode" = --write-debt-baseline ]; then
+  # The gate's own debt.py, from the ref this script came from. Its measuring commands are the ratchet's in
+  # reusable-python-gate.yml (tests/test_ci_local.py pairs them), except that pytest holds no floor here: this is
+  # a measurement, and the writer decides whether the coverage figure is worse than the file.
+  debt=.github/actions/python-toolchain/debt.py
+  mkdir -p "$harness/$(dirname "$debt")"
+  gh api "repos/AIRIA-Systems-GmbH/airia-ci/contents/$debt?ref=$REF" -H 'Accept: application/vnd.github.raw' > "$harness/$debt"
+  measured=()
+  if [ "$checker" = pyright ]; then
+    pyright_report="$harness/pyright.json"
+    status=0
+    uv run pyright --outputjson --pythonpath "$PWD/.venv/bin/python" "${paths[@]}" > "$pyright_report" || status=$?
+    if [ "$status" -gt 1 ]; then
+      echo "ci-local: pyright exited $status without a report" >&2
+      exit 1
+    fi
+    measured+=(--pyright "$pyright_report")
+  fi
+  report="$harness/coverage.json"
+  output="$harness/pytest.out"
+  status=0
+  uv run pytest "--durations=$durations" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=0" 2>&1 | tee "$output" || status=$?
+  # Not `exec`: the EXIT trap removes the scratch directory. A refusal exits non-zero under `set -e`.
+  uv run python3 "$harness/$debt" write ${measured[@]+"${measured[@]}"} --tests "$status" "$output" --coverage "$report"
+  exit 0
+fi
 for f in .github/actions/python-toolchain/toolchain.py templates/python/pyproject.toml pins.toml; do
   mkdir -p "$harness/$(dirname "$f")"
   gh api "repos/AIRIA-Systems-GmbH/airia-ci/contents/$f?ref=$REF" -H 'Accept: application/vnd.github.raw' > "$harness/$f"

@@ -11,6 +11,8 @@ otherwise; a gate tool missing from the project environment stops it with the
 fix. The ruff floor and baseline run through the gate's own toolchain.py,
 fetched from main as the script is; `--onboard` fixes, formats and marks the rest `# noqa`
 before it records the baseline, and `--write-baseline` only records it.
+`--write-debt-baseline` measures as the gate's ratchet does and lowers .airia/debt-baseline.json
+through the gate's debt.py, or refuses.
 
 Run: python3 -m unittest discover -s tests
 """
@@ -104,7 +106,8 @@ class CiLocal(unittest.TestCase):
                     if indent == in_ratchet and line.strip() in ("else", "fi"):
                         in_ratchet = None
                     else:
-                        # The debt ratchet's commands have no ci-local twin until #127 slice 6.
+                        # The ratchet's measuring commands are paired with `--write-debt-baseline`'s in
+                        # test_the_debt_writer_measures_with_the_gates_ratchet_commands.
                         ratchet_lines.append(line.strip())
                         continue
                 elif line.strip() == 'if [ "$RATCHET" = true ]; then':
@@ -189,6 +192,134 @@ class CiLocal(unittest.TestCase):
         p, _ = self.run_it(AIRIA_TYPE_CHECKER="ty")
         self.assertEqual(p.returncode, 2)
         self.assertIn("no type checker ty", p.stderr)
+
+
+# A fake `uv` for --write-debt-baseline: pyright and pytest print canned output (and pytest writes the coverage
+# report) with chosen exit codes, and `run python3 <script>` runs the real script, which is debt.py as fetched.
+WRITER_UV = """#!/usr/bin/env python3
+import json, os, subprocess, sys
+args = sys.argv[1:]
+with open(os.environ["FAKE_UV_LOG"], "a") as log:
+    log.write(json.dumps({"args": args}) + "\\n")
+if args[:2] == ["run", "pyright"]:
+    sys.stdout.write(open(os.environ["FAKE_PYRIGHT_OUT"]).read())
+    sys.exit(int(os.environ.get("FAKE_PYRIGHT_EXIT", "1")))
+if args[:2] == ["run", "pytest"]:
+    sys.stdout.write(open(os.environ["FAKE_PYTEST_OUT"]).read())
+    for a in args:
+        if a.startswith("--cov-report=json:"):
+            open(a.split(":", 1)[1], "w").write('{"totals": {"percent_covered": %s}}' % os.environ["FAKE_PERCENT"])
+    sys.exit(int(os.environ.get("FAKE_PYTEST_EXIT", "1")))
+if args[:2] == ["run", "python3"]:
+    sys.exit(subprocess.run([sys.executable, *args[2:]]).returncode)
+sys.exit(0)
+"""
+
+DEBT = ".github/actions/python-toolchain/debt.py"
+DATES = {"version": 1, "set": "2026-11-06", "expires": "2027-02-04"}
+SUMMARY = ("=========================== short test summary info ============================\n"
+           "FAILED tests/test_a.py::test_x - boom\n=================== 1 failed, 3 passed in 0.12s ===================\n")
+
+
+class CiLocalWriteDebtBaseline(unittest.TestCase):
+    """`--write-debt-baseline`: lower .airia/debt-baseline.json to this machine's measurement, or refuse."""
+
+    def setUp(self):
+        self.r = Runner(self, [[f"contents/{DEBT}\\?ref=main ", {"text": (ROOT / DEBT).read_text()}]])
+        self.r.tool("uv", WRITER_UV)
+        self.repo = self.r.tmp / "app"
+        (self.repo / ".venv/bin").mkdir(parents=True)
+        (self.repo / ".airia").mkdir()
+        for tool in ("ruff", "pytest", "pyright", "mypy"):
+            self.r.tool(tool, "#!/bin/sh\n")
+            (self.repo / ".venv/bin" / tool).symlink_to(self.r.bin / tool)
+        (self.repo / "pyproject.toml").write_text("[project]\nname = 'app'\n")
+        self.file = self.repo / ".airia/debt-baseline.json"
+        self.file.write_text(json.dumps({**DATES, "tests": {"failing": ["tests/test_a.py::test_x", "tests/test_b.py::test_old"]},
+                                         "types": {"pyright": {"reportArgumentType": 3, "reportCallIssue": 2}},
+                                         "coverage": {"floor": 41}}))
+        self.log = self.r.tmp / "uv.jsonl"
+        (self.r.tmp / "pytest.out").write_text(SUMMARY)
+        self.pyright(["reportArgumentType", "reportArgumentType", "reportCallIssue", "reportCallIssue"])
+
+    def pyright(self, rules):
+        diagnostics = [{"severity": "error", "rule": r, "file": "a.py", "message": "m", "range": {"start": {"line": 0}}}
+                       for r in rules]
+        (self.r.tmp / "pyright.out").write_text(json.dumps({"generalDiagnostics": diagnostics}))
+
+    def run_it(self, **env):
+        p = self.r.script(SCRIPT, "--write-debt-baseline", cwd=self.repo, FAKE_UV_LOG=str(self.log),
+                          FAKE_PYRIGHT_OUT=str(self.r.tmp / "pyright.out"), FAKE_PYTEST_OUT=str(self.r.tmp / "pytest.out"),
+                          FAKE_PERCENT=env.pop("FAKE_PERCENT", "57.9"), **env)
+        calls = [json.loads(line)["args"] for line in self.log.read_text().splitlines()] if self.log.exists() else []
+        return p, calls
+
+    def test_it_measures_as_the_gate_does_and_lowers_the_file_keeping_the_dates(self):
+        p, calls = self.run_it()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(calls[0], ["sync", "--locked"])
+        self.assertEqual([c[1] for c in calls[1:]], ["pyright", "pytest", "python3"], "no ruff, no format, no import-linter")
+        self.assertEqual(calls[1][2], "--outputjson")
+        self.assertIn("-rfE", calls[2])
+        self.assertIn("--cov-fail-under=0", calls[2], "a measurement holds no floor; the writer judges the figure")
+        write = calls[3]
+        self.assertEqual((write[3], write[4], write[6], write[7], write[9]), ("write", "--pyright", "--tests", "1", "--coverage"))
+        self.assertEqual(write[5].rsplit("/", 1)[1], "pyright.json")
+        written = json.loads(self.file.read_text())
+        self.assertEqual(written["tests"], {"failing": ["tests/test_a.py::test_x"]})
+        self.assertEqual(written["types"], {"pyright": {"reportArgumentType": 2, "reportCallIssue": 2}})
+        self.assertEqual(written["coverage"], {"floor": 57})
+        self.assertEqual((written["set"], written["expires"]), (DATES["set"], DATES["expires"]))
+        self.assertEqual([c["args"][1] for c in self.r.calls()], [f"repos/AIRIA-Systems-GmbH/airia-ci/contents/{DEBT}?ref=main"],
+                         "only debt.py is fetched, from the ref the script came from")
+
+    def test_a_worse_measurement_is_refused_and_the_file_is_untouched(self):
+        self.pyright(["reportArgumentType"] * 4)
+        before = self.file.read_bytes()
+        p, _ = self.run_it()
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("pyright reportArgumentType rose from 3 to 4", p.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_a_coverage_below_the_floor_is_refused(self):
+        before = self.file.read_bytes()
+        p, _ = self.run_it(FAKE_PERCENT="30")
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_mypy_strict_skips_pyright_and_leaves_types_alone(self):
+        p, calls = self.run_it(AIRIA_TYPE_CHECKER="mypy-strict")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual([c[1] for c in calls[1:]], ["pytest", "python3"])
+        self.assertNotIn("--pyright", calls[-1])
+        self.assertEqual(json.loads(self.file.read_text())["types"], {"pyright": {"reportArgumentType": 3, "reportCallIssue": 2}})
+
+    def test_pyright_that_cannot_run_stops_before_pytest(self):
+        p, calls = self.run_it(FAKE_PYRIGHT_EXIT="2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("pyright exited 2 without a report", p.stderr)
+        self.assertNotIn("pytest", [c[1] for c in calls if len(c) > 1])
+
+    def test_a_pytest_that_did_not_finish_is_not_a_measurement(self):
+        before = self.file.read_bytes()
+        p, _ = self.run_it(FAKE_PYTEST_EXIT="2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("pytest exited 2", p.stdout)
+        self.assertEqual(self.file.read_bytes(), before)
+
+    def test_the_debt_writer_measures_with_the_gates_ratchet_commands(self):
+        """The ratchet's pyright and pytest lines in the gate are the writer's, `uv run` in front, so the figures
+        it writes are the ones the gate will see. The one difference is deliberate: no coverage floor (see below)."""
+        ours = SCRIPT.read_text().replace("\\\n  ", "")
+        lines = [line.strip() for name in ("Type check", "Pytest at the coverage floor")
+                 for line in step(GATE, name)["run"].splitlines()]
+        pyright = [line for line in lines if line.startswith("pyright --outputjson ")]
+        pytest = [line for line in lines if re.match(r"pytest .* -rfE ", line)]
+        self.assertEqual((len(pyright), len(pytest)), (1, 1), lines)
+        self.assertIn("uv run " + pyright[0].split(" > ")[0], ours)
+        cmd = pytest[0].split(" 2>&1")[0].replace("$DURATIONS", "$durations").replace('"--cov-fail-under=$FLOOR"',
+                                                                                         '"--cov-fail-under=0"')
+        self.assertIn("uv run " + cmd, ours)
 
 
 if __name__ == "__main__":
