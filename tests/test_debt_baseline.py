@@ -815,5 +815,237 @@ class PyrightStep(unittest.TestCase):
         self.assertEqual(self.calls(), [])
 
 
+# A pytest that prints the file $FAKE_PYTEST_OUT as pytest's terminal output, writes the JSON coverage report it was
+# asked for at $FAKE_PERCENT, records its argv, and exits with $FAKE_PYTEST_EXIT.
+FAKE_PYTEST_OUTPUT = """\
+#!/bin/sh
+echo "pytest $*" >> "$(dirname "$0")/calls"
+[ -n "$FAKE_PYTEST_OUT" ] && cat "$FAKE_PYTEST_OUT"
+for a in "$@"; do
+  case "$a" in --cov-report=json:*) [ -n "$FAKE_PERCENT" ] && echo "{\\"totals\\": {\\"percent_covered\\": $FAKE_PERCENT}}" > "${a#--cov-report=json:}";; esac
+done
+exit "${FAKE_PYTEST_EXIT:-0}"
+"""
+
+
+def summary(*lines, tail="2 failed, 3 passed in 0.12s"):
+    """What `pytest -rfE` ends with: the short test summary block, then the totals line."""
+    return "\n".join([
+        "=================================== FAILURES ===================================",
+        "FAILED inside a failure report, which is not the summary",
+        "=========================== short test summary info ============================",
+        *lines,
+        f"=================== {tail} ===================", ""])
+
+
+PARAM_ID = "tests/test_c.py::TestC::test_p[a b - c [x] d]"
+
+
+class TestsStep(unittest.TestCase):
+    """The test job's `Pytest at the coverage floor` step with the ratchet on: failing ids against `tests.failing`.
+
+    Each case runs the shipped block with a fake pytest that prints a canned `-rfE` output and exits with a
+    chosen code, so the parse, the exit-code rules and the wiring to the coverage floor are the shipped ones.
+    """
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.r.tool("pytest", FAKE_PYTEST_OUTPUT)
+        self.project = self.r.tmp / "project"
+        (self.project / ".airia").mkdir(parents=True)
+        self.out = self.r.tmp / "pytest-out.txt"
+        self.today = datetime.datetime.now(datetime.UTC).date()
+
+    def baseline(self, failing=None, **extra):
+        data = {"version": 1, "set": self.today.isoformat(),
+                "expires": (self.today + datetime.timedelta(days=60)).isoformat(), **extra}
+        if failing is not None:
+            data["tests"] = {"failing": failing}
+        (self.project / ".airia/debt-baseline.json").write_text(json.dumps(data))
+
+    def run_step(self, output, code="1", ratchet="true", percent="95", floor="90"):
+        self.out.write_text(output)
+        (self.r.bin / "calls").unlink(missing_ok=True)
+        return self.r.run(GATE, FLOOR_STEP, cwd=self.project, FLOOR=floor, DURATIONS="25", RATCHET=ratchet,
+                          AIRIA_DEBT=str(SCRIPT), FAKE_PYTEST_OUT=str(self.out), FAKE_PYTEST_EXIT=code,
+                          FAKE_PERCENT=percent)
+
+    def test_a_failing_id_in_the_baseline_passes(self):
+        self.baseline(["tests/test_a.py::test_x"])
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - AssertionError: 1 != 2"))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertNotIn("::error", p.stdout)
+        self.assertNotIn("::notice", p.stdout)
+
+    def test_a_new_failing_id_fails_even_when_a_baselined_one_got_fixed(self):
+        """The point of ids over a count: the fixed test must not pay for the new failure."""
+        self.baseline(["tests/test_a.py::test_x", "tests/test_b.py::test_old"])
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom", "FAILED tests/test_b.py::test_new - boom"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("::error title=Test outside the debt baseline::tests/test_b.py::test_new fails", p.stdout)
+        self.assertNotIn("test_x fails", p.stdout)
+        self.assertNotIn("::notice", p.stdout)
+
+    def test_a_baselined_id_that_now_passes_passes_the_gate_and_is_noticed(self):
+        self.baseline(["tests/test_a.py::test_x", "tests/test_b.py::test_old"])
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("::notice title=Debt baseline can tighten::1 baselined test(s) did not fail: "
+                      "tests/test_b.py::test_old", p.stdout)
+        self.assertNotIn("test_a.py::test_x", p.stdout.split("::notice")[1])
+
+    def test_an_erroring_id_counts_like_a_failing_one(self):
+        """A fixture error or a collection error is a red test too: ERROR lines are held to the baseline."""
+        self.baseline(["tests/test_a.py::test_x"])
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom",
+                                  "ERROR tests/test_b.py::test_setup - RuntimeError: fixture",
+                                  "ERROR tests/test_broken.py - ImportError: no module"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("tests/test_b.py::test_setup fails and is not in tests.failing", p.stdout)
+        self.assertIn("tests/test_broken.py fails and is not in tests.failing", p.stdout)
+        self.baseline(["tests/test_a.py::test_x", "tests/test_b.py::test_setup", "tests/test_broken.py"])
+        self.assertEqual(self.run_step(summary("FAILED tests/test_a.py::test_x - boom",
+                                               "ERROR tests/test_b.py::test_setup - RuntimeError: fixture",
+                                               "ERROR tests/test_broken.py - ImportError: no module")).returncode, 0)
+
+    def test_parametrised_ids_keep_their_brackets_spaces_and_dashes(self):
+        """The id is cut at the ` - ` that starts the message, not at one inside the `[...]` of a parameter."""
+        ids = ["tests/test_b.py::TestC::test_y[1]", "tests/test_b.py::test_z[hello world]", PARAM_ID,
+               "tests/test_d.py::test_q[]", "tests/test_d.py::test_r[a]b]"]
+        self.baseline(ids)
+        lines = [f"FAILED {i} - AssertionError: assert 'x - y' == 'z'" for i in ids[:4]]
+        lines.append(f"FAILED {ids[4]}")  # no message at all
+        p = self.run_step(summary(*lines))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        # No error and no notice: every id was read whole, found in the baseline, and none of them is unused.
+        self.assertNotIn("::error", p.stdout)
+        self.assertNotIn("::notice", p.stdout)
+
+    def test_an_id_that_differs_only_in_its_parameter_is_a_new_id(self):
+        self.baseline(["tests/test_b.py::test_z[1]"])
+        p = self.run_step(summary("FAILED tests/test_b.py::test_z[2] - boom"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("tests/test_b.py::test_z[2] fails", p.stdout)
+
+    def test_only_the_summary_block_counts(self):
+        """A test that prints FAILED, or the failure report above the summary, can neither add nor hide an id."""
+        self.baseline(["tests/test_a.py::test_x"])
+        noisy = "FAILED tests/test_zz.py::test_printed - from stdout\n" + summary("FAILED tests/test_a.py::test_x - boom")
+        p = self.run_step(noisy + "FAILED tests/test_after.py::t - after the block\n")
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_colour_codes_are_stripped(self):
+        self.baseline(["tests/test_a.py::test_x"])
+        """A caller with FORCE_COLOR / PY_COLORS still gets its ids read: the escape codes are not part of an id."""
+        coloured = summary("\x1b[31mFAILED\x1b[0m tests/test_a.py::test_x - \x1b[31mboom\x1b[0m")
+        p = self.run_step(coloured)
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_exit_codes_2_to_5_fail_outright_even_with_every_id_baselined(self):
+        """Interrupted, internal error, usage error, nothing collected: not a run the baseline can judge."""
+        self.baseline(["tests/test_a.py::test_x"])
+        for code, what in (("2", "was interrupted"), ("3", "hit an internal error"), ("4", "was used wrongly"),
+                           ("5", "collected no tests")):
+            with self.subTest(code=code):
+                p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"), code=code)
+                self.assertEqual(p.returncode, 1, p.stdout)
+                self.assertIn(f"pytest exited {code} and {what}", p.stdout)
+
+    def test_any_other_exit_code_fails_too(self):
+        self.baseline([])
+        p = self.run_step("", code="139")
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("pytest exited 139 and failed to run", p.stdout)
+
+    def test_exit_1_with_no_parsed_id_fails(self):
+        """A crash (or a coverage miss with nothing failing) is not 'no failures', whatever the baseline holds."""
+        self.baseline([])
+        for output in ("", "Traceback (most recent call last):\n", summary(tail="1 passed in 0.1s"),
+                       "FAILED tests/test_a.py::test_x - outside any summary\n"):
+            with self.subTest(output=output[:30]):
+                p = self.run_step(output, code="1")
+                self.assertEqual(p.returncode, 1, p.stdout)
+                self.assertIn("exited 1 but no FAILED or ERROR line", p.stdout)
+
+    def test_exit_0_passes_with_a_non_empty_baseline_and_notices_the_tightening(self):
+        self.baseline(["tests/test_a.py::test_x"])
+        p = self.run_step(summary(tail="5 passed in 0.1s"), code="0")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertIn("tests/test_a.py::test_x", p.stdout)
+        self.assertIn("::notice", p.stdout)
+
+    def test_exit_0_ignores_failed_looking_lines(self):
+        """Exit 0 means pytest saw no failure; a printed line must not turn a green run red."""
+        self.baseline([])
+        self.assertEqual(self.run_step(summary("FAILED tests/test_a.py::test_x - printed"), code="0").returncode, 0)
+
+    def test_a_file_without_a_tests_section_allows_no_failure(self):
+        self.baseline(None, coverage={"floor": 41})
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertIn("tests/test_a.py::test_x fails", p.stdout)
+
+    def test_past_the_expiry_no_baselined_failure_is_allowed(self):
+        self.baseline(["tests/test_a.py::test_x"], set="2026-01-01", expires="2026-01-02")
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        self.assertEqual(p.returncode, 1, p.stdout)
+
+    def test_a_missing_or_invalid_baseline_fails_loud_and_never_falls_back(self):
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Debt baseline::", p.stdout)
+        self.assertIn("is missing", p.stdout)
+        (self.project / ".airia/debt-baseline.json").write_text("{")
+        self.assertIn("not valid JSON", self.run_step(summary(tail="1 passed"), code="0").stdout)
+
+    def test_the_coverage_floor_still_holds_when_every_failing_id_is_baselined(self):
+        """Failing tests lower coverage; the ids passing must not let a figure under the floor through."""
+        self.baseline(["tests/test_a.py::test_x"])
+        out = summary("FAILED tests/test_a.py::test_x - boom")
+        low = self.run_step(out, floor="41", percent="40.9")
+        self.assertEqual(low.returncode, 1, low.stdout)
+        self.assertEqual(self.run_step(out, floor="41", percent="41.0").returncode, 0)
+        self.assertEqual(self.run_step(out, floor="41", percent="").returncode, 1)
+        self.assertIn("::error title=No coverage figure::", self.run_step(out, floor="41", percent="").stdout)
+
+    def test_pytest_runs_once_with_rfE_and_the_same_floor_flags(self):
+        self.baseline(["tests/test_a.py::test_x"])
+        self.run_step(summary("FAILED tests/test_a.py::test_x - boom"), floor="41", percent="95")
+        report = self.r.tmp / "coverage.json"
+        self.assertEqual((self.r.bin / "calls").read_text().splitlines(), [
+            f"pytest --durations=25 -rfE --cov-report=term-missing --cov-report=json:{report} --cov-fail-under=41"])
+
+    def test_pytests_output_still_reaches_the_log(self):
+        self.baseline(["tests/test_a.py::test_x"])
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        self.assertIn("FAILED tests/test_a.py::test_x - boom", p.stdout)
+
+    def test_with_the_ratchet_off_pytest_runs_as_before_and_ids_are_not_judged(self):
+        """Default false: no -rfE, no baseline read (none exists here), and any failure is a red step."""
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"), ratchet="false", floor="90", percent="95")
+        self.assertEqual(p.returncode, 1)
+        report = self.r.tmp / "coverage.json"
+        self.assertEqual((self.r.bin / "calls").read_text().splitlines(), [
+            f"pytest --durations=25 --cov-report=term-missing --cov-report=json:{report} --cov-fail-under=90"])
+        self.assertNotIn("Debt baseline", p.stdout)
+        self.assertEqual(self.run_step("", code="0", ratchet="false").returncode, 0)
+
+    def test_a_matrix_of_two_pythons_is_compared_one_by_one(self):
+        """Each Python is its own job and runs the step on its own output: 3.13 failing an id 3.12 does not
+        fails 3.13 only, and a baseline id failing on one Python only is held for the one that fails it."""
+        matrix = yaml.safe_load(GATE.read_text())["jobs"]["test"]["strategy"]
+        self.assertFalse(matrix["fail-fast"])
+        self.assertIn("python", matrix["matrix"])
+        self.baseline(["tests/test_a.py::test_x"])
+        py312 = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"))
+        py313 = self.run_step(summary("FAILED tests/test_a.py::test_x - boom",
+                                      "FAILED tests/test_a.py::test_only_313 - boom"))
+        self.assertEqual(py312.returncode, 0, py312.stdout)
+        self.assertEqual(py313.returncode, 1, py313.stdout)
+        self.assertIn("test_only_313 fails", py313.stdout)
+        # Neither run leaves state the other reads: 3.12 again, after 3.13 failed, is still green.
+        self.assertEqual(self.run_step(summary("FAILED tests/test_a.py::test_x - boom")).returncode, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

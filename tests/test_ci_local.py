@@ -120,6 +120,8 @@ class CiLocal(unittest.TestCase):
         self.assertEqual(seen, 5, "ruff check, ruff format, pyright, mypy, pytest")
         # The skip must not swallow a renamed line: the ratchet's pyright command is there, and is the one skipped.
         self.assertTrue(any(re.match(r"pyright --outputjson ", c) for c in ratchet_lines), ratchet_lines)
+        # Likewise the test job's: pytest with -rfE is the ratchet's, and the plain pytest command beside it is checked.
+        self.assertTrue(any(re.match(r"pytest .* -rfE ", c) for c in ratchet_lines), ratchet_lines)
 
     def test_mypy_import_contracts_paths_and_every_cpu_when_asked(self):
         (self.repo / "pyproject.toml").write_text("[tool.importlinter]\nroot_package = 'app'\n")
