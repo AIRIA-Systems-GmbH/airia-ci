@@ -87,6 +87,31 @@ class SayWhyClaudeFailed(unittest.TestCase):
                    "message": {"content": [{"type": "text", "text": "API Error: Rate limit reached"}]}}
         self.assertIn("title=Claude usage limit::", self.say([limited, *execution("")]))
 
+    def test_a_rejected_rate_limit_event_is_the_limit_with_its_reset_as_utc(self):
+        # The CLI's structured signal (this repository's own run, 2026-11-08); it beats the text and says the token is fine.
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1794384000}}
+        out = self.say([event, *execution("", num_turns=1, total_cost_usd=0, modelUsage={})])
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn("the limit resets 2026-11-11 08:00 UTC; " + RETRY + " " + claude_limit.TOKEN_OK, out)
+        self.assertNotIn("auth failure", out)
+        # No resetsAt, still the unpaid signature: the event counts, and the annotation says there is no reset time.
+        # A paid run with the same event is a different case (the watchdog waited it out) and is not a limit.
+        out = self.say([{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}},
+                        *execution("", num_turns=1, total_cost_usd=0, modelUsage={})])
+        self.assertIn("the text gives no reset time; " + RETRY, out)
+
+    def test_an_allowed_event_with_a_reset_time_is_not_a_limit(self):
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1794441600}}
+        self.assertEqual(self.say([event, *execution("Tool use was denied by the user")]), "")
+
+    def test_a_paid_errored_run_with_a_rejected_event_prints_no_limit_line(self):
+        # The watchdog emits `rejected` and the run then fails for another reason after it has paid for turns.
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1794384000}}
+        out = self.say([event, *execution("Tool use was denied by the user")])
+        self.assertNotIn("usage limit", out)
+        self.assertNotIn(claude_limit.TOKEN_OK, out)
+        self.assertEqual(out, "")
+
     def test_the_zero_usage_signature_is_a_likely_limit_or_auth_failure(self):
         out = self.say(execution("", num_turns=1, total_cost_usd=0, modelUsage={}))
         self.assertIn("::error title=Likely Claude usage limit or auth failure::", out)
