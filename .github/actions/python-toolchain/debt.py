@@ -6,7 +6,8 @@
     debt.py [--today YYYY-MM-DD] compare [--event NAME] BASE HEAD
     debt.py [--file PATH] [--today YYYY-MM-DD] pyright REPORT
     debt.py [--file PATH] mypy-guard
-    debt.py [--file PATH] [--today YYYY-MM-DD] tests STATUS OUTPUT
+    debt.py [--file PATH] [--today YYYY-MM-DD] tests [--coverage REPORT] STATUS OUTPUT
+    debt.py [--file PATH] write [--pyright REPORT] [--tests STATUS OUTPUT] [--coverage REPORT]
 
 Design: design/gate-debt-ratchet.md (sections 1 to 4). The file is a dated,
 tighten-only exception to the standard; this module loads it and decides
@@ -48,8 +49,13 @@ outside `set`..`expires`, holds the standard: nothing may fail.
 job's pytest step holds. The `coverage` section, `types` (by `pyright` above) and `tests` (by `tests` above) are
 enforced; all are validated and compared.
 
-`dumps` is the writer's canonical serialisation (the replacement JSON of
-section 5); the writer itself is a later slice.
+`tighten` is design section 5's rule: the minimum of the old file and the measurement, fixed ids and rules at 0
+dropped, `set` and `expires` kept, a section the file lacks never added. When a figure is better than its baseline
+`pyright` and `tests` print a `::notice` (what improved, and the full replacement JSON on one line) and append the same
+with the pretty JSON to `$GITHUB_STEP_SUMMARY`; `tests --coverage REPORT` adds the coverage floor to that.
+`write [--pyright REPORT] [--tests STATUS OUTPUT] [--coverage REPORT]` is `ci-local.sh --write-debt-baseline`: it
+writes `tighten`'s replacement to the file, and refuses (exit 1, file untouched) when any measurement is worse than
+the file. `dumps` is the canonical serialisation of both.
 
 Standard library only: it runs before any project environment exists.
 """
@@ -59,6 +65,8 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -195,6 +203,112 @@ def dumps(baseline: dict) -> str:
     return json.dumps(out, indent=2) + "\n"
 
 
+def tighten(data: dict, *, pyright: dict[str, int] | None = None, failing: set[str] | None = None,
+            coverage: float | None = None) -> tuple[dict, list[str], list[str]]:
+    """The baseline `data` lowered to a measurement: (replacement, what improved, what is worse).
+
+    Design section 5. Only the sections `data` already holds are touched, and only for a measurement given: the
+    writer never adds a section (an absent one is the standard, so adding one would loosen it). `pyright` is the
+    error count per rule (a rule absent counts 0), `failing` the failing and erroring test ids, `coverage` the
+    measured percentage. Each figure becomes the minimum of the old one and the measurement (the floor, the
+    maximum, whole points), ids that no longer fail and rules at 0 are dropped, `set` and `expires` are kept.
+    A figure that is worse is listed, and the caller must refuse the whole write.
+    """
+    new = json.loads(json.dumps(data))
+    better: list[str] = []
+    worse: list[str] = []
+    if pyright is not None and "pyright" in data.get("types", {}):
+        old = data["types"]["pyright"]
+        for rule in sorted(set(old) | set(pyright)):
+            was, now = old.get(rule, 0), pyright.get(rule, 0)
+            if now > was:
+                worse.append(f"pyright {rule} rose from {was} to {now}")
+            elif now < was:
+                better.append(f"pyright {rule} {was} -> {now}")
+        new["types"]["pyright"] = {r: min(old.get(r, 0), pyright.get(r, 0)) for r in old
+                                   if min(old[r], pyright.get(r, 0)) > 0}
+    if failing is not None and "failing" in data.get("tests", {}):
+        old_ids = set(data["tests"]["failing"])
+        worse += [f"test {i} fails and is not in tests.failing" for i in sorted(failing - old_ids)]
+        better += [f"test {i} no longer fails" for i in sorted(old_ids - failing)]
+        new["tests"]["failing"] = sorted(old_ids & failing)
+    if coverage is not None and "floor" in data.get("coverage", {}):
+        old_floor = data["coverage"]["floor"]
+        whole = min(100, math.floor(coverage))
+        if whole < old_floor:
+            worse.append(f"coverage {coverage:.2f}% is below the baseline floor {old_floor}")
+        elif whole > old_floor:
+            better.append(f"coverage floor {old_floor} -> {whole} ({coverage:.2f}% measured)")
+            new["coverage"]["floor"] = whole
+    return new, better, worse
+
+
+def report_tightened(better: list[str], new: dict, headline: str) -> None:
+    """The `::notice` and the job summary of section 5: what improved, and the full replacement JSON.
+
+    The notice is one line (a workflow command is line-based), so its JSON is compact; the summary holds the
+    pretty text a person can save as the file. `ci-local.sh --write-debt-baseline` writes the same figures.
+    """
+    print(f"::notice title=Debt baseline can tighten::{headline}. Replacement .airia/debt-baseline.json, "
+          f"or run ci-local.sh --write-debt-baseline: {json.dumps(json.loads(dumps(new)), separators=(',', ':'))}")
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as f:
+            f.write("### The debt baseline can tighten\n\n" + "".join(f"- {line}\n" for line in better)
+                    + "\nCommit this as `.airia/debt-baseline.json` (a person does; `ci-local.sh --write-debt-baseline` "
+                    + f"writes the same figures):\n\n```json\n{dumps(new)}```\n")
+
+
+def coverage_percent(report: Path) -> float | None:
+    """`totals.percent_covered` of coverage's JSON report, or None when there is none (the step reports that)."""
+    try:
+        value = json.loads(report.read_text(encoding="utf-8"))["totals"]["percent_covered"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return float(value) if is_number(value) else None
+
+
+def write(path: Path, *, pyright_report: Path | None, tests_run: tuple[int, Path] | None,
+          coverage_report: Path | None) -> int:
+    """`ci-local.sh --write-debt-baseline`: lower the file at `path` to the measurements, or change nothing.
+
+    It never raises a figure and never adds a section. A measurement that is worse than the file, an invalid
+    file, a pyright report that is not JSON, a pytest run that did not finish (exit 2-5, or 1 with no id) or a
+    missing coverage report refuses the write with an `::error` and exit 1.
+    """
+    try:
+        data = load(path)
+        measured = {}
+        if pyright_report is not None and "pyright" in data.get("types", {}):
+            measured["pyright"] = {r: len(v) for r, v in pyright_errors(pyright_report).items()}
+        if tests_run is not None and "failing" in data.get("tests", {}):
+            status, output = tests_run
+            measured["failing"] = pytest_failing(status, output.read_text(encoding="utf-8", errors="replace"))
+        if coverage_report is not None and "floor" in data.get("coverage", {}):
+            percent = coverage_percent(coverage_report)
+            if percent is None:
+                raise Invalid([f"{coverage_report} holds no coverage figure, so the floor cannot be lowered or raised"])
+            measured["coverage"] = percent
+    except Invalid as e:
+        for reason in e.args[0]:
+            print(f"::error title=Debt baseline::{reason}")
+        return 1
+    except OSError as e:
+        print(f"::error title=Debt baseline::cannot read a measurement: {e}")
+        return 1
+    new, better, worse = tighten(data, **measured)
+    if worse:
+        for reason in worse:
+            print(f"::error title=Debt baseline only tightens::{reason}; nothing was written")
+        return 1
+    if new == data:
+        print(f"{path} is already as low as the measurement: nothing to write")
+        return 0
+    path.write_text(dumps(new), encoding="utf-8")
+    print(f"{path} lowered: {'; '.join(better)}")
+    return 0
+
+
 def coverage_floor(path: Path, requested: float, standard: float, today: datetime.date) -> float:
     """The coverage floor pytest must hold with the ratchet on (design section 2, "Coverage").
 
@@ -260,10 +374,11 @@ def pyright(baseline: Path, report: Path, today: datetime.date) -> int:
                   f"the baseline allows {allowed.get(rule, 0)}")
             for line in errors[rule]:
                 print(f"  {line} ({rule})")
-    better = [f"{rule} {allowed[rule]} -> {len(errors.get(rule, []))}" for rule in sorted(allowed)
-              if len(errors.get(rule, [])) < allowed[rule]]
-    if better and not failed:
-        print(f"::notice title=Debt baseline can tighten::pyright errors fell below the baseline: {', '.join(better)}")
+    if in_date and not failed:
+        replacement, better, _ = tighten(data, pyright={r: len(v) for r, v in errors.items()})
+        if better:
+            report_tightened(better, replacement,
+                             f"pyright errors fell below the baseline: {', '.join(b.removeprefix('pyright ') for b in better)}")
     return 1 if failed else 0
 
 
@@ -301,11 +416,24 @@ def failing_ids(text: str) -> set[str]:
     return ids
 
 
-def tests(baseline: Path, status: int, output: Path, today: datetime.date) -> int:
+def pytest_failing(status: int, text: str) -> set[str]:
+    """The failing ids of a pytest run (`-rfE`), or Invalid when the run is not one the baseline can judge."""
+    if status not in (0, 1):
+        raise Invalid([f"pytest exited {status} and {EXIT_NAMES.get(status, 'failed to run')}; "
+                       "the debt baseline holds failing tests, not a run that did not finish"])
+    failing = failing_ids(text) if status == 1 else set()
+    if status == 1 and not failing:
+        raise Invalid(["pytest exited 1 but no FAILED or ERROR line was found in its summary; a crash, or "
+                       "a coverage miss with nothing failing, is not 'no failures'. The run must pass -rfE."])
+    return failing
+
+
+def tests(baseline: Path, status: int, output: Path, today: datetime.date, coverage: Path | None = None) -> int:
     """Hold pytest's failing ids to `tests.failing` (design section 2, "Tests"), as sets.
 
-    Every failing id must be in the baseline; a baseline id that did not fail is a `::notice`. See the module doc
-    for the exit codes.
+    Every failing id must be in the baseline; a baseline id that did not fail is a `::notice`, and so is a
+    coverage figure (`coverage`, the JSON report, when there is one) whose whole points exceed `coverage.floor`.
+    See the module doc for the exit codes.
     """
     try:
         data = load(baseline)
@@ -317,23 +445,23 @@ def tests(baseline: Path, status: int, output: Path, today: datetime.date) -> in
     except OSError as e:
         print(f"::error title=Pytest output::cannot read pytest's output: {e}")
         return 1
-    if status not in (0, 1):
-        print(f"::error title=Pytest::pytest exited {status} and {EXIT_NAMES.get(status, 'failed to run')}; "
-              "the debt baseline holds failing tests, not a run that did not finish")
-        return 1
-    failing = failing_ids(text) if status == 1 else set()
-    if status == 1 and not failing:
-        print("::error title=Pytest::pytest exited 1 but no FAILED or ERROR line was found in its summary; a crash, or "
-              "a coverage miss with nothing failing, is not 'no failures'. The run must pass -rfE.")
+    try:
+        failing = pytest_failing(status, text)
+    except Invalid as e:
+        print(f"::error title=Pytest::{e.args[0][0]}")
         return 1
     in_date = datetime.date.fromisoformat(data["set"]) <= today <= datetime.date.fromisoformat(data["expires"])
     allowed = set(data.get("tests", {}).get("failing", [])) if in_date else set()
     new = sorted(failing - allowed)
     for test_id in new:
         print(f"::error title=Test outside the debt baseline::{test_id} fails and is not in tests.failing")
-    fixed = sorted(allowed - failing)
-    if fixed and not new:
-        print(f"::notice title=Debt baseline can tighten::{len(fixed)} baselined test(s) did not fail: {', '.join(fixed)}")
+    if not new and in_date:
+        percent = coverage_percent(coverage) if coverage is not None else None
+        replacement, better, _ = tighten(data, failing=failing, coverage=percent)
+        fixed = sorted(allowed - failing)
+        if better:
+            parts = [f"{len(fixed)} baselined test(s) did not fail: {', '.join(fixed)}"] if fixed else []
+            report_tightened(better, replacement, "; ".join(parts + [b for b in better if b.startswith("coverage")]))
     return 1 if new else 0
 
 
@@ -443,10 +571,18 @@ def main(argv: list[str] | None = None) -> int:
     tst = sub.add_parser("tests", help="hold pytest's failing ids (-rfE) to the baseline's tests.failing")
     tst.add_argument("status", type=int, help="pytest's exit code")
     tst.add_argument("output", type=Path, help="pytest's output")
+    tst.add_argument("--coverage", type=Path, help="coverage's JSON report, to notice a floor that can rise")
+    wr = sub.add_parser("write", help="lower the baseline file to the measurements; never raises a figure")
+    wr.add_argument("--pyright", type=Path, help="pyright --outputjson report")
+    wr.add_argument("--tests", nargs=2, metavar=("STATUS", "OUTPUT"), help="pytest's exit code and its -rfE output")
+    wr.add_argument("--coverage", type=Path, help="coverage's JSON report")
     args = ap.parse_args(argv)
     today = args.today or datetime.datetime.now(datetime.UTC).date()
+    if args.command == "write":
+        tests_run = (int(args.tests[0]), Path(args.tests[1])) if args.tests else None
+        return write(args.file, pyright_report=args.pyright, tests_run=tests_run, coverage_report=args.coverage)
     if args.command == "tests":
-        return tests(args.file, args.status, args.output, today)
+        return tests(args.file, args.status, args.output, today, args.coverage)
     if args.command == "pyright":
         return pyright(args.file, args.report, today)
     if args.command == "mypy-guard":

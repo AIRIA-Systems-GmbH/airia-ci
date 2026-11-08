@@ -690,11 +690,11 @@ class PyrightStep(unittest.TestCase):
             data["types"] = {"pyright": pyright_rules}
         (self.project / ".airia/debt-baseline.json").write_text(json.dumps(data))
 
-    def run_step(self, diagnostics, exit_code="1", checker="pyright", ratchet="true"):
+    def run_step(self, diagnostics, exit_code="1", checker="pyright", ratchet="true", **env):
         text = diagnostics if isinstance(diagnostics, str) else json.dumps({"generalDiagnostics": diagnostics})
         self.report.write_text(text)
         return self.r.run(GATE, "Type check", cwd=self.project, PATHS="src", TYPE_CHECKER=checker, RATCHET=ratchet,
-                          AIRIA_DEBT=str(SCRIPT), FAKE_PYRIGHT_REPORT=str(self.report), FAKE_PYRIGHT_EXIT=exit_code)
+                          AIRIA_DEBT=str(SCRIPT), FAKE_PYRIGHT_REPORT=str(self.report), FAKE_PYRIGHT_EXIT=exit_code, **env)
 
     def calls(self):
         f = self.r.bin / "calls"
@@ -719,13 +719,40 @@ class PyrightStep(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertIn("::notice", p.stdout)
         self.assertIn("reportArgumentType 3 -> 1", p.stdout)
-        self.assertNotIn("reportAttributeAccessIssue", p.stdout)
+        # Slice 6 appends the full replacement JSON, which holds the unchanged rule; what *improved* must not name it.
+        self.assertNotIn("reportAttributeAccessIssue", p.stdout.split(". Replacement ")[0])
 
     def test_a_rule_that_vanished_is_a_tightening(self):
         self.baseline({"reportArgumentType": 2})
         p = self.run_step([], exit_code="0")
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertIn("reportArgumentType 2 -> 0", p.stdout)
+
+    def test_the_notice_carries_a_replacement_that_round_trips_through_check_and_the_job_summary_holds_it_too(self):
+        """Section 5: the consumer commits the notice's JSON, so it must be a file `check` accepts, equal to what
+        the writer would produce, and the summary must carry the same text for a person to copy."""
+        self.baseline({"reportArgumentType": 3, "reportAttributeAccessIssue": 2})
+        summary_file = self.r.tmp / "summary.md"
+        p = self.run_step([diagnostic(), diagnostic(rule="reportAttributeAccessIssue"),
+                           diagnostic(rule="reportAttributeAccessIssue")], GITHUB_STEP_SUMMARY=str(summary_file))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        replacement = notice_json(p.stdout)
+        self.assertEqual(replacement["types"]["pyright"], {"reportArgumentType": 1, "reportAttributeAccessIssue": 2})
+        self.assertEqual((replacement["set"], replacement["expires"]),
+                         (self.today.isoformat(), (self.today + datetime.timedelta(days=60)).isoformat()))
+        committed = self.r.tmp / "committed.json"
+        committed.write_text(json.dumps(replacement))
+        self.assertEqual(debt.main(["--file", str(committed), "--today", self.today.isoformat(), "check"]), 0)
+        text = summary_file.read_text()
+        self.assertIn("reportArgumentType 3 -> 1", text)
+        self.assertEqual(json.loads(text.split("```json\n")[1].split("```")[0]), replacement)
+
+    def test_no_notice_and_no_summary_when_nothing_improved(self):
+        self.baseline({"reportArgumentType": 1})
+        summary_file = self.r.tmp / "summary.md"
+        p = self.run_step([diagnostic()], GITHUB_STEP_SUMMARY=str(summary_file))
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+        self.assertFalse(summary_file.exists())
 
     def test_a_rule_absent_from_the_file_counts_as_zero(self):
         """One rule falling must not pay for another rising from nothing."""
@@ -863,12 +890,48 @@ class TestsStep(unittest.TestCase):
             data["tests"] = {"failing": failing}
         (self.project / ".airia/debt-baseline.json").write_text(json.dumps(data))
 
-    def run_step(self, output, code="1", ratchet="true", percent="95", floor="90"):
+    def run_step(self, output, code="1", ratchet="true", percent="95", floor="90", **env):
         self.out.write_text(output)
         (self.r.bin / "calls").unlink(missing_ok=True)
         return self.r.run(GATE, FLOOR_STEP, cwd=self.project, FLOOR=floor, DURATIONS="25", RATCHET=ratchet,
                           AIRIA_DEBT=str(SCRIPT), FAKE_PYTEST_OUT=str(self.out), FAKE_PYTEST_EXIT=code,
-                          FAKE_PERCENT=percent)
+                          FAKE_PERCENT=percent, **env)
+
+    def test_the_notice_carries_ids_and_coverage_as_a_replacement_that_round_trips_through_check(self):
+        """A fixed id and a coverage figure above the floor tighten together; the notice's JSON is a valid file,
+        and the summary holds the same one for a person to copy."""
+        self.baseline(["tests/test_a.py::test_x", "tests/test_b.py::test_old"], coverage={"floor": 41})
+        summary_file = self.r.tmp / "summary.md"
+        p = self.run_step(summary("FAILED tests/test_a.py::test_x - boom"), percent="57.9", floor="41",
+                          GITHUB_STEP_SUMMARY=str(summary_file))
+        self.assertEqual(p.returncode, 0, p.stdout)
+        replacement = notice_json(p.stdout)
+        self.assertEqual(replacement["tests"], {"failing": ["tests/test_a.py::test_x"]})
+        self.assertEqual(replacement["coverage"], {"floor": 57})
+        self.assertIn("coverage floor 41 -> 57", p.stdout.split(". Replacement ")[0])
+        committed = self.r.tmp / "committed.json"
+        committed.write_text(json.dumps(replacement))
+        self.assertEqual(debt.main(["--file", str(committed), "--today", self.today.isoformat(), "check"]), 0)
+        text = summary_file.read_text()
+        self.assertIn("test tests/test_b.py::test_old no longer fails", text)
+        self.assertEqual(json.loads(text.split("```json\n")[1].split("```")[0]), replacement)
+
+    def test_a_coverage_above_the_floor_alone_is_noticed(self):
+        self.baseline([], coverage={"floor": 41})
+        p = self.run_step("", code="0", percent="60.2", floor="41")
+        self.assertEqual(p.returncode, 0, p.stdout)
+        self.assertEqual(notice_json(p.stdout)["coverage"], {"floor": 60})
+
+    def test_a_coverage_that_only_reaches_the_floor_is_not_noticed(self):
+        self.baseline([], coverage={"floor": 41})
+        p = self.run_step("", code="0", percent="41.9", floor="41")
+        self.assertEqual((p.returncode, p.stdout), (0, ""))
+
+    def test_a_new_failure_gives_no_replacement_even_when_coverage_rose(self):
+        self.baseline(["tests/test_a.py::test_x"], coverage={"floor": 41})
+        p = self.run_step(summary("FAILED tests/test_n.py::test_new - boom"), percent="80")
+        self.assertEqual(p.returncode, 1, p.stdout)
+        self.assertNotIn("::notice", p.stdout)
 
     def test_a_failing_id_in_the_baseline_passes(self):
         self.baseline(["tests/test_a.py::test_x"])
@@ -892,7 +955,8 @@ class TestsStep(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout)
         self.assertIn("::notice title=Debt baseline can tighten::1 baselined test(s) did not fail: "
                       "tests/test_b.py::test_old", p.stdout)
-        self.assertNotIn("test_a.py::test_x", p.stdout.split("::notice")[1])
+        # Slice 6 appends the full replacement JSON, which holds the still-failing id; what *improved* must not name it.
+        self.assertNotIn("test_a.py::test_x", p.stdout.split("::notice")[1].split(". Replacement ")[0])
 
     def test_an_erroring_id_counts_like_a_failing_one(self):
         """A fixture error or a collection error is a red test too: ERROR lines are held to the baseline."""
@@ -1045,6 +1109,145 @@ class TestsStep(unittest.TestCase):
         self.assertIn("test_only_313 fails", py313.stdout)
         # Neither run leaves state the other reads: 3.12 again, after 3.13 failed, is still green.
         self.assertEqual(self.run_step(summary("FAILED tests/test_a.py::test_x - boom")).returncode, 0)
+
+
+def notice_json(stdout: str) -> dict:
+    """The replacement JSON a `Debt baseline can tighten` notice carries (one line, after the last `: `)."""
+    lines = [line for line in stdout.splitlines() if line.startswith("::notice title=Debt baseline can tighten::")]
+    assert len(lines) == 1, stdout
+    return json.loads(lines[0][lines[0].index(": {") + 2:])
+
+
+class Writer(unittest.TestCase):
+    """debt.py write (what `ci-local.sh --write-debt-baseline` runs) and `tighten`, design section 5.
+
+    The writer takes the minimum of the old file and the measurement, drops what is fixed, keeps the dates,
+    and refuses a measurement that is worse: a person commits the file, and it must never be a way to raise.
+    """
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = Path(tmp.name)
+        self.path = self.dir / "debt-baseline.json"
+        self.path.write_text(json.dumps(GOOD))
+
+    def measure(self, rules=None, pytest=None, percent=None):
+        """The arguments of `debt.py write` for a measurement; each part is optional."""
+        args = []
+        if rules is not None:
+            report = self.dir / "pyright.json"
+            report.write_text(json.dumps({"generalDiagnostics": [
+                diagnostic(rule=rule) for rule, n in rules.items() for _ in range(n)]}))
+            args += ["--pyright", str(report)]
+        if pytest is not None:
+            status, lines = pytest
+            out = self.dir / "pytest.out"
+            out.write_text(summary(*[f"FAILED {i} - boom" for i in lines]))
+            args += ["--tests", str(status), str(out)]
+        if percent is not None:
+            report = self.dir / "coverage.json"
+            report.write_text(json.dumps({"totals": {"percent_covered": percent}}))
+            args += ["--coverage", str(report)]
+        return args
+
+    def write(self, *args):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = debt.main(["--file", str(self.path), "write", *args])
+        return code, out.getvalue()
+
+    def refuses(self, *args, needle):
+        before = self.path.read_bytes()
+        code, out = self.write(*args)
+        self.assertEqual(code, 1, out)
+        self.assertIn(needle, out)
+        self.assertEqual(self.path.read_bytes(), before, "a refusal writes nothing")
+
+    def test_a_rule_above_its_baseline_is_refused_and_the_file_is_untouched(self):
+        self.refuses(*self.measure(rules={"reportAttributeAccessIssue": 121, "reportArgumentType": 31}),
+                     needle="pyright reportAttributeAccessIssue rose from 120 to 121")
+
+    def test_a_rule_absent_from_the_file_counts_as_zero_so_a_new_one_is_refused(self):
+        self.refuses(*self.measure(rules={"reportCallIssue": 1}), needle="pyright reportCallIssue rose from 0 to 1")
+
+    def test_a_new_failing_id_is_refused(self):
+        self.refuses(*self.measure(pytest=(1, ["tests/test_a.py::test_x", "tests/test_z.py::test_new"])),
+                     needle="tests/test_z.py::test_new fails and is not in tests.failing")
+
+    def test_a_coverage_below_the_floor_is_refused(self):
+        self.refuses(*self.measure(percent=40.99), needle="coverage 40.99% is below the baseline floor 41")
+
+    def test_one_figure_falling_never_pays_for_another_rising(self):
+        """A mixed measurement is refused whole: the fixed rule is not written while another rule rose."""
+        self.refuses(*self.measure(rules={"reportAttributeAccessIssue": 1, "reportArgumentType": 32}),
+                     needle="pyright reportArgumentType rose from 31 to 32")
+
+    def test_it_lowers_every_figure_drops_what_is_fixed_and_keeps_the_dates(self):
+        code, out = self.write(*self.measure(rules={"reportAttributeAccessIssue": 100},
+                                             pytest=(1, ["tests/test_a.py::test_x"]), percent=57.9))
+        self.assertEqual(code, 0, out)
+        written = json.loads(self.path.read_text())
+        self.assertEqual(written["types"]["pyright"], {"reportAttributeAccessIssue": 100},
+                         "reportArgumentType fell to 0 and is dropped")
+        self.assertEqual(written["tests"]["failing"], ["tests/test_a.py::test_x"], "the fixed id is dropped")
+        self.assertEqual(written["coverage"]["floor"], 57, "whole points, floored: 57.9 holds 57")
+        self.assertEqual((written["version"], written["set"], written["expires"]), (1, GOOD["set"], GOOD["expires"]))
+
+    def test_what_it_writes_is_canonical_valid_and_passes_compare_against_the_old_file(self):
+        old = self.dir / "old.json"
+        old.write_text(self.path.read_text())
+        self.assertEqual(self.write(*self.measure(rules={"reportAttributeAccessIssue": 3}, percent=60))[0], 0)
+        self.assertEqual(self.path.read_text(), debt.dumps(json.loads(self.path.read_text())))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(debt.main(["--today", TODAY, "compare", str(old), str(self.path)]), 0, out.getvalue())
+            self.assertEqual(debt.main(["--file", str(self.path), "--today", TODAY, "check"]), 0, out.getvalue())
+
+    def test_a_measurement_equal_to_the_file_changes_nothing(self):
+        before = self.path.read_bytes()
+        code, out = self.write(*self.measure(rules={"reportAttributeAccessIssue": 120, "reportArgumentType": 31},
+                                             pytest=(1, GOOD["tests"]["failing"]), percent=41.5))
+        self.assertEqual(code, 0, out)
+        self.assertIn("nothing to write", out)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_it_never_adds_a_section_the_file_does_not_hold(self):
+        """An absent section is the standard for that gate: writing one would loosen it, not tighten it."""
+        self.path.write_text(json.dumps({"version": 1, "set": GOOD["set"], "expires": GOOD["expires"],
+                                         "coverage": {"floor": 41}}))
+        code, out = self.write(*self.measure(rules={"reportCallIssue": 5}, pytest=(1, ["tests/t.py::a"]), percent=70))
+        self.assertEqual(code, 0, out)
+        self.assertEqual(json.loads(self.path.read_text()),
+                         {"version": 1, "set": GOOD["set"], "expires": GOOD["expires"], "coverage": {"floor": 70}})
+
+    def test_a_coverage_floor_is_capped_at_100(self):
+        self.assertEqual(self.write(*self.measure(percent=100.0))[0], 0)
+        self.assertEqual(json.loads(self.path.read_text())["coverage"]["floor"], 100)
+
+    def test_a_pytest_run_that_did_not_finish_is_not_a_measurement(self):
+        self.refuses(*self.measure(pytest=(2, [])), needle="pytest exited 2 and was interrupted")
+        self.refuses(*self.measure(pytest=(1, [])), needle="no FAILED or ERROR line")
+
+    def test_pytest_exit_0_means_every_baselined_id_is_fixed(self):
+        self.assertEqual(self.write(*self.measure(pytest=(0, [])))[0], 0)
+        self.assertEqual(json.loads(self.path.read_text())["tests"], {"failing": []})
+
+    def test_a_pyright_report_that_is_not_json_is_refused(self):
+        bad = self.dir / "bad.json"
+        bad.write_text("not json")
+        self.refuses("--pyright", str(bad), needle="not pyright's JSON output")
+
+    def test_a_missing_coverage_report_is_refused_not_read_as_zero(self):
+        self.refuses("--coverage", str(self.dir / "absent.json"), needle="holds no coverage figure")
+
+    def test_an_invalid_or_missing_baseline_is_refused(self):
+        self.path.write_text('{"version": 2}')
+        self.assertEqual(self.write(*self.measure(percent=90))[0], 1)
+        self.path.unlink()
+        code, out = self.write(*self.measure(percent=90))
+        self.assertEqual(code, 1)
+        self.assertIn("is missing", out)
 
 
 if __name__ == "__main__":

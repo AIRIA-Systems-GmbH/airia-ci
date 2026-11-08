@@ -413,7 +413,7 @@ jobs:
             # The step runs under `bash -e` without pipefail, so the pipeline ends in tee's status; pytest's is read after it.
             pytest "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
             status=${PIPESTATUS[0]}
-            python3 "$AIRIA_DEBT" tests "$status" "$output"
+            python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
           else
             pytest "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
           fi
