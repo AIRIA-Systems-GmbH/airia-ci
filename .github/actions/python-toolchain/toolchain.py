@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -74,8 +75,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DOWNLOAD_TRIES = 3  # the gitleaks archive: one transient 5xx must not fail a security job (#133)
-DOWNLOAD_BACKOFF = 2  # seconds, times the attempt number: 2s, then 4s
+DOWNLOAD_TRIES = 5  # the gitleaks archive: an outage of minutes (#133) must not fail a security job
+DOWNLOAD_BACKOFF = 5  # seconds, doubled each try: 5s, 10s, 20s, 40s (75s at most)
+DOWNLOAD_TIMEOUT = 60  # seconds per connection read, so a stalled download is retried, not hung
 
 HERE = Path(__file__).resolve().parent
 PINS = HERE.parents[2] / "pins.toml"
@@ -303,18 +305,22 @@ def check(pins: dict, env: dict, root: Path) -> None:
 
 
 def download(url: str) -> bytes:
-    """Fetch url, trying DOWNLOAD_TRIES times with a growing pause on a 5xx or a network error; a 4xx fails at once."""
+    """Fetch url, trying DOWNLOAD_TRIES times, pausing DOWNLOAD_BACKOFF * 2 ** (attempt - 1) seconds between tries.
+
+    A 5xx, a network error (also one in the middle of the body) and a stalled connection are retried; a 4xx fails at once.
+    """
     for attempt in range(1, DOWNLOAD_TRIES + 1):
         try:
-            with urllib.request.urlopen(url) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
                 return r.read()
-        except urllib.error.HTTPError as e:
-            if e.code < 500 or attempt == DOWNLOAD_TRIES:
+        except (OSError, http.client.HTTPException) as e:  # HTTPError and URLError are OSErrors
+            if isinstance(e, urllib.error.HTTPError) and e.code < 500:
                 raise
-        except urllib.error.URLError:
             if attempt == DOWNLOAD_TRIES:
                 raise
-        time.sleep(DOWNLOAD_BACKOFF * attempt)
+            pause = DOWNLOAD_BACKOFF * 2 ** (attempt - 1)
+            print(f"gitleaks download attempt {attempt}/{DOWNLOAD_TRIES} failed ({e!r}); retrying in {pause}s", file=sys.stderr)
+            time.sleep(pause)
     raise AssertionError("unreachable")  # pragma: no cover
 
 

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import http.client
 import importlib.util
 import io
 import json
@@ -375,21 +376,42 @@ class Install(unittest.TestCase):
         self.assertFalse((self.r.tmp / tc.TOOLS_DIR / "bin/gitleaks").exists())
 
     def flaky_download(self, failures: list):
-        """Patch urlopen to raise each of failures in turn, then serve the real archive; return (calls, sleeps)."""
+        """Patch urlopen to fail each of failures in turn, then serve the real archive.
+
+        A failure is an exception urlopen raises, or ('body', exc): urlopen answers and read() raises exc.
+        Returns (calls, sleeps, stderr): the urlopen kwargs per call, the pauses, the retry lines.
+        """
         real = urllib.request.urlopen
         calls, sleeps = [], []
+        stderr = io.StringIO()
 
-        def fake(url):
-            calls.append(url)
+        class Broken:
+            def __init__(self, exc):
+                self.exc = exc
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                raise self.exc
+
+        def fake(url, **kwargs):
+            calls.append(kwargs)
             if len(calls) <= len(failures):
-                raise failures[len(calls) - 1]
-            return real(url)
+                f = failures[len(calls) - 1]
+                if isinstance(f, tuple):
+                    return Broken(f[1])
+                raise f
+            return real(url, **kwargs)
 
-        for target, new in ((urllib.request, "urlopen"), (tc.time, "sleep")):
-            patcher = mock.patch.object(target, new, fake if new == "urlopen" else sleeps.append)
+        for patcher in (mock.patch.object(urllib.request, "urlopen", fake), mock.patch.object(tc.time, "sleep", sleeps.append),
+                        mock.patch("sys.stderr", stderr)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        return calls, sleeps
+        return calls, sleeps, stderr
 
     @staticmethod
     def http(code: int) -> urllib.error.HTTPError:
@@ -398,30 +420,49 @@ class Install(unittest.TestCase):
     def test_a_5xx_on_the_gitleaks_download_is_retried_until_it_succeeds(self):
         # Portfolio-Dashboard PR #196: one transient 504 failed ci / security (#133).
         pins = self.gitleaks_pins(None)
-        calls, sleeps = self.flaky_download([self.http(504), urllib.error.URLError("reset")])
+        calls, sleeps, stderr = self.flaky_download([self.http(504), urllib.error.URLError("reset")])
         self.assertEqual(self.install("gitleaks", pins), [f"gitleaks {T['gitleaks']} (pinned, digest checked)"])
         self.assertEqual(len(calls), 3)
-        self.assertEqual(sleeps, [tc.DOWNLOAD_BACKOFF, 2 * tc.DOWNLOAD_BACKOFF], "a growing, bounded pause")
+        self.assertEqual(sleeps, [5, 10])
+        lines = stderr.getvalue().splitlines()
+        self.assertEqual(len(lines), 2, "one line per retry")
+        self.assertIn("attempt 1/5", lines[0])
+        self.assertIn("504", lines[0])
+        self.assertIn("retrying in 5s", lines[0])
+        self.assertIn("retrying in 10s", lines[1])
 
-    def test_a_5xx_on_every_try_fails_after_exactly_three_tries(self):
+    def test_a_failure_in_the_middle_of_the_body_is_retried(self):
         pins = self.gitleaks_pins(None)
-        calls, sleeps = self.flaky_download([self.http(503)] * 5)
+        calls, sleeps, _ = self.flaky_download([
+            ("body", http.client.IncompleteRead(b"par")), ("body", ConnectionResetError("reset")), TimeoutError("stalled")])
+        self.assertEqual(self.install("gitleaks", pins), [f"gitleaks {T['gitleaks']} (pinned, digest checked)"])
+        self.assertEqual((len(calls), sleeps), (4, [5, 10, 20]))
+
+    def test_every_gitleaks_download_has_a_timeout_of_60_seconds(self):
+        pins = self.gitleaks_pins(None)
+        calls, _, _ = self.flaky_download([self.http(502)])
+        self.install("gitleaks", pins)
+        self.assertEqual(calls, [{"timeout": 60}, {"timeout": 60}])
+
+    def test_a_5xx_on_every_try_fails_after_exactly_five_tries(self):
+        pins = self.gitleaks_pins(None)
+        calls, sleeps, _ = self.flaky_download([self.http(503)] * 9)
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.install("gitleaks", pins)
         self.assertEqual(cm.exception.code, 503)
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(len(sleeps), 2, "no pause after the last try")
+        self.assertEqual(len(calls), 5)
+        self.assertEqual(sleeps, [5, 10, 20, 40], "75s at most, and no pause after the last try")
 
-    def test_a_network_error_on_every_try_fails_after_exactly_three_tries(self):
+    def test_a_network_error_on_every_try_fails_after_exactly_five_tries(self):
         pins = self.gitleaks_pins(None)
-        calls, _ = self.flaky_download([urllib.error.URLError("down")] * 5)
+        calls, _, _ = self.flaky_download([urllib.error.URLError("down")] * 9)
         with self.assertRaises(urllib.error.URLError):
             self.install("gitleaks", pins)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 5)
 
     def test_a_4xx_on_the_gitleaks_download_fails_at_once(self):
         pins = self.gitleaks_pins(None)
-        calls, sleeps = self.flaky_download([self.http(404)] * 5)
+        calls, sleeps, _ = self.flaky_download([self.http(404)] * 9)
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.install("gitleaks", pins)
         self.assertEqual(cm.exception.code, 404)
@@ -429,7 +470,7 @@ class Install(unittest.TestCase):
 
     def test_a_digest_mismatch_is_refused_at_once_and_not_downloaded_again(self):
         pins = self.gitleaks_pins("0" * 64)
-        calls, sleeps = self.flaky_download([])
+        calls, sleeps, _ = self.flaky_download([])
         with self.assertRaises(tc.Refused):
             self.install("gitleaks", pins)
         self.assertEqual((len(calls), sleeps), (1, []))
