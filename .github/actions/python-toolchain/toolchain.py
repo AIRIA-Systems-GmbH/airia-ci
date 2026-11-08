@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
@@ -68,9 +69,15 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
+
+DOWNLOAD_TRIES = 5  # the gitleaks archive: an outage of minutes (#133) must not fail a security job
+DOWNLOAD_BACKOFF = 5  # seconds, doubled each try: 5s, 10s, 20s, 40s (75s at most)
+DOWNLOAD_TIMEOUT = 60  # seconds per connection read, so a stalled download is retried, not hung
 
 HERE = Path(__file__).resolve().parent
 PINS = HERE.parents[2] / "pins.toml"
@@ -297,6 +304,26 @@ def check(pins: dict, env: dict, root: Path) -> None:
         raise Refused(*errors)
 
 
+def download(url: str) -> bytes:
+    """Fetch url, trying DOWNLOAD_TRIES times, pausing DOWNLOAD_BACKOFF * 2 ** (attempt - 1) seconds between tries.
+
+    A 5xx, a network error (also one in the middle of the body) and a stalled connection are retried; a 4xx fails at once.
+    """
+    for attempt in range(1, DOWNLOAD_TRIES + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
+                return r.read()
+        except (OSError, http.client.HTTPException) as e:  # HTTPError and URLError are OSErrors
+            if isinstance(e, urllib.error.HTTPError) and e.code < 500:
+                raise
+            if attempt == DOWNLOAD_TRIES:
+                raise
+            pause = DOWNLOAD_BACKOFF * 2 ** (attempt - 1)
+            print(f"gitleaks download attempt {attempt}/{DOWNLOAD_TRIES} failed ({e!r}); retrying in {pause}s", file=sys.stderr)
+            time.sleep(pause)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def gitleaks(pins: dict, bin_dir: Path) -> None:
     """Download the pinned gitleaks for this platform and refuse it unless its digest matches the pin."""
     v = pins["tools"]["gitleaks"]
@@ -308,8 +335,7 @@ def gitleaks(pins: dict, bin_dir: Path) -> None:
     url = os.environ.get("AIRIA_GITLEAKS_URL") or (
         f"https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_{key}.tar.gz")
     archive = bin_dir.parent / "gitleaks.tar.gz"
-    with urllib.request.urlopen(url) as r:  # noqa: S310 (a fixed https URL, or a test's file URL)
-        archive.write_bytes(r.read())
+    archive.write_bytes(download(url))
     got = hashlib.sha256(archive.read_bytes()).hexdigest()
     if got != digest:
         raise Refused(f"gitleaks {v} for {key} has sha256 {got}, not the pinned {digest}: refused")
