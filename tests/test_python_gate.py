@@ -139,7 +139,10 @@ class Shape(unittest.TestCase):
         review = JOBS["claude-review"]
         self.assertEqual(review["needs"], ["gate"])
         self.assertTrue(review["if"].startswith("always() && github.event_name == 'pull_request'"))
-        self.assertEqual(review["secrets"], {"CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"})
+        self.assertEqual(review["secrets"], {
+            "CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
+            "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}",
+        })
         for name in ("runner", "extra-allow", "extra-deny", "extra-prompt"):
             self.assertEqual(review["with"][name], f"${{{{ inputs.{name} }}}}")
         tags = set(re.findall(r"AIRIA-Systems-GmbH/airia-ci/\S+@(\S+)", WORKFLOW.read_text()))

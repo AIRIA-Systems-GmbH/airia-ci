@@ -33,6 +33,7 @@ name: AIRIA Python gate (shared)
 #       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
 #       secrets:
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#         CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
 #
 # THE REQUIRED CHECKS are `ci / gate` and `ci / claude-review / claude-review`
 # (GitHub names a called job `<caller job> / <called job>`). `init.py protect`
@@ -198,6 +199,8 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
+        required: false
 
 permissions: {}
 
@@ -505,3 +508,4 @@ jobs:
       extra-prompt: ${{ inputs.extra-prompt }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}

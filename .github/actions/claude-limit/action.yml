@@ -16,23 +16,65 @@
 name: Say why Claude failed
 description: >-
   After a failed Claude run, name a usage limit as the cause: an error annotation
-  titled `Claude usage limit` with the reset time and a retry hint. It never fails
-  the job itself and never prints the model's text. A generic failure prints nothing.
+  titled `Claude usage limit` with the reset time and a retry hint. The default
+  mode never fails the job and never prints the model's text. A generic failure
+  prints nothing. `mode: both` fails the job with one titled error when that run
+  hit a limit too.
 
 # Why: a usage limit made the @claude responder fail with the action's own opaque
 # error (airia-ci#103). The classifier is claude_limit.py beside this file, which
-# the automatic review (review-post) uses too.
+# the automatic review (review-post) uses too. `decide` and `both` are the review's
+# one retry on an optional fallback token (airia-ci#139).
 
 inputs:
   execution-file:
     description: The claude-code-action's execution_file output.
     required: true
+  mode:
+    description: "`say` (default), `decide` (whether to retry), or `both` (both accounts at their limit)."
+    required: false
+    default: say
+  fallback-token:
+    description: The optional fallback OAuth token. Empty means no retry. Never printed.
+    required: false
+    default: ""
+  primary-reset:
+    description: The primary run's reset phrase, used when mode is both.
+    required: false
+    default: ""
+
+outputs:
+  retry:
+    description: "`true` when the run hit a limit and a fallback token was passed."
+    value: ${{ steps.decide.outputs.retry }}
+  primary-reset:
+    description: When the primary limit resets, or `no reset time`.
+    value: ${{ steps.decide.outputs.primary-reset }}
 
 runs:
   using: composite
   steps:
     - name: Classify the failure
+      if: inputs.mode == 'say'
       shell: bash
       env:
         EXECUTION_FILE: ${{ inputs.execution-file }}
       run: python3 "$GITHUB_ACTION_PATH/claude_limit.py"
+
+    - name: Decide the fallback retry
+      id: decide
+      if: inputs.mode == 'decide'
+      shell: bash
+      env:
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        FALLBACK_TOKEN: ${{ inputs.fallback-token }}
+      run: python3 "$GITHUB_ACTION_PATH/claude_limit.py" decide
+
+    - name: Report both usage limits
+      id: both
+      if: inputs.mode == 'both'
+      shell: bash
+      env:
+        EXECUTION_FILE: ${{ inputs.execution-file }}
+        PRIMARY_RESET: ${{ inputs.primary-reset }}
+      run: python3 "$GITHUB_ACTION_PATH/claude_limit.py" both

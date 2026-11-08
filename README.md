@@ -45,7 +45,7 @@ It writes whichever of these are missing: the `@claude` caller; the merge gate, 
 The call contract is the header of `reusable-claude-review.yml`; read it before wiring a repository by hand. In short, the caller:
 
 - adds a last job with `needs:` set to every gate job, `if: always() && …`, and `uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-claude-review.yml@main`;
-- has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`);
+- has its own `CLAUDE_CODE_OAUTH_TOKEN` secret, which it passes to that job (this repository's own secret serves only its self-review and `@claude`); it may also pass the optional `CLAUDE_CODE_OAUTH_TOKEN_FALLBACK` secret, and a caller that does not pass it behaves as before;
 - runs on self-hosted runners labelled `[self-hosted, linux, x64, thor]`, unless it passes `runner:` (the `runs-on` labels as a JSON array, e.g. `'["ubuntu-24.04"]'`, which a public repository or one outside AIRIA-Systems-GmbH must pass);
 - optionally has `.github/actions/claude-toolchain/action.yml`, to provision its toolchain, and `.github/claude-review.md`, for its own review rules.
 
