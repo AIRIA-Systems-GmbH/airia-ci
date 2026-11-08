@@ -6,10 +6,14 @@ A limit is recognised by the CLI's `rate_limit_event` with status `rejected` onl
 signature (at most one turn, `total_cost_usd` 0) — claude-code-action writes every SDK message into the execution
 file, and the retry watchdog emits `rejected`, waits, then carries on, so a paid run that later fails keeps its
 real cause — or by the result and error texts, which count on any run. The texts are never printed, only the reset
-time is (the event's `resetsAt` as UTC, else the time phrase in the text). As a step it reads EXECUTION_FILE and,
-when the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits a titled `::error::`
-annotation. It always exits 0: the step that ran Claude has already failed, and this one only says why. A generic
-failure prints nothing.
+time is (the event's `resetsAt` as UTC, else the time phrase in the text). With no argument (`say`) it reads
+EXECUTION_FILE and, when the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits
+a titled `::error::` annotation and exits 0: the step that ran Claude has already failed, and this one only says
+why. A generic failure prints nothing.
+
+`decide` (airia-ci#139) writes `retry` and `primary-reset` only when FALLBACK_TOKEN is non-empty and the run hit a
+limit, and never prints the token. `both` names both reset times and exits 1 when the fallback run hit a limit too;
+a run that answered prints nothing and exits 0.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ RETRY = "comment `@claude` again after the limit resets."
 # Said only when the limit is certain: a limit is the account's answer to an authenticated request, so the
 # CLAUDE_CODE_OAUTH_TOKEN secret is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
 TOKEN_OK = "The CLAUDE_CODE_OAUTH_TOKEN authenticated, so this is not a secrets problem."
+NO_RESET = "no reset time"
 
 
 def last_result(msgs: list) -> dict:
@@ -140,7 +145,7 @@ def load(path: str) -> list:
     return [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
 
 
-def main() -> int:
+def say() -> int:
     msgs = load(os.environ["EXECUTION_FILE"])
     if hit_limit(msgs):
         when = limit_reset(msgs)
@@ -152,6 +157,48 @@ def main() -> int:
               f"turn{'s' if turns != 1 else ''} with no model usage and no cost, which is the signature of a usage limit "
               f"or an auth failure (the log does not say which); if it is the limit, {RETRY}")
     return 0
+
+
+def reset_phrase(msgs: list) -> str:
+    return limit_reset(msgs) or NO_RESET
+
+
+def limited(msgs: list) -> bool:
+    """What review-post would refuse to post as a limit: a limit notice ending a "success" run, or a limit on an
+    errored run. A paid review whose text mentions a rate limit is an answer, never a reason to run again."""
+    return limit_notice(msgs) or (bool(last_result(msgs).get("is_error")) and hit_limit(msgs))
+
+
+def decide() -> int:
+    """Set retry only when a fallback token is present and this run hit a limit. Never print the token."""
+    if not os.environ.get("FALLBACK_TOKEN"):
+        return 0
+    msgs = load(os.environ["EXECUTION_FILE"])
+    if not limited(msgs):
+        return 0
+    with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+        fh.write(f"retry=true\nprimary-reset={reset_phrase(msgs)}\n")
+    return 0
+
+
+def both() -> int:
+    """One titled error when the fallback run is at its limit too, naming both reset times. Nothing is posted."""
+    msgs = load(os.environ["EXECUTION_FILE"])
+    if not limited(msgs):
+        return 0
+    primary = os.environ.get("PRIMARY_RESET") or NO_RESET
+    print("::error title=Claude usage limit::Both accounts are at their limit. "
+          f"Primary reset: {primary}. Fallback reset: {reset_phrase(msgs)}. {TOKEN_OK}")
+    return 1
+
+
+def main() -> int:
+    command = sys.argv[1] if len(sys.argv) > 1 else ""
+    if command == "decide":
+        return decide()
+    if command == "both":
+        return both()
+    return say()
 
 
 if __name__ == "__main__":

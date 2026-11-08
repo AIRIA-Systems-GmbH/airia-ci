@@ -202,6 +202,7 @@ From `ci-v5` on, a Python repository's merge gate is the AIRIA quality standard,
        uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
        secrets:
          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+         CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
    ```
 
    It replaces the repository's own lint, type and test jobs and its `claude-review` job, because the gate runs the review itself. Keep `claude.yml` for `@claude`.
@@ -295,6 +296,7 @@ jobs:
       extra-jobs: ${{ toJSON(needs) }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
 ```
 
 ### May add, may not weaken
@@ -409,7 +411,7 @@ Every `ci-vN` is frozen, so leaving one means moving to `@main`:
 ## When something goes wrong
 
 - **No review on the PR.** `claude-review` is red with *No review posted*: the run ended without review text, or its final message lacked a well-formed `airia-findings` block (the error says which). Treat the PR as unreviewed and comment `@claude please review`.
-- **Claude usage limit.** `claude-review` is red with *Claude usage limit*: the run's `rate_limit_event` was `rejected` and the run paid for no model turn (at most one turn, no cost), or its result names a usage or rate limit (also when the run ended as a "success" whose final message is the limit notice: it is never posted as a review). The error gives the reset time when the payload does (`resetsAt` as UTC, else the time the text names) and says the token authenticated: this is not a secrets problem. The title `::error title=Claude usage limit::` is fixed, the machine-readable signal for a coordinator; under RUL-portfolio-014 a failure caused only by the limit does not block a merge. *Likely Claude usage limit or auth failure* is the run that errored after at most one turn with no model usage, no cost and no limit signal: if that one persists past a reset, check the `CLAUDE_CODE_OAUTH_TOKEN` secret. Either way nothing is wrong with the PR: wait for the reset, then re-run the job or comment `@claude please review`.
+- **Claude usage limit.** `claude-review` is red with *Claude usage limit*: the run's `rate_limit_event` was `rejected` and the run paid for no model turn (at most one turn, no cost), or its result names a usage or rate limit (also when the run ended as a "success" whose final message is the limit notice: it is never posted as a review). The error gives the reset time when the payload does (`resetsAt` as UTC, else the time the text names) and says the token authenticated: this is not a secrets problem. A caller opts in to one retry by passing `CLAUDE_CODE_OAUTH_TOKEN_FALLBACK` next to `CLAUDE_CODE_OAUTH_TOKEN` (the job `init.py` writes passes it; a caller that omits it behaves exactly as before). When the primary run hits a usage limit and that secret is set, the review runs once more on the fallback token with the same prompt, and the posted review is the run that answered. When both accounts are at their limit, the job fails with one `::error title=Claude usage limit::` that says both accounts are at their limit and names both reset times (each as the run gives it, or `no reset time`), and nothing is posted. Andrea's `switch-ci-token.sh` sets both secrets. The title `::error title=Claude usage limit::` is fixed, the machine-readable signal for a coordinator; under RUL-portfolio-014 a failure caused only by the limit does not block a merge. *Likely Claude usage limit or auth failure* is the run that errored after at most one turn with no model usage, no cost and no limit signal: if that one persists past a reset, check the `CLAUDE_CODE_OAUTH_TOKEN` secret. Either way nothing is wrong with the PR: wait for the reset, then re-run the job or comment `@claude please review`.
 - **The review job shows SKIPPED.** Its `if:` lacks `always()`: with a bare `needs:`, one red gate skips the review. The job `init.py` writes has it.
 - **A draft PR was never reviewed.** The gate workflow's `pull_request` types must include `ready_for_review`.
 - **No Claude credential.** The repository has no `CLAUDE_CODE_OAUTH_TOKEN` secret, or the caller does not pass it: `gh secret set CLAUDE_CODE_OAUTH_TOKEN -R <owner>/<repo>`. An `@claude` retry cannot help until then.

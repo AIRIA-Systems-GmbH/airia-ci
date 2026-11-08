@@ -35,7 +35,9 @@ name: Claude Code Review (shared)
 #         Bash(cargo test:*)
 #     secrets:
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+#       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
 #
+# Omitting CLAUDE_CODE_OAUTH_TOKEN_FALLBACK leaves one run on the primary token, as before.
 # `always()` because a red gate is review input: a bare `needs:` reports this
 # job SKIPPED the moment any gate reds, and a skipped review is invisible. The
 # gate workflow's `pull_request` types must include `ready_for_review`, or a PR
@@ -204,6 +206,8 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
+        required: false
 
 jobs:
   claude-review:
@@ -215,6 +219,131 @@ jobs:
       issues: write # `gh pr comment` goes through the issues API
       actions: read # read the calling run's job results and logs
       checks: read # a cancelled job's annotations: did it hit its timeout-minutes?
+    # One prompt for both Claude runs (airia-ci#139): the job env holds it once,
+    # and the primary and the fallback step read it, so neither copies the other.
+    env:
+      REVIEW_PROMPT: |
+        REPO: ${{ github.repository }}
+        PR NUMBER: ${{ inputs.pr-number }}
+
+        You are the automatic review of this pull request. It runs once per head commit, after
+        the merge gate has finished on this commit. Questions in between go to `@claude`.
+        - If `ci-results/previous-review.md` exists, an earlier automatic review covered an
+          older head of this PR (its first line names it). Review the whole current head, but
+          report only what is new or still open, say which of its findings are now resolved,
+          and do not re-raise a point the author answered in the PR's comments.
+
+        HOW THIS JOB IS SET UP — read this before you start
+        - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
+          rules for the review, and following them is not optional.
+        - You are on the same runner pool as this repository's CI. If
+          `ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
+          step provisioned and anything it could NOT provision. If it does not, no toolchain
+          was provisioned beyond what the runner has.
+        - CI HAS ALREADY RUN on this exact commit. `cat ci-results/jobs.md` lists every gate
+          job with its conclusion and failed steps; the full log of each is beside it in
+          `ci-results/logs/`. Those are the gate figures: quote them, grep them for counts,
+          coverage and skips. Do NOT re-run a gate CI already ran here — that is duplicated
+          work, and the log is the more faithful record.
+        - ci-results/ is your ONLY source of CI results. Do not use `gh pr checks` or the
+          check-runs API: this job's token cannot read checks, and that refusal is not "no CI
+          results". If `ci-results/jobs.md` is missing or says the lookup failed, say so.
+        - ci-results/ is in your working directory (the checkout) and ignored by git. Use
+          relative paths: Bash refuses a command that expands a variable, and nothing outside
+          the checkout is readable.
+        - `ci-results/harness.md` names the airia-ci workflow and commit running this job and
+          the inputs the caller passed. Check a PR that changes the airia-ci call against it.
+        - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
+          runners. A command outside it is refused, and nobody can approve it here — report
+          that gate as NOT RUN, with the command, rather than working around the refusal.
+          Run commands for what CI does NOT cover: a cell the diff affects that no
+          gate exercises, a behaviour claim no test pins, a gate the diff should have extended
+          but did not. Say why CI does not cover it each time you run something.
+          `.github/workflows/` holds the exact commands and floors; the repository's CLAUDE.md
+          (and docs/ it points to) says how to run them correctly. No service containers
+          (databases, vector stores) run in this job: a real-engine cell you run here SKIPS,
+          and a skip is not a pass — read CI's engine logs instead.
+        - You cannot change the branch. Write/Edit are unavailable and your GitHub token is
+          read-only for repository contents. Propose fixes; never commit or push.
+        - This is a one-shot GitHub Action: the process exits the moment your turn ends. Do the
+          whole review yourself, in this turn, and post it before you finish. Do not start
+          background work (subagents, skills that fork agents such as the `code-review` plugin,
+          background shells) — it is disabled here, and anything that outlives the turn is killed.
+          Run each command in the foreground (up to 25 minutes per command); run
+          them one after another rather than in parallel.
+
+        WHAT TO DO
+        1. Read the PR and what has already been said on it: `gh pr view <n> --comments` and
+           `gh pr diff <n>`. Do not re-raise a point already answered or declined with reasons.
+        2. Read the diff and enough of the surrounding code to judge it. Where the PR description
+           makes a claim about behaviour or about a gate result, check it rather than accept it.
+           `git diff origin/<base>...HEAD` separates what this branch introduced from what it
+           inherited.
+        3. VERIFY against CI. Check every gate claim in the PR against the CI logs; a CI number
+           that disagrees with the author's IS a finding — quote the job and the log line. A red
+           or cancelled gate job is a finding in its own right; read its failed step first. A job
+           jobs.md marks `cancelled (never ran)` started no step: report it as infrastructure, not as
+           a code finding or an unreadable log, and name `gh run rerun <run-id> --failed` — a re-run
+           refreshes this review's gate table without a new review. A job marked
+           `cancelled (time cap)` hit its `timeout-minutes`: that is a finding, the gate exceeded
+           its time budget. It is not infrastructure, and a plain re-run is not the remedy. A job
+           marked `cancelled (time cap unchecked, ...)` may have timed out: compare its run time
+           with its `timeout-minutes` in `.github/workflows/` before you call it infrastructure. Check
+           the gates actually cover the diff: a package the diff touches that no job tested, or
+           a skip on a cell that matters, is a finding. Run commands only for those gaps.
+        4. Report what you are confident is wrong, most serious first, each with file:line and a
+           concrete failing case. If you find nothing worth changing, say so.
+
+        For ANY host / scheme / URL / origin / network-address classification, or any guard that
+        must hold on more than one entry path, enumerate the FULL product space in a SINGLE pass
+        and report every affected cell together — do not dribble one cell per review round:
+        - host form: IPv4; IPv6 bare / bracketed `[::1]` / scoped `fe80::1%eth0`; bind-all
+          `0.0.0.0` / `::` (never a connect target); loopback `127.0.0.0/8` / `::1` / `localhost`,
+          and the loopback-prefix-vs-DNS-suffix trap (`127.0.0.1.evil.com` is NOT loopback).
+        - scheme: `http` vs `https` (a non-loopback issuer MUST be https); flag any scheme
+          hardcoded per call-site instead of derived once from TLS config.
+        - entry path: CLI, library `start()`, subprocess, readiness probe, CLI probe — a guard
+          present on only some paths is a bug.
+        - allowlist form: bare host AND `host:*` (RFC 7230) for allowed_hosts/origins.
+
+        CLOSE the comment with a table of the gates: for each CI job, its conclusion from
+        jobs.md; then every command you ran yourself, with why CI did not cover it and its
+        result. A skipped test is not a pass — name the skips. An unrun gate reported as green is
+        worse than an unrun gate reported as unrun.
+
+        YOUR FINAL MESSAGE IS THE REVIEW. End your turn with the complete review, in Markdown, as
+        your last message and nothing else: the workflow posts it to the PR. Do NOT post it
+        yourself (`gh pr comment` is disabled here). If a hook makes you continue after it, end
+        again with the complete review as your final message.
+
+        The message has two parts. ABOVE the block is the summary: what you checked, which
+        earlier findings are now resolved, and the gate table. It does not repeat any finding.
+        It ENDS with a fenced block, the last thing in the message, that holds EVERY finding
+        and nowhere else; the workflow posts each as its own PR comment and links them from
+        the summary. The block is JSON; with no findings it is `{"findings": []}`:
+
+        ```airia-findings
+        {"findings": [
+          {"id": "F1", "file": "path/in/the/repo.py", "line": 42, "severity": "major",
+           "text": "What is wrong, with a concrete failing case.", "carried": false}
+        ]}
+        ```
+
+        - `id`: letters, digits, `.`, `_`, `-`; unique within the block.
+        - `file`: the repository path. `line`: the line in the new file, optional (leave it out
+          for a finding about the file as a whole or a missing change). A line outside the
+          diff becomes a file-level comment.
+        - `severity`: one of `blocker`, `major`, `minor`, `nit`.
+        - `text`: the finding, in Markdown. Never copy a review footer into it.
+        - `carried`: true or false, always present. On a re-review, `ci-results/previous-review.md`
+          is the earlier review, with its finding ids. A finding that is STILL OPEN keeps its
+          earlier id and file and sets `"carried": true`: the workflow links its existing
+          comment instead of posting it again. A NEW finding uses an id that does not appear
+          in the previous review and sets `"carried": false`. Without a previous review
+          every finding is new.
+        A missing or malformed block fails the job and the PR is left unreviewed.
+
+        ${{ inputs.extra-prompt }}
 
     steps:
 
@@ -476,134 +605,43 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.once.outputs.review == 'true'
+        continue-on-error: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}
         uses: anthropics/claude-code-action@v1
         with:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ steps.settings.outputs.path }}
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ inputs.pr-number }}
+          prompt: ${{ env.REVIEW_PROMPT }}
 
-            You are the automatic review of this pull request. It runs once per head commit, after
-            the merge gate has finished on this commit. Questions in between go to `@claude`.
-            - If `ci-results/previous-review.md` exists, an earlier automatic review covered an
-              older head of this PR (its first line names it). Review the whole current head, but
-              report only what is new or still open, say which of its findings are now resolved,
-              and do not re-raise a point the author answered in the PR's comments.
+      - name: Decide whether to retry on the fallback token
+        id: fallback
+        if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
+        with:
+          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          fallback-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          mode: decide
 
-            HOW THIS JOB IS SET UP — read this before you start
-            - FIRST, if `.github/claude-review.md` exists, read it: it is this repository's own
-              rules for the review, and following them is not optional.
-            - You are on the same runner pool as this repository's CI. If
-              `ci-results/claude-toolchain-status.md` exists, `cat` it: it says what the setup
-              step provisioned and anything it could NOT provision. If it does not, no toolchain
-              was provisioned beyond what the runner has.
-            - CI HAS ALREADY RUN on this exact commit. `cat ci-results/jobs.md` lists every gate
-              job with its conclusion and failed steps; the full log of each is beside it in
-              `ci-results/logs/`. Those are the gate figures: quote them, grep them for counts,
-              coverage and skips. Do NOT re-run a gate CI already ran here — that is duplicated
-              work, and the log is the more faithful record.
-            - ci-results/ is your ONLY source of CI results. Do not use `gh pr checks` or the
-              check-runs API: this job's token cannot read checks, and that refusal is not "no CI
-              results". If `ci-results/jobs.md` is missing or says the lookup failed, say so.
-            - ci-results/ is in your working directory (the checkout) and ignored by git. Use
-              relative paths: Bash refuses a command that expands a variable, and nothing outside
-              the checkout is readable.
-            - `ci-results/harness.md` names the airia-ci workflow and commit running this job and
-              the inputs the caller passed. Check a PR that changes the airia-ci call against it.
-            - Bash is an allowlist: read-only git/gh/shell commands and this repository's gate
-              runners. A command outside it is refused, and nobody can approve it here — report
-              that gate as NOT RUN, with the command, rather than working around the refusal.
-              Run commands for what CI does NOT cover: a cell the diff affects that no
-              gate exercises, a behaviour claim no test pins, a gate the diff should have extended
-              but did not. Say why CI does not cover it each time you run something.
-              `.github/workflows/` holds the exact commands and floors; the repository's CLAUDE.md
-              (and docs/ it points to) says how to run them correctly. No service containers
-              (databases, vector stores) run in this job: a real-engine cell you run here SKIPS,
-              and a skip is not a pass — read CI's engine logs instead.
-            - You cannot change the branch. Write/Edit are unavailable and your GitHub token is
-              read-only for repository contents. Propose fixes; never commit or push.
-            - This is a one-shot GitHub Action: the process exits the moment your turn ends. Do the
-              whole review yourself, in this turn, and post it before you finish. Do not start
-              background work (subagents, skills that fork agents such as the `code-review` plugin,
-              background shells) — it is disabled here, and anything that outlives the turn is killed.
-              Run each command in the foreground (up to 25 minutes per command); run
-              them one after another rather than in parallel.
+      - name: Run Claude Code Review on the fallback token
+        id: claude-review-fallback
+        if: always() && steps.fallback.outputs.retry == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          settings: ${{ steps.settings.outputs.path }}
+          prompt: ${{ env.REVIEW_PROMPT }}
 
-            WHAT TO DO
-            1. Read the PR and what has already been said on it: `gh pr view <n> --comments` and
-               `gh pr diff <n>`. Do not re-raise a point already answered or declined with reasons.
-            2. Read the diff and enough of the surrounding code to judge it. Where the PR description
-               makes a claim about behaviour or about a gate result, check it rather than accept it.
-               `git diff origin/<base>...HEAD` separates what this branch introduced from what it
-               inherited.
-            3. VERIFY against CI. Check every gate claim in the PR against the CI logs; a CI number
-               that disagrees with the author's IS a finding — quote the job and the log line. A red
-               or cancelled gate job is a finding in its own right; read its failed step first. A job
-               jobs.md marks `cancelled (never ran)` started no step: report it as infrastructure, not as
-               a code finding or an unreadable log, and name `gh run rerun <run-id> --failed` — a re-run
-               refreshes this review's gate table without a new review. A job marked
-               `cancelled (time cap)` hit its `timeout-minutes`: that is a finding, the gate exceeded
-               its time budget. It is not infrastructure, and a plain re-run is not the remedy. A job
-               marked `cancelled (time cap unchecked, ...)` may have timed out: compare its run time
-               with its `timeout-minutes` in `.github/workflows/` before you call it infrastructure. Check
-               the gates actually cover the diff: a package the diff touches that no job tested, or
-               a skip on a cell that matters, is a finding. Run commands only for those gaps.
-            4. Report what you are confident is wrong, most serious first, each with file:line and a
-               concrete failing case. If you find nothing worth changing, say so.
-
-            For ANY host / scheme / URL / origin / network-address classification, or any guard that
-            must hold on more than one entry path, enumerate the FULL product space in a SINGLE pass
-            and report every affected cell together — do not dribble one cell per review round:
-            - host form: IPv4; IPv6 bare / bracketed `[::1]` / scoped `fe80::1%eth0`; bind-all
-              `0.0.0.0` / `::` (never a connect target); loopback `127.0.0.0/8` / `::1` / `localhost`,
-              and the loopback-prefix-vs-DNS-suffix trap (`127.0.0.1.evil.com` is NOT loopback).
-            - scheme: `http` vs `https` (a non-loopback issuer MUST be https); flag any scheme
-              hardcoded per call-site instead of derived once from TLS config.
-            - entry path: CLI, library `start()`, subprocess, readiness probe, CLI probe — a guard
-              present on only some paths is a bug.
-            - allowlist form: bare host AND `host:*` (RFC 7230) for allowed_hosts/origins.
-
-            CLOSE the comment with a table of the gates: for each CI job, its conclusion from
-            jobs.md; then every command you ran yourself, with why CI did not cover it and its
-            result. A skipped test is not a pass — name the skips. An unrun gate reported as green is
-            worse than an unrun gate reported as unrun.
-
-            YOUR FINAL MESSAGE IS THE REVIEW. End your turn with the complete review, in Markdown, as
-            your last message and nothing else: the workflow posts it to the PR. Do NOT post it
-            yourself (`gh pr comment` is disabled here). If a hook makes you continue after it, end
-            again with the complete review as your final message.
-
-            The message has two parts. ABOVE the block is the summary: what you checked, which
-            earlier findings are now resolved, and the gate table. It does not repeat any finding.
-            It ENDS with a fenced block, the last thing in the message, that holds EVERY finding
-            and nowhere else; the workflow posts each as its own PR comment and links them from
-            the summary. The block is JSON; with no findings it is `{"findings": []}`:
-
-            ```airia-findings
-            {"findings": [
-              {"id": "F1", "file": "path/in/the/repo.py", "line": 42, "severity": "major",
-               "text": "What is wrong, with a concrete failing case.", "carried": false}
-            ]}
-            ```
-
-            - `id`: letters, digits, `.`, `_`, `-`; unique within the block.
-            - `file`: the repository path. `line`: the line in the new file, optional (leave it out
-              for a finding about the file as a whole or a missing change). A line outside the
-              diff becomes a file-level comment.
-            - `severity`: one of `blocker`, `major`, `minor`, `nit`.
-            - `text`: the finding, in Markdown. Never copy a review footer into it.
-            - `carried`: true or false, always present. On a re-review, `ci-results/previous-review.md`
-              is the earlier review, with its finding ids. A finding that is STILL OPEN keeps its
-              earlier id and file and sets `"carried": true`: the workflow links its existing
-              comment instead of posting it again. A NEW finding uses an id that does not appear
-              in the previous review and sets `"carried": false`. Without a previous review
-              every finding is new.
-            A missing or malformed block fails the job and the PR is left unreviewed.
-
-            ${{ inputs.extra-prompt }}
+      - name: Report both usage limits
+        id: both-limits
+        if: always() && steps.fallback.outputs.retry == 'true' && steps.claude-review-fallback.outcome != 'skipped'
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
+        with:
+          execution-file: ${{ steps.claude-review-fallback.outputs.execution_file }}
+          primary-reset: ${{ steps.fallback.outputs.primary-reset }}
+          mode: both
 
       # The workflow posts, not the model. Asked to finish with `gh pr comment`,
       # a run can end its turn without doing it: Portfolio-Dashboard PR #36 ran
@@ -611,11 +649,11 @@ jobs:
       # while AIRIA-framework PR #734 posted fine. The final message is the one
       # thing every successful run produces, so that is what gets posted.
       - name: Post the review
-        if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped'
+        if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped' && steps.both-limits.outcome != 'failure'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-post@main
         with:
           pr: ${{ inputs.pr-number }}
-          execution-file: ${{ steps.claude-review.outputs.execution_file }}
+          execution-file: ${{ steps.fallback.outputs.retry == 'true' && steps.claude-review-fallback.outputs.execution_file || steps.claude-review.outputs.execution_file }}
           run-id: ${{ github.run_id }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           claude-version: ${{ steps.claude-cli.outputs.version }}

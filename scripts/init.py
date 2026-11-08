@@ -123,6 +123,7 @@ REVIEW_JOB = """\
       runner: '{runner}'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}}}
 """
 
 PYTHON_GATE = """\
@@ -155,6 +156,7 @@ jobs:
       runner: '{runner}'
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
+      CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}}}
 """
 
 GATE = """\

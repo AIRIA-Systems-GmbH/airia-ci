@@ -24,6 +24,7 @@ import subprocess
 import unittest
 from unittest import mock
 
+import yaml
 from steps import ROOT, Runner, step
 
 WORKFLOW = ROOT / ".github/workflows/reusable-claude-review.yml"
@@ -423,10 +424,12 @@ class PostTheReview(unittest.TestCase):
         self.assertIn("steps.claude-review.outcome != 'skipped'", cond)
 
     def test_the_prompt_asks_for_the_findings_block_and_the_carried_flag(self):
-        prompt = step(WORKFLOW, "Run Claude Code Review")["with"]["prompt"]
+        # The prompt is the job's REVIEW_PROMPT env, which both Claude runs read (airia-ci#139).
+        prompt = yaml.safe_load(WORKFLOW.read_text())["jobs"]["claude-review"]["env"]["REVIEW_PROMPT"]
         for fragment in ("```airia-findings", '{"findings": []}', "blocker", '"carried": true', '"carried": false',
                          "ci-results/previous-review.md"):
             self.assertIn(fragment, prompt)
+        self.assertEqual(step(WORKFLOW, "Run Claude Code Review")["with"]["prompt"], "${{ env.REVIEW_PROMPT }}")
 
 
 if __name__ == "__main__":
