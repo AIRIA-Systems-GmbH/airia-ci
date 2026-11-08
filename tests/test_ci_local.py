@@ -95,8 +95,21 @@ class CiLocal(unittest.TestCase):
         ours = SCRIPT.read_text().replace("\\\n  ", "")
         names = {"$FLOOR": "$floor", "$DURATIONS": "$durations"}
         seen = 0
+        ratchet_lines = []
         for name in ("Ruff", "Type check", "Pytest at the coverage floor"):
+            in_ratchet = None  # the indent of the open `if [ "$RATCHET" = true ]; then`, else None
             for line in step(GATE, name)["run"].splitlines():
+                indent = len(line) - len(line.lstrip())
+                if in_ratchet is not None:
+                    if indent == in_ratchet and line.strip() in ("else", "fi"):
+                        in_ratchet = None
+                    else:
+                        # The debt ratchet's commands have no ci-local twin until #127 slice 6.
+                        ratchet_lines.append(line.strip())
+                        continue
+                elif line.strip() == 'if [ "$RATCHET" = true ]; then':
+                    in_ratchet = indent
+                    continue
                 cmd = line.strip().removeprefix("pyright) ").removeprefix("mypy-strict) ").removesuffix(" ;;")
                 if re.match(r"(ruff|pyright|mypy|pytest) ", cmd):
                     for theirs, mine in names.items():
@@ -105,6 +118,8 @@ class CiLocal(unittest.TestCase):
                     with self.subTest(command=cmd):
                         self.assertIn(f"uv run {cmd.removesuffix(' || status=1')}", ours)
         self.assertEqual(seen, 5, "ruff check, ruff format, pyright, mypy, pytest")
+        # The skip must not swallow a renamed line: the ratchet's pyright command is there, and is the one skipped.
+        self.assertTrue(any(re.match(r"pyright --outputjson ", c) for c in ratchet_lines), ratchet_lines)
 
     def test_mypy_import_contracts_paths_and_every_cpu_when_asked(self):
         (self.repo / "pyproject.toml").write_text("[tool.importlinter]\nroot_package = 'app'\n")

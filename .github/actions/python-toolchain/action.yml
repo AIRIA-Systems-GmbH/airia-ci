@@ -43,8 +43,9 @@ inputs:
   debt-ratchet:
     description: >-
       `true` holds the gates to `.airia/debt-baseline.json` (design/gate-debt-ratchet.md): the coverage
-      floor may then come from the file, and the file is checked. Only the `coverage` section and the
-      dates are enforced so far; `types` and `tests` are validated but not yet enforced.
+      floor may then come from the file, and the file is checked. The `coverage` section and the dates
+      are enforced, and `types` is enforced for pyright by the gate's type-check step (mypy-strict with a
+      `types` section fails); `tests` is validated but not yet enforced.
     required: false
     default: "false"
   tools:
