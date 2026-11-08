@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Was a failed Claude run a usage limit? Shared by the review (post_review.py) and the @claude responder (airia-ci#103).
 
-The execution file's result and error texts are what a limit is recognised by; they are never printed, only the
-reset time is. As a step it reads EXECUTION_FILE and, when the run hit a limit (or has the zero-usage signature
-of a limit or an auth failure), emits a titled `::error::` annotation. It always exits 0: the step that ran Claude
-has already failed, and this one only says why. A generic failure prints nothing.
+A limit is recognised by the CLI's `rate_limit_event` with status `rejected` (claude-code-action writes every SDK
+message into the execution file) or by the result and error texts; the texts are never printed, only the reset time
+is (the event's `resetsAt` as UTC, else the time phrase in the text). As a step it reads EXECUTION_FILE and, when
+the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits a titled `::error::`
+annotation. It always exits 0: the step that ran Claude has already failed, and this one only says why. A generic
+failure prints nothing.
 """
 
 from __future__ import annotations
@@ -35,10 +37,26 @@ RESETS = re.compile(rf"(?i:\bresets?(?:\s+at|\s+on)?)\s+((?:\d{{4}}-\d{{2}}-\d{{
                     rf"|{_MONTH} \d{{1,2}}\b(?:,? (?i:at )?{_TIME})?|(?:{_DAY},? (?i:at )?)?{_TIME}"
                     rf"|(?i:in \d{{1,3}} (?:minutes?|hours?|days?))\b){_ZONE})")
 RETRY = "comment `@claude` again after the limit resets."
+# Said only when the limit is certain: a limit is the account's answer to an authenticated request, so the
+# CLAUDE_CODE_OAUTH_TOKEN secret is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
+TOKEN_OK = "The CLAUDE_CODE_OAUTH_TOKEN authenticated, so this is not a secrets problem."
 
 
 def last_result(msgs: list) -> dict:
     return next((m for m in reversed(msgs) if m.get("type") == "result"), {})
+
+
+def rejected_limit(msgs: list) -> dict | None:
+    """The `rate_limit_info` of the last `rate_limit_event` with status `rejected`, or None.
+
+    Claude Code emits `{"type": "rate_limit_event", "rate_limit_info": {"status": ..., "resetsAt": <epoch>, ...}}`
+    on every turn; `allowed` (and `allowed_warning`) carry a `resetsAt` too and mean nothing. Only `rejected` is a limit.
+    """
+    for m in reversed(msgs):
+        info = m.get("rate_limit_info")
+        if m.get("type") == "rate_limit_event" and isinstance(info, dict) and info.get("status") == "rejected":
+            return info
+    return None
 
 
 def failure_texts(msgs: list) -> list[str]:
@@ -63,6 +81,32 @@ def reset_time(texts: list[str]) -> str | None:
     return None
 
 
+def limit_reset(msgs: list) -> str | None:
+    """When the limit resets: the rejected event's `resetsAt` as UTC first, else what the texts say."""
+    info = rejected_limit(msgs)
+    if info and isinstance(info.get("resetsAt"), (int, float)) and not isinstance(info["resetsAt"], bool):
+        return datetime.fromtimestamp(int(info["resetsAt"]), UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return reset_time(failure_texts(msgs))
+
+
+def unpaid(msgs: list) -> bool:
+    """Did the run pay for no model turn (at most one turn, no cost)? A limit stops it there; an answer never does."""
+    result = last_result(msgs)
+    turns = result.get("num_turns")
+    return isinstance(turns, int) and turns <= 1 and result.get("total_cost_usd") == 0
+
+
+def limit_notice(msgs: list) -> bool:
+    """Is a result that is not an error a limit notice rather than an answer?
+
+    A limit can end a run with subtype `success`, `is_error` unset, one turn, no cost and the limit text as the
+    `result` (this repository's own dispatch run, 2026-11-08: "You've hit your weekly limit · resets Nov 11 at
+    10am (Africa/Johannesburg)", with a rejected `rate_limit_event`). The unpaid signature is what keeps a real
+    answer that mentions a rate limit, or one written after the retry watchdog waited out a limit, from counting.
+    """
+    return unpaid(msgs) and hit_limit(msgs)
+
+
 def zero_usage_turns(msgs: list) -> int | None:
     """The turn count of a run that errored after at most one turn with no model usage and no cost, else None."""
     result = last_result(msgs)
@@ -74,7 +118,7 @@ def zero_usage_turns(msgs: list) -> int | None:
 
 
 def hit_limit(msgs: list) -> bool:
-    return any(LIMIT.search(t) for t in failure_texts(msgs))
+    return rejected_limit(msgs) is not None or any(LIMIT.search(t) for t in failure_texts(msgs))
 
 
 def load(path: str) -> list:
@@ -89,9 +133,10 @@ def load(path: str) -> list:
 def main() -> int:
     msgs = load(os.environ["EXECUTION_FILE"])
     if hit_limit(msgs):
-        when = reset_time(failure_texts(msgs))
+        when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
-        print(f"::error title=Claude usage limit::Claude did not answer: the run reports a usage or rate limit; {resets}; {RETRY}")
+        print(f"::error title=Claude usage limit::Claude did not answer: the run reports a usage or rate limit; {resets}; "
+              f"{RETRY} {TOKEN_OK}")
     elif (turns := zero_usage_turns(msgs)) is not None:
         print(f"::error title=Likely Claude usage limit or auth failure::Claude did not answer: the run errored after {turns} "
               f"turn{'s' if turns != 1 else ''} with no model usage and no cost, which is the signature of a usage limit "

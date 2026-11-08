@@ -27,10 +27,12 @@ error named ("green means posted"). An empty list is valid.
 - Every run also posts a pull-request review (event COMMENT, never APPROVE) with `commit_id` the
   reviewed head, so a re-review with no findings still leaves a review on its head (airia-ci#99).
   Its body points at the summary and has no footer, so each run is still counted once.
-- With no review text the check fails (airia-ci#54) and says why: a usage or rate limit named in the
-  result or error text is titled `Claude usage limit` with the reset time when the text gives one, and a
-  run that errored after at most one turn with no model usage and no cost is titled as a likely usage
-  limit or auth failure (airia-ci#103). Only the reset time is printed, never the text itself.
+- With no review text the check fails (airia-ci#54) and says why: a usage or rate limit (a rejected
+  `rate_limit_event`, or named in the result or error text) is titled `Claude usage limit` with the reset
+  time when the payload gives one, and a run that errored after at most one turn with no model usage and
+  no cost is titled as a likely usage limit or auth failure (airia-ci#103). A limit that ends the run as a
+  "success" whose final message is the limit notice is the same failure, never posted. Only the reset
+  time is printed, never the text itself.
 """
 
 from __future__ import annotations
@@ -47,7 +49,7 @@ from urllib.parse import quote, unquote
 # The usage-limit classifier is shared with the responder; a consumer's `uses: .../review-post@main` downloads the
 # whole repository, so the sibling action's directory is beside this one.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-limit"))
-from claude_limit import failure_texts, hit_limit, last_result, reset_time, zero_usage_turns  # noqa: E402
+from claude_limit import TOKEN_OK, hit_limit, last_result, limit_notice, limit_reset, zero_usage_turns  # noqa: E402
 
 FOOTER_START = "_Automatic review by `claude-code-review.yml`"
 SEVERITIES = ("blocker", "major", "minor", "nit")
@@ -87,6 +89,10 @@ def load_message(path: str) -> tuple[str, list[str], list]:
     text = (result.get("result") or "").strip()
     if result.get("is_error") or not text:
         return "", [*lines, "No review text in the final message."], msgs
+    # A limit can end the run as a "success" whose final message is the limit notice itself; that is no review
+    # and must never be posted as one (the title says the limit; `Claude usage limit` is the signal).
+    if limit_notice(msgs):
+        return "", [*lines, "The final message is a usage-limit notice, not a review."], msgs
     return text, lines, msgs
 
 
@@ -94,9 +100,9 @@ def no_review_error(msgs: list, pr: str) -> ReviewError:
     """Why there is no review: a usage limit, its zero-usage signature, or the generic failure (airia-ci#103)."""
     unreviewed = f"Claude wrote no review for PR #{pr}, so treat it as UNREVIEWED"
     if hit_limit(msgs):
-        when = reset_time(failure_texts(msgs))
+        when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
-        return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY}",
+        return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY} {TOKEN_OK}",
                            title="Claude usage limit")
     if (turns := zero_usage_turns(msgs)) is not None:
         return ReviewError(f"{unreviewed}: the run errored after {turns} turn{'s' if turns != 1 else ''} with no model usage and no cost, "

@@ -552,6 +552,51 @@ class AUsageLimit(unittest.TestCase):
                 self.assertIn("::error title=No review posted::", out)
                 self.assertNotIn("usage limit", out)
 
+    # The limit as this repository's own dispatch run met it (2026-11-08): subtype success, is_error unset, one turn,
+    # no cost, the limit notice as the result, and a rejected rate_limit_event in the stream.
+    NOTICE = "You've hit your weekly limit · resets Nov 11 at 10am (Africa/Johannesburg)"
+    TOKEN_OK = "The CLAUDE_CODE_OAUTH_TOKEN authenticated, so this is not a secrets problem."
+
+    @staticmethod
+    def event(status, **info):
+        return {"type": "rate_limit_event", "rate_limit_info": {"status": status, "rateLimitType": "seven_day", **info}}
+
+    def test_a_success_shaped_limit_notice_is_never_posted_and_names_the_limit(self):
+        msgs = execution(self.NOTICE, num_turns=1, total_cost_usd=0)
+        del msgs[-1]["is_error"]
+        out = self.failed(msgs)
+        self.assertIn("::error title=Claude usage limit::", out, "the limit, not a malformed review")
+        self.assertIn("the limit resets Nov 11 at 10am (Africa/Johannesburg); " + RETRY + " " + self.TOKEN_OK, out)
+        self.assertNotIn("hit your", out, "the notice itself stays out of the public log")
+        self.assertNotIn("No review posted", out)
+
+    def test_a_rejected_rate_limit_event_gives_the_reset_as_utc_before_the_text(self):
+        msgs = [self.event("rejected", resetsAt=1794384000), *execution("", num_turns=1, total_cost_usd=0)]
+        out = self.failed(msgs)
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn("the limit resets 2026-11-11 08:00 UTC; " + RETRY + " " + self.TOKEN_OK, out)
+
+    def test_a_rejected_event_without_a_reset_time_still_names_the_limit(self):
+        out = self.failed([self.event("rejected"), *errored("")])
+        self.assertIn("::error title=Claude usage limit::", out, "the event makes the zero-usage case certain")
+        self.assertIn("the text gives no reset time; " + RETRY + " " + self.TOKEN_OK, out)
+        self.assertNotIn("auth failure", out)
+
+    def test_an_allowed_event_or_a_waited_out_limit_leaves_a_real_review_posted(self):
+        # Every healthy turn emits an `allowed` event with a resetsAt; the retry watchdog emits `rejected` as it starts
+        # waiting and the run may then finish. Neither turns a paid-for review into a limit failure.
+        for ev in (self.event("allowed", resetsAt=1794441600), self.event("rejected", resetsAt=1794384000)):
+            with self.subTest(status=ev["rate_limit_info"]["status"]):
+                p, summaries, _ = self.post([ev, *execution(message([]), **USED)])
+                self.assertEqual((p.returncode, len(summaries)), (0, 1))
+                self.assertNotIn("::error", p.stdout)
+
+    def test_a_non_limit_error_is_never_called_a_limit_nor_told_the_token_is_fine(self):
+        out = self.failed(errored("API Error", **USED))
+        self.assertIn("::error title=No review posted::", out)
+        self.assertNotIn("usage limit", out)
+        self.assertNotIn(self.TOKEN_OK, out)
+
     def test_a_normal_review_that_discusses_a_rate_limit_is_posted(self):
         p, summaries, _ = self.post(execution(message([], summary="The 5-hour limit reached check is right.")))
         self.assertEqual((p.returncode, len(summaries)), (0, 1))
