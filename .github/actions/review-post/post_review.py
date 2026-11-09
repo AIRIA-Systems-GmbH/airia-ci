@@ -49,7 +49,16 @@ from urllib.parse import quote, unquote
 # The usage-limit classifier is shared with the responder; a consumer's `uses: .../review-post@main` downloads the
 # whole repository, so the sibling action's directory is beside this one.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-limit"))
-from claude_limit import TOKEN_OK, hit_limit, last_result, limit_notice, limit_reset, zero_usage_turns  # noqa: E402
+from claude_limit import (  # noqa: E402
+    TOKEN_OK,
+    api_credit_exhausted,
+    api_key_invalid,
+    hit_limit,
+    last_result,
+    limit_notice,
+    limit_reset,
+    zero_usage_turns,
+)
 
 FOOTER_START = "_Automatic review by `claude-code-review.yml`"
 SEVERITIES = ("blocker", "major", "minor", "nit")
@@ -97,8 +106,16 @@ def load_message(path: str) -> tuple[str, list[str], list]:
 
 
 def no_review_error(msgs: list, pr: str) -> ReviewError:
-    """Why there is no review: a usage limit, its zero-usage signature, or the generic failure (airia-ci#103)."""
+    """Why there is no review: an API-key failure, a usage limit, its zero-usage signature, or the generic failure."""
     unreviewed = f"Claude wrote no review for PR #{pr}, so treat it as UNREVIEWED"
+    if api_key_invalid(msgs):
+        return ReviewError(f"{unreviewed}: ANTHROPIC_API_KEY was rejected as invalid. "
+                           "Set a valid key with 'gh secret set ANTHROPIC_API_KEY'.",
+                           title="Claude API key invalid")
+    if api_credit_exhausted(msgs):
+        return ReviewError(f"{unreviewed}: the ANTHROPIC_API_KEY's credit is used up. "
+                           "Add credit in the Anthropic Console; this is not a secrets problem.",
+                           title="Claude API credit exhausted")
     if hit_limit(msgs):
         when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"

@@ -536,6 +536,23 @@ class AUsageLimit(unittest.TestCase):
         self.assertIn("errored after 1 turn with no model usage and no cost", out)
         self.assertIn("(the log does not say which); if it is the limit, " + RETRY, out)
 
+    def test_an_invalid_api_key_is_titled_and_the_text_stays_out(self):
+        out = self.failed(errored("API Error: 401 authentication_error invalid x-api-key sk-ant-SECRET"))
+        self.assertIn("::error title=Claude API key invalid::", out)
+        self.assertIn("gh secret set ANTHROPIC_API_KEY", out)
+        self.assertNotIn("sk-ant-SECRET", out)
+        self.assertNotIn("invalid x-api-key", out)
+        self.assertNotIn("No review posted", out)
+
+    def test_exhausted_api_credit_is_titled_and_the_text_stays_out(self):
+        out = self.failed(errored("Your credit balance is too low to access the Anthropic API. "
+                                  "Please go to Plans & Billing to upgrade or purchase credits."))
+        self.assertIn("::error title=Claude API credit exhausted::", out)
+        self.assertIn("Add credit in the Anthropic Console", out)
+        self.assertNotIn("Plans & Billing", out)
+        self.assertNotIn("credit balance is too low", out)
+        self.assertNotIn("No review posted", out)
+
     def test_an_error_after_real_model_usage_stays_no_review_posted(self):
         for extra in (USED, {"num_turns": 0, "total_cost_usd": 0.05, "modelUsage": {"m": {}}}):
             with self.subTest(extra=extra):
