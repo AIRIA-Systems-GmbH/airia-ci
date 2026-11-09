@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
-"""Was a failed Claude run a usage limit? Shared by the review (post_review.py) and the @claude responder (airia-ci#103).
+"""Was a failed Claude run a usage limit, an exhausted API key, or an invalid key?
 
-A limit is recognised by the CLI's `rate_limit_event` with status `rejected` only when the run also has the unpaid
-signature (at most one turn, `total_cost_usd` 0) — claude-code-action writes every SDK message into the execution
-file, and the retry watchdog emits `rejected`, waits, then carries on, so a paid run that later fails keeps its
-real cause — or by the result and error texts, which count on any run. The texts are never printed, only the reset
-time is (the event's `resetsAt` as UTC, else the time phrase in the text). With no argument (`say`) it reads
-EXECUTION_FILE and, when the run hit a limit (or has the zero-usage signature of a limit or an auth failure), emits
-a titled `::error::` annotation and exits 0: the step that ran Claude has already failed, and this one only says
-why. A generic failure prints nothing.
+Shared by the review (post_review.py) and the @claude responder (airia-ci#103). A limit is recognised by the CLI's
+`rate_limit_event` with status `rejected` only when the run also has the unpaid signature (at most one turn,
+`total_cost_usd` 0) — claude-code-action writes every SDK message into the execution file, and the retry watchdog
+emits `rejected`, waits, then carries on, so a paid run that later fails keeps its real cause — or by the result
+and error texts, which count on any run. The texts are never printed, only the reset time is (the event's
+`resetsAt` as UTC, else the time phrase in the text). On the ANTHROPIC_API_KEY path, an invalid key
+(`invalid x-api-key`) and exhausted Console credit (`credit balance is too low`) are titled errors of their own;
+there is no fallback to the OAuth token. With no argument (`say`) it reads EXECUTION_FILE and, when the run hit a
+limit, a key error, or has the zero-usage signature of a limit or an auth failure, emits a titled `::error::`
+annotation and exits 0: the step that ran Claude has already failed, and this one only says why. A generic
+failure prints nothing.
 
 `decide` (airia-ci#139) writes `retry` and `primary-reset` only when FALLBACK_TOKEN is non-empty and the run hit a
 limit, and never prints the token. `both` names both reset times and exits 1 when the fallback run hit a limit too;
@@ -44,9 +47,17 @@ RESETS = re.compile(rf"(?i:\bresets?(?:\s+at|\s+on)?)\s+((?:\d{{4}}-\d{{2}}-\d{{
                     rf"|(?i:in \d{{1,3}} (?:minutes?|hours?|days?))\b){_ZONE})")
 RETRY = "comment `@claude` again after the limit resets."
 # Said only when the limit is certain: a limit is the account's answer to an authenticated request, so the
-# CLAUDE_CODE_OAUTH_TOKEN secret is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
+# credential is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
+KEY_OK = "The ANTHROPIC_API_KEY authenticated, so this is not a secrets problem."
 TOKEN_OK = "The CLAUDE_CODE_OAUTH_TOKEN authenticated, so this is not a secrets problem."
 NO_RESET = "no reset time"
+# Anthropic Console API keys (not the subscription OAuth token): the API's own wording, never printed.
+INVALID_KEY = re.compile(r"invalid x-api-key", re.IGNORECASE)
+CREDIT = re.compile(r"credit balance is too low", re.IGNORECASE)
+INVALID_KEY_ERROR = ("::error title=Claude API key invalid::Claude did not answer: ANTHROPIC_API_KEY was rejected "
+                     "as invalid. Set a valid key with 'gh secret set ANTHROPIC_API_KEY'.")
+CREDIT_ERROR = ("::error title=Claude API credit exhausted::Claude did not answer: the ANTHROPIC_API_KEY's credit "
+                "is used up. Add credit in the Anthropic Console; this is not a secrets problem.")
 
 
 def last_result(msgs: list) -> dict:
@@ -136,6 +147,16 @@ def hit_limit(msgs: list) -> bool:
             or any(LIMIT.search(t) for t in failure_texts(msgs)))
 
 
+def api_key_invalid(msgs: list) -> bool:
+    """Was the run refused because ANTHROPIC_API_KEY is not a valid Console key? The API wording is never printed."""
+    return any(INVALID_KEY.search(t) for t in failure_texts(msgs))
+
+
+def api_credit_exhausted(msgs: list) -> bool:
+    """Was the run refused because the Console key's credit is used up? The API wording is never printed."""
+    return any(CREDIT.search(t) for t in failure_texts(msgs))
+
+
 def load(path: str) -> list:
     try:
         with open(path) as fh:
@@ -145,13 +166,24 @@ def load(path: str) -> list:
     return [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
 
 
+def token_ok() -> str:
+    """Name the credential this run used. HAS_ANTHROPIC_API_KEY is the workflow boolean, never the secret."""
+    if os.environ.get("HAS_ANTHROPIC_API_KEY") == "true":
+        return KEY_OK
+    return TOKEN_OK
+
+
 def say() -> int:
     msgs = load(os.environ["EXECUTION_FILE"])
-    if hit_limit(msgs):
+    if api_key_invalid(msgs):
+        print(INVALID_KEY_ERROR)
+    elif api_credit_exhausted(msgs):
+        print(CREDIT_ERROR)
+    elif hit_limit(msgs):
         when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
         print(f"::error title=Claude usage limit::Claude did not answer: the run reports a usage or rate limit; {resets}; "
-              f"{RETRY} {TOKEN_OK}")
+              f"{RETRY} {token_ok()}")
     elif (turns := zero_usage_turns(msgs)) is not None:
         print(f"::error title=Likely Claude usage limit or auth failure::Claude did not answer: the run errored after {turns} "
               f"turn{'s' if turns != 1 else ''} with no model usage and no cost, which is the signature of a usage limit "

@@ -36,7 +36,10 @@ PRIMARY_RESET = "2026-11-11 08:00 UTC"
 FALLBACK_WHEN = "7pm (Europe/Berlin)"
 NO_RESET = "no reset time"
 SECRET_LINE = "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}"
+API_KEY_LINE = "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}"
 SHARED_PROMPT = "${{ env.REVIEW_PROMPT }}"
+OAUTH_WHEN_NO_KEY = "${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"
+FALLBACK_WHEN_NO_KEY = "${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK || '' }}"
 
 
 def limit_run(text, resets_at=None):
@@ -69,25 +72,54 @@ class TheContract(unittest.TestCase):
 
     def test_the_workflow_declares_the_optional_secret_and_the_header_shows_it(self):
         secrets = self.workflow()[True]["workflow_call"]["secrets"]
-        self.assertIs(secrets["CLAUDE_CODE_OAUTH_TOKEN"]["required"], True)
+        self.assertIs(secrets["ANTHROPIC_API_KEY"]["required"], False)
+        self.assertIs(secrets["CLAUDE_CODE_OAUTH_TOKEN"]["required"], False)
         self.assertIs(secrets["CLAUDE_CODE_OAUTH_TOKEN_FALLBACK"]["required"], False)
         # "organization:" contains the letters on:, so split on the workflow key at the start of a line.
         header = WORKFLOW.read_text().split("\non:", 1)[0]
+        self.assertIn(API_KEY_LINE, header)
         self.assertIn(SECRET_LINE, header)
+
+    def test_the_api_key_wins_over_the_oauth_token_and_skips_the_fallback(self):
+        primary = step(WORKFLOW, "Run Claude Code Review")["with"]
+        self.assertEqual(primary["anthropic_api_key"], "${{ secrets.ANTHROPIC_API_KEY }}")
+        self.assertEqual(primary["claude_code_oauth_token"], OAUTH_WHEN_NO_KEY)
+        self.assertEqual(step(WORKFLOW, "Run Claude Code Review")["continue-on-error"],
+                         "${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}")
+        self.assertEqual(step(WORKFLOW, "Decide whether to retry on the fallback token")["with"]["fallback-token"],
+                         FALLBACK_WHEN_NO_KEY)
+        respond = yaml.safe_load(RESPOND.read_text())
+        self.assertIs(respond[True]["workflow_call"]["secrets"]["ANTHROPIC_API_KEY"]["required"], False)
+        self.assertIs(respond[True]["workflow_call"]["secrets"]["CLAUDE_CODE_OAUTH_TOKEN"]["required"], False)
+        claude = step(RESPOND, "Run Claude Code")["with"]
+        self.assertEqual(claude["anthropic_api_key"], "${{ secrets.ANTHROPIC_API_KEY }}")
+        self.assertEqual(claude["claude_code_oauth_token"], OAUTH_WHEN_NO_KEY)
+        for name in ("claude.yml", "self-test.yml"):
+            text = (ROOT / ".github/workflows" / name).read_text()
+            self.assertIn(API_KEY_LINE, text)
+            self.assertIn("CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", text)
 
     def test_init_writes_the_secret_on_the_review_callers_and_not_on_the_responder(self):
         review = init.REVIEW_JOB.format(needs="gates", harness=init.HARNESS, tag=init.TAG, runner=init.THOR)
         gate = init.PYTHON_GATE.format(branch="main", harness=init.HARNESS, tag=init.TAG, runner=init.THOR)
         respond = init.RESPOND.format(harness=init.HARNESS, tag=init.TAG, runner=init.THOR, gate="ci.yml")
+        self.assertIn(API_KEY_LINE, review)
         self.assertIn(SECRET_LINE, review)
+        self.assertIn(API_KEY_LINE, gate)
         self.assertIn(SECRET_LINE, gate)
+        self.assertIn(API_KEY_LINE, respond)
         self.assertNotIn("FALLBACK", respond)
         self.assertNotIn("FALLBACK", RESPOND.read_text(), "the @claude responder is not part of this contract")
 
     def test_the_python_gate_forwards_the_optional_secret(self):
         # The gate calls the review workflow; a secret the caller passes must be declared and forwarded there.
         doc = yaml.safe_load(GATE.read_text())
-        self.assertIs(doc[True]["workflow_call"]["secrets"]["CLAUDE_CODE_OAUTH_TOKEN_FALLBACK"]["required"], False)
+        secrets = doc[True]["workflow_call"]["secrets"]
+        self.assertIs(secrets["ANTHROPIC_API_KEY"]["required"], False)
+        self.assertIs(secrets["CLAUDE_CODE_OAUTH_TOKEN"]["required"], False)
+        self.assertIs(secrets["CLAUDE_CODE_OAUTH_TOKEN_FALLBACK"]["required"], False)
+        self.assertEqual(doc["jobs"]["claude-review"]["secrets"]["ANTHROPIC_API_KEY"],
+                         "${{ secrets.ANTHROPIC_API_KEY }}")
         self.assertEqual(doc["jobs"]["claude-review"]["secrets"]["CLAUDE_CODE_OAUTH_TOKEN_FALLBACK"],
                          "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}")
 
@@ -101,10 +133,12 @@ class TheContract(unittest.TestCase):
         fallback = step(WORKFLOW, "Run Claude Code Review on the fallback token")["with"]
         self.assertEqual(primary["prompt"], SHARED_PROMPT)
         self.assertEqual(fallback["prompt"], SHARED_PROMPT)
-        self.assertEqual(primary["claude_code_oauth_token"], "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}")
+        self.assertEqual(primary["claude_code_oauth_token"], OAUTH_WHEN_NO_KEY)
         self.assertEqual(fallback["claude_code_oauth_token"], "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}")
-        self.assertEqual({k: v for k, v in primary.items() if k != "claude_code_oauth_token"},
-                         {k: v for k, v in fallback.items() if k != "claude_code_oauth_token"})
+        skip = {"claude_code_oauth_token", "anthropic_api_key"}
+        self.assertEqual({k: v for k, v in primary.items() if k not in skip},
+                         {k: v for k, v in fallback.items() if k not in skip})
+        self.assertNotIn("anthropic_api_key", fallback)
         self.assertEqual(step(WORKFLOW, "Run Claude Code Review on the fallback token")["uses"],
                          step(WORKFLOW, "Run Claude Code Review")["uses"])
 
@@ -114,13 +148,14 @@ class TheContract(unittest.TestCase):
         primary = step(WORKFLOW, "Run Claude Code Review")
         # With the secret the primary may fail and the job still goes green on the fallback's review; without it
         # the expression is false and a primary failure fails the job as it does today.
-        self.assertEqual(primary["continue-on-error"], "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}")
+        self.assertEqual(primary["continue-on-error"],
+                         "${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}")
         decide = step(WORKFLOW, "Decide whether to retry on the fallback token")
         self.assertEqual(decide["if"],
                          "always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped'")
         self.assertEqual(decide["uses"], "AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main")
         self.assertEqual(decide["with"], {"execution-file": "${{ steps.claude-review.outputs.execution_file }}",
-                                          "fallback-token": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}",
+                                          "fallback-token": FALLBACK_WHEN_NO_KEY,
                                           "mode": "decide"})
         self.assertNotIn("env", decide, "the token travels once, as the action's input")
 
@@ -187,6 +222,13 @@ class Decide(unittest.TestCase):
         # The fallback must not run when the caller did not pass the secret: the job behaves exactly as today.
         self.assertEqual(self.decide(limit_run("You've hit your limit · resets 7pm (Europe/Berlin)"), ""), {})
         self.assertEqual(self.decide(limit_run("You've hit your limit · resets 7pm (Europe/Berlin)"), None), {})
+
+    def test_an_api_key_failure_does_not_retry_on_the_oauth_fallback(self):
+        failed = [{"type": "result", "subtype": "error_during_execution", "num_turns": 1, "is_error": True,
+                   "total_cost_usd": 0, "modelUsage": {}, "result": "invalid x-api-key"}]
+        self.assertEqual(self.decide(failed, TOKEN), {})
+        failed[0]["result"] = "Your credit balance is too low to access the Anthropic API."
+        self.assertEqual(self.decide(failed, TOKEN), {})
 
 
 class BothLimits(unittest.TestCase):

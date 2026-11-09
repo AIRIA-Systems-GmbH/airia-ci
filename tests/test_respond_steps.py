@@ -78,13 +78,25 @@ class RequireSameRepositoryBranch(unittest.TestCase):
 
 
 class RequireTheCredential(unittest.TestCase):
-    def test_a_missing_token_fails_with_the_fix(self):
-        p = Runner(self).run(WORKFLOW, "Require the Claude credential", HAS_CLAUDE_TOKEN="false")
-        self.assertEqual(p.returncode, 1)
-        self.assertIn("gh secret set CLAUDE_CODE_OAUTH_TOKEN -R o/r", p.stdout)
+    STEP = "Require the Claude credential"
 
-    def test_a_present_token_passes(self):
-        self.assertEqual(Runner(self).run(WORKFLOW, "Require the Claude credential", HAS_CLAUDE_TOKEN="true").returncode, 0)
+    def check(self, **env):
+        return Runner(self).run(WORKFLOW, self.STEP, **env)
+
+    def test_neither_secret_fails_naming_both_and_the_api_key_fix(self):
+        p = self.check(HAS_ANTHROPIC_API_KEY="false", HAS_CLAUDE_TOKEN="false")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are both empty", p.stdout)
+        self.assertIn("gh secret set ANTHROPIC_API_KEY -R o/r", p.stdout)
+
+    def test_the_api_key_alone_passes(self):
+        self.assertEqual(self.check(HAS_ANTHROPIC_API_KEY="true", HAS_CLAUDE_TOKEN="false").returncode, 0)
+
+    def test_the_oauth_token_alone_passes(self):
+        self.assertEqual(self.check(HAS_ANTHROPIC_API_KEY="false", HAS_CLAUDE_TOKEN="true").returncode, 0)
+
+    def test_both_secrets_pass(self):
+        self.assertEqual(self.check(HAS_ANTHROPIC_API_KEY="true", HAS_CLAUDE_TOKEN="true").returncode, 0)
 
 
 class JobEnvironment(unittest.TestCase):
