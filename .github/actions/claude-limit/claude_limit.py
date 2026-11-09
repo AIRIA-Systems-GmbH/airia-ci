@@ -47,7 +47,8 @@ RESETS = re.compile(rf"(?i:\bresets?(?:\s+at|\s+on)?)\s+((?:\d{{4}}-\d{{2}}-\d{{
                     rf"|(?i:in \d{{1,3}} (?:minutes?|hours?|days?))\b){_ZONE})")
 RETRY = "comment `@claude` again after the limit resets."
 # Said only when the limit is certain: a limit is the account's answer to an authenticated request, so the
-# CLAUDE_CODE_OAUTH_TOKEN secret is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
+# credential is not what to chase (Portfolio-Dashboard run 42495279385 cost an hour of that).
+KEY_OK = "The ANTHROPIC_API_KEY authenticated, so this is not a secrets problem."
 TOKEN_OK = "The CLAUDE_CODE_OAUTH_TOKEN authenticated, so this is not a secrets problem."
 NO_RESET = "no reset time"
 # Anthropic Console API keys (not the subscription OAuth token): the API's own wording, never printed.
@@ -165,6 +166,13 @@ def load(path: str) -> list:
     return [m for m in msgs if isinstance(m, dict)] if isinstance(msgs, list) else []
 
 
+def token_ok() -> str:
+    """Name the credential this run used. HAS_ANTHROPIC_API_KEY is the workflow boolean, never the secret."""
+    if os.environ.get("HAS_ANTHROPIC_API_KEY") == "true":
+        return KEY_OK
+    return TOKEN_OK
+
+
 def say() -> int:
     msgs = load(os.environ["EXECUTION_FILE"])
     if api_key_invalid(msgs):
@@ -175,7 +183,7 @@ def say() -> int:
         when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
         print(f"::error title=Claude usage limit::Claude did not answer: the run reports a usage or rate limit; {resets}; "
-              f"{RETRY} {TOKEN_OK}")
+              f"{RETRY} {token_ok()}")
     elif (turns := zero_usage_turns(msgs)) is not None:
         print(f"::error title=Likely Claude usage limit or auth failure::Claude did not answer: the run errored after {turns} "
               f"turn{'s' if turns != 1 else ''} with no model usage and no cost, which is the signature of a usage limit "

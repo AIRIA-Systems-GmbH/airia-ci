@@ -662,6 +662,8 @@ jobs:
       - name: Post the review
         if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped' && steps.both-limits.outcome != 'failure'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-post@main
+        env:
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         with:
           pr: ${{ inputs.pr-number }}
           execution-file: ${{ steps.fallback.outputs.retry == 'true' && steps.claude-review-fallback.outputs.execution_file || steps.claude-review.outputs.execution_file }}

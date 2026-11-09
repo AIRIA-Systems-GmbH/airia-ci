@@ -404,5 +404,7 @@ jobs:
       - name: Say why Claude failed
         if: failure() && steps.claude.outcome == 'failure'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
+        env:
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}

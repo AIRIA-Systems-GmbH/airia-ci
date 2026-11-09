@@ -425,6 +425,7 @@ class PostTheReview(unittest.TestCase):
         s = step(WORKFLOW, "Post the review")
         self.assertEqual(s["uses"], "AIRIA-Systems-GmbH/airia-ci/.github/actions/review-post@main")
         self.assertNotIn("run", s, "the posting is the action's post_review.py, not an inline block")
+        self.assertEqual(s["env"]["HAS_ANTHROPIC_API_KEY"], "${{ secrets.ANTHROPIC_API_KEY != '' }}")
         self.assertEqual(set(s["with"]), {"pr", "execution-file", "run-id", "run-url", "claude-version", "head-sha",
                                           "github-token"})
         self.assertIn("steps.claude-review.outputs.execution_file", s["with"]["execution-file"])

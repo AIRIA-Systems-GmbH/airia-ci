@@ -50,13 +50,13 @@ from urllib.parse import quote, unquote
 # whole repository, so the sibling action's directory is beside this one.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "claude-limit"))
 from claude_limit import (  # noqa: E402
-    TOKEN_OK,
     api_credit_exhausted,
     api_key_invalid,
     hit_limit,
     last_result,
     limit_notice,
     limit_reset,
+    token_ok,
     zero_usage_turns,
 )
 
@@ -119,7 +119,7 @@ def no_review_error(msgs: list, pr: str) -> ReviewError:
     if hit_limit(msgs):
         when = limit_reset(msgs)
         resets = f"the limit resets {when}" if when else "the text gives no reset time"
-        return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY} {TOKEN_OK}",
+        return ReviewError(f"{unreviewed}: the run reports a usage or rate limit; {resets}; {RETRY} {token_ok()}",
                            title="Claude usage limit")
     if (turns := zero_usage_turns(msgs)) is not None:
         return ReviewError(f"{unreviewed}: the run errored after {turns} turn{'s' if turns != 1 else ''} with no model usage and no cost, "

@@ -71,7 +71,7 @@ OTHER_422 = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\n",
 class TheStep(unittest.TestCase):
     """The action's shell and Python together, against a fake `gh`, as the review job runs them."""
 
-    def post(self, msgs, rules=(), version="2.1.300", head=HEAD, run_id="42"):
+    def post(self, msgs, rules=(), version="2.1.300", head=HEAD, run_id="42", **env):
         rules = [*rules,
                  [LISTING, {"json": []}],
                  [INLINE, {"json": {"html_url": "https://github.com/o/r/pull/9#discussion_r1"}}],
@@ -84,7 +84,7 @@ class TheStep(unittest.TestCase):
         if msgs is not None:
             exe.write_text(json.dumps(msgs))
         p = r.run(ACTION, "Post the review", PR="9", RUN_ID=run_id, EXECUTION_FILE=str(exe), CLAUDE_VERSION=version,
-                  HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}")
+                  HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}", **env)
         calls = r.calls()
         summaries = [c["files"]["--body-file"] for c in calls if c["args"][:2] == ["pr", "comment"]]
         findings = [(c["args"], c["files"]) for c in calls if "--method" in c["args"] and "/comments " in c["args"][3] + " "]
@@ -488,8 +488,8 @@ class AUsageLimit(unittest.TestCase):
 
     post = TheStep.post
 
-    def failed(self, msgs):
-        p, summaries, _ = self.post(msgs)
+    def failed(self, msgs, **env):
+        p, summaries, _ = self.post(msgs, **env)
         self.assertEqual((p.returncode, summaries, self.reviews), (1, [], []), "fail closed: nothing is posted")
         return p.stdout
 
@@ -598,6 +598,15 @@ class AUsageLimit(unittest.TestCase):
         self.assertIn("::error title=Claude usage limit::", out, "the event makes the zero-usage case certain")
         self.assertIn("the text gives no reset time; " + RETRY + " " + self.TOKEN_OK, out)
         self.assertNotIn("auth failure", out)
+
+    def test_a_key_only_run_names_the_api_key_not_the_oauth_token(self):
+        # F1: the API-key path must not say CLAUDE_CODE_OAUTH_TOKEN authenticated.
+        out = self.failed([self.event("rejected", resetsAt=1794384000), *execution("", num_turns=1, total_cost_usd=0)],
+                          HAS_ANTHROPIC_API_KEY="true")
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn("The ANTHROPIC_API_KEY authenticated, so this is not a secrets problem.", out)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN authenticated", out)
+        self.assertNotIn(self.TOKEN_OK, out)
 
     def test_an_allowed_event_or_a_waited_out_limit_leaves_a_real_review_posted(self):
         # Every healthy turn emits an `allowed` event with a resetsAt; the retry watchdog emits `rejected` as it starts

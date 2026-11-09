@@ -36,12 +36,12 @@ def execution(result: str, **extra) -> list:
 class SayWhyClaudeFailed(unittest.TestCase):
     STEP = "Classify the failure"
 
-    def say(self, msgs):
+    def say(self, msgs, **env):
         r = Runner(self)
         exe = r.tmp / "execution.json"
         if msgs is not None:
             exe.write_text(msgs if isinstance(msgs, str) else json.dumps(msgs))
-        p = r.run(ACTION, self.STEP, EXECUTION_FILE=str(exe))
+        p = r.run(ACTION, self.STEP, EXECUTION_FILE=str(exe), **env)
         self.assertEqual(p.returncode, 0, "the job is already failing: this step never fails it, or hides why")
         return p.stdout
 
@@ -117,6 +117,16 @@ class SayWhyClaudeFailed(unittest.TestCase):
         self.assertIn("::error title=Likely Claude usage limit or auth failure::", out)
         self.assertIn("errored after 1 turn with no model usage and no cost", out)
         self.assertIn("if it is the limit, " + RETRY, out)
+
+    def test_a_key_only_run_names_the_api_key_not_the_oauth_token(self):
+        # F1: the API-key path must not say CLAUDE_CODE_OAUTH_TOKEN authenticated.
+        event = {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": 1794384000}}
+        out = self.say([event, *execution("", num_turns=1, total_cost_usd=0, modelUsage={})],
+                       HAS_ANTHROPIC_API_KEY="true")
+        self.assertIn("::error title=Claude usage limit::", out)
+        self.assertIn(claude_limit.KEY_OK, out)
+        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN authenticated", out)
+        self.assertNotIn(claude_limit.TOKEN_OK, out)
 
     def test_an_invalid_api_key_is_titled_and_the_text_stays_out(self):
         out = self.say(execution("API Error: 401 authentication_error invalid x-api-key sk-ant-SECRET",
@@ -202,6 +212,7 @@ class WiredIntoTheResponder(unittest.TestCase):
         self.assertEqual(s["if"], "failure() && steps.claude.outcome == 'failure'")
         self.assertEqual(s["uses"], "AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main")
         self.assertEqual(s["with"], {"execution-file": "${{ steps.claude.outputs.execution_file }}"})
+        self.assertEqual(s["env"]["HAS_ANTHROPIC_API_KEY"], "${{ secrets.ANTHROPIC_API_KEY != '' }}")
         names = [x.get("name") for x in yaml.safe_load(RESPOND.read_text())["jobs"]["claude"]["steps"]]
         self.assertEqual(names[names.index("Run Claude Code") + 1], "Say why Claude failed")
 
