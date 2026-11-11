@@ -140,7 +140,6 @@ class Shape(unittest.TestCase):
         self.assertEqual(review["needs"], ["gate"])
         self.assertTrue(review["if"].startswith("always() && github.event_name == 'pull_request'"))
         self.assertEqual(review["secrets"], {
-            "ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}",
             "CLAUDE_CODE_OAUTH_TOKEN": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}",
             "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK": "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}",
         })

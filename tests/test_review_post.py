@@ -71,7 +71,7 @@ OTHER_422 = {"exit": 1, "stderr": "gh: Validation Failed (HTTP 422)\n",
 class TheStep(unittest.TestCase):
     """The action's shell and Python together, against a fake `gh`, as the review job runs them."""
 
-    def post(self, msgs, rules=(), version="2.1.300", head=HEAD, run_id="42", **env):
+    def post(self, msgs, rules=(), version="2.1.300", head=HEAD, run_id="42"):
         rules = [*rules,
                  [LISTING, {"json": []}],
                  [INLINE, {"json": {"html_url": "https://github.com/o/r/pull/9#discussion_r1"}}],
@@ -84,7 +84,7 @@ class TheStep(unittest.TestCase):
         if msgs is not None:
             exe.write_text(json.dumps(msgs))
         p = r.run(ACTION, "Post the review", PR="9", RUN_ID=run_id, EXECUTION_FILE=str(exe), CLAUDE_VERSION=version,
-                  HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}", **env)
+                  HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}")
         calls = r.calls()
         summaries = [c["files"]["--body-file"] for c in calls if c["args"][:2] == ["pr", "comment"]]
         findings = [(c["args"], c["files"]) for c in calls if "--method" in c["args"] and "/comments " in c["args"][3] + " "]
@@ -488,8 +488,8 @@ class AUsageLimit(unittest.TestCase):
 
     post = TheStep.post
 
-    def failed(self, msgs, **env):
-        p, summaries, _ = self.post(msgs, **env)
+    def failed(self, msgs):
+        p, summaries, _ = self.post(msgs)
         self.assertEqual((p.returncode, summaries, self.reviews), (1, [], []), "fail closed: nothing is posted")
         return p.stdout
 
@@ -536,23 +536,6 @@ class AUsageLimit(unittest.TestCase):
         self.assertIn("errored after 1 turn with no model usage and no cost", out)
         self.assertIn("(the log does not say which); if it is the limit, " + RETRY, out)
 
-    def test_an_invalid_api_key_is_titled_and_the_text_stays_out(self):
-        out = self.failed(errored("API Error: 401 authentication_error invalid x-api-key sk-ant-SECRET"))
-        self.assertIn("::error title=Claude API key invalid::", out)
-        self.assertIn("gh secret set ANTHROPIC_API_KEY", out)
-        self.assertNotIn("sk-ant-SECRET", out)
-        self.assertNotIn("invalid x-api-key", out)
-        self.assertNotIn("No review posted", out)
-
-    def test_exhausted_api_credit_is_titled_and_the_text_stays_out(self):
-        out = self.failed(errored("Your credit balance is too low to access the Anthropic API. "
-                                  "Please go to Plans & Billing to upgrade or purchase credits."))
-        self.assertIn("::error title=Claude API credit exhausted::", out)
-        self.assertIn("Add credit in the Anthropic Console", out)
-        self.assertNotIn("Plans & Billing", out)
-        self.assertNotIn("credit balance is too low", out)
-        self.assertNotIn("No review posted", out)
-
     def test_an_error_after_real_model_usage_stays_no_review_posted(self):
         for extra in (USED, {"num_turns": 0, "total_cost_usd": 0.05, "modelUsage": {"m": {}}}):
             with self.subTest(extra=extra):
@@ -598,15 +581,6 @@ class AUsageLimit(unittest.TestCase):
         self.assertIn("::error title=Claude usage limit::", out, "the event makes the zero-usage case certain")
         self.assertIn("the text gives no reset time; " + RETRY + " " + self.TOKEN_OK, out)
         self.assertNotIn("auth failure", out)
-
-    def test_a_key_only_run_names_the_api_key_not_the_oauth_token(self):
-        # F1: the API-key path must not say CLAUDE_CODE_OAUTH_TOKEN authenticated.
-        out = self.failed([self.event("rejected", resetsAt=1794384000), *execution("", num_turns=1, total_cost_usd=0)],
-                          HAS_ANTHROPIC_API_KEY="true")
-        self.assertIn("::error title=Claude usage limit::", out)
-        self.assertIn("The ANTHROPIC_API_KEY authenticated, so this is not a secrets problem.", out)
-        self.assertNotIn("CLAUDE_CODE_OAUTH_TOKEN authenticated", out)
-        self.assertNotIn(self.TOKEN_OK, out)
 
     def test_an_allowed_event_or_a_waited_out_limit_leaves_a_real_review_posted(self):
         # Every healthy turn emits an `allowed` event with a resetsAt; the retry watchdog emits `rejected` as it starts

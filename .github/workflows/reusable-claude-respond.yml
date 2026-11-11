@@ -32,14 +32,10 @@ name: Claude (shared @claude responder)
 #       with:
 #         gate-workflow: ci.yml          # optional: the PR gate whose results to read
 #       secrets:
-#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #
-# ANTHROPIC_API_KEY is the preferred credential (an Anthropic Console API key). When it is
-# set, the responder uses it and does not send the OAuth token. When it is empty, the OAuth
-# token is used as before. A caller that passes only the OAuth token behaves exactly as
-# today. A caller in another owner (tumma72) must pass the secret by name: `secrets: inherit`
-# does not cross owners.
+# The responder authenticates only with CLAUDE_CODE_OAUTH_TOKEN (airia-ci#143). ANTHROPIC_API_KEY
+# is declared so a caller that still passes it is accepted, and it is ignored: it reaches no step.
 #
 # WHO MAY START IT. Someone with WRITE or ADMIN access, checked twice, both
 # here and not in the caller. The job's `if:` is the cheap filter: an `@claude`
@@ -147,8 +143,10 @@ on:
         type: string
         default: ""
     secrets:
+      # Accepted for compatibility and ignored (airia-ci#143).
       ANTHROPIC_API_KEY:
         required: false
+      # Not required here, so a caller without it gets the titled No Claude credential error.
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
 
@@ -234,14 +232,12 @@ jobs:
 
       - name: Require the Claude credential
         env:
-          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
-          if [ "${HAS_ANTHROPIC_API_KEY}" = "true" ] || [ "${HAS_CLAUDE_TOKEN}" = "true" ]; then
-            exit 0
+          if [ "${HAS_CLAUDE_TOKEN}" != "true" ]; then
+            echo "::error title=No Claude credential::CLAUDE_CODE_OAUTH_TOKEN is empty: ${GITHUB_REPOSITORY} has no such secret, or the caller does not pass it. Set it with 'gh secret set CLAUDE_CODE_OAUTH_TOKEN -R ${GITHUB_REPOSITORY}'."
+            exit 1
           fi
-          echo "::error title=No Claude credential::ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are both empty: ${GITHUB_REPOSITORY} has neither secret, or the caller does not pass them. Set the preferred credential with 'gh secret set ANTHROPIC_API_KEY -R ${GITHUB_REPOSITORY}'."
-          exit 1
 
       - name: Export the service addresses and the job environment
         env:
@@ -393,8 +389,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           additional_permissions: |
             actions: read
           settings: ${{ steps.settings.outputs.path }}
@@ -404,7 +399,5 @@ jobs:
       - name: Say why Claude failed
         if: failure() && steps.claude.outcome == 'failure'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
-        env:
-          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         with:
           execution-file: ${{ steps.claude.outputs.execution_file }}

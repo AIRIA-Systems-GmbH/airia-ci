@@ -32,9 +32,11 @@ name: AIRIA Python gate (shared)
 #       permissions: { contents: read, pull-requests: write, issues: write, actions: read, checks: read }
 #       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-python-gate.yml@main
 #       secrets:
-#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #         CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+#
+# The review authenticates only with the OAuth tokens (airia-ci#143). ANTHROPIC_API_KEY is
+# declared so a caller that still passes it is accepted, and it is ignored: it is not forwarded.
 #
 # THE REQUIRED CHECKS are `ci / gate` and `ci / claude-review / claude-review`
 # (GitHub names a called job `<caller job> / <called job>`). `init.py protect`
@@ -198,8 +200,10 @@ on:
         type: string
         default: ""
     secrets:
+      # Accepted for compatibility and ignored: not forwarded to the review (airia-ci#143).
       ANTHROPIC_API_KEY:
         required: false
+      # Not required here, so a caller without it gets the review's titled No Claude credential error.
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
@@ -510,6 +514,5 @@ jobs:
       extra-deny: ${{ inputs.extra-deny }}
       extra-prompt: ${{ inputs.extra-prompt }}
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}

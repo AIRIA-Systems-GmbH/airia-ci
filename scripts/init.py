@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
 # SPDX-License-Identifier: Apache-2.0
-"""Wire a repository to airia-ci: the review, `@claude`, its API key, a protected main.
+"""Wire a repository to airia-ci: the review, `@claude`, its token, a protected main.
 
 From the root of the repository's checkout, logged in with `gh`:
 
@@ -17,15 +17,13 @@ It writes the files that are missing and never overwrites one:
   guess;
 - `.github/claude-review.md`, the repository's own review rules, to fill in.
 
-Then it sets the `ANTHROPIC_API_KEY` secret (from the environment variable of
-that name, or by pasting a key from the Anthropic Console; one Console
-organization key serves every repository of the same owner). A repository that
-already has `CLAUDE_CODE_OAUTH_TOKEN` keeps it: the OAuth token still works
-when the API key is unset. It offers to protect the default branch with a
-ruleset: changes only through a pull request whose gate jobs passed and whose
-commits are signed and verified, no force-push, no deletion. Recommended; a
-private repository of an organization on the Free plan cannot have one, and it
-says so.
+Then it sets the `CLAUDE_CODE_OAUTH_TOKEN` secret (from the environment
+variable of that name, or by running `claude setup-token`; one token serves
+every repository of the same Anthropic account), and offers to protect the
+default branch with a ruleset: changes only through a pull request whose gate
+jobs passed and whose commits are signed and verified, no force-push, no
+deletion. Recommended; a private repository of
+an organization on the Free plan cannot have one, and it says so.
 
 It commits nothing: review the files, commit them on a branch, open a PR.
 
@@ -104,7 +102,6 @@ jobs:
       runner: '{runner}'
       gate-workflow: {gate}
     secrets:
-      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
 """
 
@@ -125,7 +122,6 @@ REVIEW_JOB = """\
       pr-number: ${{{{ github.event.pull_request.number }}}}
       runner: '{runner}'
     secrets:
-      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}}}
 """
@@ -159,7 +155,6 @@ jobs:
     with:
       runner: '{runner}'
     secrets:
-      ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
       CLAUDE_CODE_OAUTH_TOKEN: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}}}
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{{{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}}}
 """
@@ -437,28 +432,24 @@ def dev_group(text: str, have: dict, block: str) -> str:
 
 def set_token(repo: str, assume_yes: bool) -> None:
     p = gh("secret", "list", "--repo", repo, "--json", "name", "--jq", ".[].name")
-    names = p.stdout.split() if p.returncode == 0 else []
-    if "ANTHROPIC_API_KEY" in names:
-        print("kept      the ANTHROPIC_API_KEY secret (exists)")
-        return
-    if "CLAUDE_CODE_OAUTH_TOKEN" in names:
+    if p.returncode == 0 and "CLAUDE_CODE_OAUTH_TOKEN" in p.stdout.split():
         print("kept      the CLAUDE_CODE_OAUTH_TOKEN secret (exists)")
         return
-    token = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
     if not token:
-        if not ask("No ANTHROPIC_API_KEY secret. Paste one from the Anthropic Console now?", assume_yes):
-            print("skipped   the key: the review and @claude fail until ANTHROPIC_API_KEY or "
-                  "CLAUDE_CODE_OAUTH_TOKEN is set")
+        if not ask("No CLAUDE_CODE_OAUTH_TOKEN secret. Run `claude setup-token` now?", assume_yes):
+            print("skipped   the token: the review and @claude fail until the secret is set")
             return
-        token = getpass.getpass("Paste the API key (not echoed): ").strip()
+        subprocess.run(["claude", "setup-token"], check=False)
+        token = getpass.getpass("Paste the token it printed (not echoed): ").strip()
     if not token:
-        print("skipped   the key: none given")
+        print("skipped   the token: none given")
         return
-    # On stdin, so the key is in no process list or shell history.
-    s = gh("secret", "set", "ANTHROPIC_API_KEY", "--repo", repo, stdin=token)
+    # On stdin, so the token is in no process list or shell history.
+    s = gh("secret", "set", "CLAUDE_CODE_OAUTH_TOKEN", "--repo", repo, stdin=token)
     if s.returncode:
         raise RuntimeError(f"could not set the secret: {s.stderr.strip()}")
-    print("set       the ANTHROPIC_API_KEY secret")
+    print("set       the CLAUDE_CODE_OAUTH_TOKEN secret")
 
 
 def ruleset(checks: list[str]) -> dict:
@@ -520,7 +511,7 @@ def protect(repo: str, branch: str, checks: list[str], assume_yes: bool, update:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", nargs="?", choices=["wire", "protect"], default="wire",
-                    help="wire (default): write the missing files, set the API key, offer a ruleset; "
+                    help="wire (default): write the missing files, set the token, offer a ruleset; "
                          "protect: write the standard's canonical ruleset, or rewrite the existing one into it")
     ap.add_argument("--dir", default=".", help="the repository's checkout (default: here)")
     ap.add_argument("--runner", default=THOR,

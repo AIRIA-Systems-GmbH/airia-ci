@@ -34,16 +34,12 @@ name: Claude Code Review (shared)
 #       extra-allow: |          # optional: this repo's own gates, if not covered
 #         Bash(cargo test:*)
 #     secrets:
-#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 #       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
 #
-# ANTHROPIC_API_KEY is the preferred credential (an Anthropic Console API key). When it is
-# set, the review uses it and does not send the OAuth token. When it is empty, the OAuth
-# token is used as before, including the optional CLAUDE_CODE_OAUTH_TOKEN_FALLBACK retry.
-# A caller that passes only the OAuth token behaves exactly as today. A caller in another
-# owner (tumma72) must pass the secret by name: `secrets: inherit` does not cross owners.
 # Omitting CLAUDE_CODE_OAUTH_TOKEN_FALLBACK leaves one run on the primary token, as before.
+# The review authenticates only with the OAuth tokens (airia-ci#143). ANTHROPIC_API_KEY is
+# declared so a caller that still passes it is accepted, and it is ignored: it reaches no step.
 # `always()` because a red gate is review input: a bare `needs:` reports this
 # job SKIPPED the moment any gate reds, and a skipped review is invisible. The
 # gate workflow's `pull_request` types must include `ready_for_review`, or a PR
@@ -210,8 +206,10 @@ on:
         type: string
         default: ""
     secrets:
+      # Accepted for compatibility and ignored (airia-ci#143).
       ANTHROPIC_API_KEY:
         required: false
+      # Not required here, so a caller without it gets the titled No Claude credential error.
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK:
@@ -483,14 +481,12 @@ jobs:
       - name: Require the Claude credential
         if: steps.once.outputs.review == 'true'
         env:
-          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           HAS_CLAUDE_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
-          if [ "${HAS_ANTHROPIC_API_KEY}" = "true" ] || [ "${HAS_CLAUDE_TOKEN}" = "true" ]; then
-            exit 0
+          if [ "${HAS_CLAUDE_TOKEN}" != "true" ]; then
+            echo "::error title=No Claude credential::CLAUDE_CODE_OAUTH_TOKEN is empty: ${GITHUB_REPOSITORY} has no such secret, or the caller does not pass it. Set it with 'gh secret set CLAUDE_CODE_OAUTH_TOKEN -R ${GITHUB_REPOSITORY}'; an @claude retry cannot succeed until then."
+            exit 1
           fi
-          echo "::error title=No Claude credential::ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are both empty: ${GITHUB_REPOSITORY} has neither secret, or the caller does not pass them. Set the preferred credential with 'gh secret set ANTHROPIC_API_KEY -R ${GITHUB_REPOSITORY}'; an @claude retry cannot succeed until then."
-          exit 1
 
       - name: Checkout repository
         if: steps.once.outputs.review == 'true'
@@ -615,12 +611,11 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         if: steps.once.outputs.review == 'true'
-        continue-on-error: ${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}
+        continue-on-error: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK != '' }}
         uses: anthropics/claude-code-action@v1
         with:
           path_to_claude_code_executable: ${{ steps.claude-cli.outputs.path }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           settings: ${{ steps.settings.outputs.path }}
           prompt: ${{ env.REVIEW_PROMPT }}
@@ -631,7 +626,7 @@ jobs:
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/claude-limit@main
         with:
           execution-file: ${{ steps.claude-review.outputs.execution_file }}
-          fallback-token: ${{ secrets.ANTHROPIC_API_KEY == '' && secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK || '' }}
+          fallback-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           mode: decide
 
       - name: Run Claude Code Review on the fallback token
@@ -662,8 +657,6 @@ jobs:
       - name: Post the review
         if: always() && steps.once.outputs.review == 'true' && steps.claude-review.outcome != 'skipped' && steps.both-limits.outcome != 'failure'
         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/review-post@main
-        env:
-          HAS_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         with:
           pr: ${{ inputs.pr-number }}
           execution-file: ${{ steps.fallback.outputs.retry == 'true' && steps.claude-review-fallback.outputs.execution_file || steps.claude-review.outputs.execution_file }}

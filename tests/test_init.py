@@ -30,8 +30,7 @@ spec.loader.exec_module(init)
 
 VIEW = ["repo view", {"json": {"nameWithOwner": "o/app", "defaultBranchRef": {"name": "main"}}}]
 NO_SECRET = ["secret list", {"json": []}]
-HAS_SECRET = ["secret list", {"json": [{"name": "ANTHROPIC_API_KEY"}]}]
-HAS_OAUTH = ["secret list", {"json": [{"name": "CLAUDE_CODE_OAUTH_TOKEN"}]}]
+HAS_SECRET = ["secret list", {"json": [{"name": "CLAUDE_CODE_OAUTH_TOKEN"}]}]
 SET = ["secret set", {}]
 NO_RULESET = [r"rulesets --jq", {"json": []}]
 HAS_RULESET = [r"rulesets --jq", {"json": [{"name": init.RULESET, "id": 7}]}]
@@ -97,7 +96,7 @@ class Init(unittest.TestCase):
         self.r.rules(rules)
         self.r.tool("claude", "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/claude-args\"\n")
         out, err = io.StringIO(), io.StringIO()
-        env = {**self.r.env(), "ANTHROPIC_API_KEY": token}
+        env = {**self.r.env(), "CLAUDE_CODE_OAUTH_TOKEN": token}
         with mock.patch.dict(os.environ, env), \
                 mock.patch("builtins.input", side_effect=list(answers)), \
                 mock.patch.object(init.getpass, "getpass", return_value=pasted), \
@@ -142,13 +141,11 @@ class Init(unittest.TestCase):
         respond = self.file(".github/workflows/claude.yml")
         self.assertIn("gate-workflow: merge-gate.yml", respond)
         self.assertIn("runner: '[\"ubuntu-latest\"]'", respond)
-        self.assertIn("${{ secrets.ANTHROPIC_API_KEY }}", respond)
         self.assertIn("${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", respond)
         self.assertIn("permissions: {}", respond)
         self.assertIn("# Review rules for app", self.file(".github/claude-review.md"))
         (secret,) = self.call("secret set")
-        self.assertIn("ANTHROPIC_API_KEY", secret["args"])
-        self.assertNotIn("tok-123", secret["args"], "the key travels on stdin only")
+        self.assertNotIn("tok-123", secret["args"], "the token travels on stdin only")
         self.assertEqual(secret["files"]["stdin"], "tok-123")
         (ruleset,) = self.call("-X POST")
         body = json.loads(ruleset["files"]["stdin"])
@@ -248,28 +245,20 @@ class Init(unittest.TestCase):
     def test_declining_leaves_the_secret_and_main_alone_and_says_what_that_means(self):
         code, out, _ = self.run_main([VIEW, NO_SECRET, NO_RULESET], answers=["n", "no"], token="")
         self.assertEqual(code, 0)
-        self.assertIn("the review and @claude fail until ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is set", out)
+        self.assertIn("the review and @claude fail until the secret is set", out)
         self.assertIn("can push to main directly", out)
         self.assertEqual(self.call("secret set") + self.call("-X POST"), [])
 
-    def test_a_pasted_api_key_is_set(self):
+    def test_setup_token_runs_and_the_pasted_token_is_set(self):
         code, _, _ = self.run_main([VIEW, NO_SECRET, SET, HAS_RULESET], answers=[""], token="", pasted=" tok-9 \n")
         self.assertEqual(code, 0)
-        self.assertFalse((self.r.bin / "claude-args").exists(), "an API key is pasted, not minted by claude setup-token")
-        secret = self.call("secret set")[0]
-        self.assertIn("ANTHROPIC_API_KEY", secret["args"])
-        self.assertEqual(secret["files"]["stdin"], "tok-9")
-
-    def test_an_existing_oauth_token_is_kept(self):
-        code, out, _ = self.run_main([VIEW, HAS_OAUTH, HAS_RULESET], "--yes")
-        self.assertEqual(code, 0, out)
-        self.assertIn("kept      the CLAUDE_CODE_OAUTH_TOKEN secret (exists)", out)
-        self.assertEqual(self.call("secret set"), [])
+        self.assertEqual((self.r.bin / "claude-args").read_text().strip(), "setup-token")
+        self.assertEqual(self.call("secret set")[0]["files"]["stdin"], "tok-9")
 
     def test_nothing_pasted_sets_nothing(self):
         code, out, _ = self.run_main([VIEW, NO_SECRET, HAS_RULESET], answers=["y"], token="", pasted="")
         self.assertEqual(code, 0)
-        self.assertIn("skipped   the key: none given", out)
+        self.assertIn("skipped   the token: none given", out)
 
     def test_a_plan_that_refuses_rulesets_is_explained_not_raised(self):
         refused = ["-X POST .*rulesets", {"exit": 1, "text": '{"message":"Upgrade to GitHub Pro or make this '
