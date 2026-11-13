@@ -359,6 +359,14 @@ The automatic review runs once per head commit. A push after it is reviewed agai
 
 A PR gets at most **three** automatic reviews (airia-ci#62). A newer head after the third gets no fourth review. The review check passes with a notice, and the PR gets one comment per such head: *Review cap reached; no new automatic review* (airia-ci#70). The cap is not a human gate (Andrea, 2026-10-22). Merge when every required check is green, every finding in the reviews has a reply on the PR, and the change fits the Roadmap. The cap comment lists the findings still open (no reply, thread not resolved), or says there are none; `python3 scripts/findings.py --repo OWNER/NAME --pr N` from an airia-ci checkout prints the same list and exits 1 while any is left. Same-head re-runs still refresh the third review's gate table. For a fresh automatic review, open a new PR from the same branch: the count is per PR.
 
+The cap counts review rounds of any kind, bot or dispatched (airia-ci#145). A reviewer that is not the automatic review (a dispatched run) must post, once per review and from a login with write access, one PR comment whose body contains this exact line, naming the full 40-character head sha it read:
+
+```
+<!-- airia-review kind=dispatched head=<40-char head sha> -->
+```
+
+Post it with `gh pr comment <n> --body-file <file>`; the dispatched run posts it itself, because it is what read the head. A review without the marker does not count. Only a marker from an OWNER, MEMBER or COLLABORATOR counts, and a marker without a well-formed `head=` is ignored. The marker never stands for "this head was reviewed": the bot still reviews a new head, and the marker only brings the cap closer. The cap comment says how many of the counted rounds were automatic and how many dispatched.
+
 Re-running the gate on the same commit (`gh run rerun --failed`) does not post a second review: it rewrites the existing review's gate-results section with the new attempt's results.
 
 ## Run the framework bump plan (dry run)

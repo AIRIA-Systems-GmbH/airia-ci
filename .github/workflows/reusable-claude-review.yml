@@ -107,6 +107,19 @@ name: Claude Code Review (shared)
 # counted as a review. Every head counts and nothing resets the count; a new
 # PR from the same branch starts at zero.
 #
+# DISPATCHED REVIEWS COUNT TOWARD THE CAP (airia-ci#145). The cap is "3 review
+# rounds of any kind, bot or dispatched". A review this workflow did not write
+# posts one PR comment with the line
+# `<!-- airia-review kind=<kind> head=<40-char head sha> -->`; the first step adds
+# those comments to the bot's own reviews. Only a comment whose
+# author_association is OWNER, MEMBER or COLLABORATOR counts (anyone else's
+# marker could cap a PR early and let an unreviewed head pass), and a marker
+# without a 40-hex head= is ignored. The marker never means "this head was
+# reviewed": the once-per-head skip and the same-run refresh look at the bot's
+# own reviews only, so a dispatched review brings the cap closer and never
+# stops the bot reviewing a new head. The cap notice and comment say how many
+# rounds were automatic and how many dispatched.
+#
 # A RE-RUN REFRESHES, IT DOES NOT RE-REVIEW. When the earlier review was
 # written by this same run (`gh run rerun --failed` on the same commit, usually
 # for a job no runner ever started), the job stops short of Claude and instead
@@ -370,7 +383,16 @@ jobs:
             --jq '.[] | select(.user.login == "github-actions[bot]")
                       | select(.body | contains("_Automatic review by `claude-code-review.yml`"))
                       | [.id, .html_url, ([.body | scan("/actions/runs/([0-9]+)\\)")] | last // [""] | .[0])] | @tsv')"
-          if [ -z "${reviews}" ]; then
+          # Dispatched reviews (airia-ci#145): a review that is not the bot's posts one PR
+          # comment with the line `<!-- airia-review kind=KIND head=SHA40 -->`. It counts
+          # toward the cap only, never as "this head was reviewed", and only from a login
+          # with write access: anyone else's marker could cap a PR early and let an
+          # unreviewed head pass. A marker without a 40-hex head is ignored.
+          dispatched="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.author_association | IN("OWNER", "MEMBER", "COLLABORATOR"))
+                      | select(.body // "" | test("(^|\\n)<!-- airia-review kind=[^ ]+ head=[0-9a-fA-F]{40} -->\\s*(\\n|$)"))
+                      | .id' | wc -l | tr -d ' ')"
+          if [ -z "${reviews}" ] && [ "${dispatched}" -lt "${REVIEW_CAP}" ]; then
             echo "review=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -399,12 +421,20 @@ jobs:
           # At most REVIEW_CAP automatic reviews per PR (airia-ci#62). The cap is
           # not a human gate (airia-ci#70): no review, the check passes, and the
           # next step notes the cap on the PR.
-          count="$(wc -l <<< "${reviews}" | tr -d ' ')"
+          bot=0
+          if [ -n "${reviews}" ]; then
+            bot="$(wc -l <<< "${reviews}" | tr -d ' ')"
+          fi
+          count=$((bot + dispatched))
           if [ "${count}" -ge "${REVIEW_CAP}" ]; then
-            msg="PR #${PR} already has ${count} automatic reviews (the cap is ${REVIEW_CAP}), the newest ${url}: no new automatic review of ${head:-this head}. To review again, close this PR and open a new one from the same branch."
+            newest_text=""
+            if [ -n "${url}" ]; then
+              newest_text=", the newest automatic review ${url}"
+            fi
+            msg="PR #${PR} already has ${count} review rounds (${bot} automatic, ${dispatched} dispatched; the cap is ${REVIEW_CAP})${newest_text}: no new automatic review of ${head:-this head}. To review again, close this PR and open a new one from the same branch."
             echo "::notice title=Automatic review cap reached::${msg}"
             echo "${msg}" >> "$GITHUB_STEP_SUMMARY"
-            { echo "review=false"; echo "capped=true"; echo "head=${head}"; echo "count=${count}"; echo "cap=${REVIEW_CAP}"; echo "newest=${url}"; } >> "$GITHUB_OUTPUT"
+            { echo "review=false"; echo "capped=true"; echo "head=${head}"; echo "count=${count}"; echo "bot=${bot}"; echo "dispatched=${dispatched}"; echo "cap=${REVIEW_CAP}"; echo "newest=${url}"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "The automatic review ${url} covered ${reviewed:-an unknown head}, not ${head:-this head}: reviewing again." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -423,6 +453,8 @@ jobs:
           HEAD: ${{ steps.once.outputs.head }}
           COUNT: ${{ steps.once.outputs.count }}
           CAP: ${{ steps.once.outputs.cap }}
+          BOT: ${{ steps.once.outputs.bot }}
+          DISPATCHED: ${{ steps.once.outputs.dispatched }}
           NEWEST: ${{ steps.once.outputs.newest }}
         run: |
           marker="<!-- airia-ci review-cap ${HEAD:-unknown} -->"
@@ -463,9 +495,13 @@ jobs:
           else
             open_text="The open findings could not be read just now; \`python3 scripts/findings.py --repo ${GITHUB_REPOSITORY} --pr ${PR}\` lists them."
           fi
+          newest_text=""
+          if [ -n "${NEWEST}" ]; then
+            newest_text=", the newest automatic review ${NEWEST}"
+          fi
           body="${RUNNER_TEMP}/claude-review-cap.md"
           cat > "${body}" <<EOF
-          **Review cap reached; no new automatic review.** This PR already has ${COUNT} automatic reviews (the cap is ${CAP}), the newest ${NEWEST}. Head \`${HEAD:-unknown}\` was not reviewed, and Claude Review passes anyway: the cap is not a human gate (airia-ci#70).
+          **Review cap reached; no new automatic review.** This PR already has ${COUNT} review rounds (the cap is ${CAP}): ${BOT} automatic and ${DISPATCHED} dispatched${newest_text}. Head \`${HEAD:-unknown}\` was not reviewed, and Claude Review passes anyway: the cap is not a human gate (airia-ci#70).
 
           Merge when every required check is green, every finding in the reviews has a reply on this PR, and the change fits the Roadmap. Questions go to \`@claude\`. For another automatic review, close this PR and open a new one from the same branch.
 
