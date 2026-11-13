@@ -174,5 +174,4 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       runner: '["ubuntu-24.04"]'
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
