@@ -136,9 +136,10 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         # 2026-10-22 it failed, and four consumer PRs waited on Andrea that day.
         comments, heads = self.three_reviews("c" * 40)
         self.assertEqual(self.once(comments, attempt="1", heads=heads),
-                         {"review": "false", "capped": "true", "head": self.HEAD, "count": "3", "cap": "3",
-                          "newest": "https://github.com/o/r/pull/9#c7"})
-        self.assertIn("::notice title=Automatic review cap reached::PR #9 already has 3 automatic reviews", self.stdout)
+                         {"review": "false", "capped": "true", "head": self.HEAD, "count": "3", "bot": "3",
+                          "dispatched": "0", "cap": "3", "newest": "https://github.com/o/r/pull/9#c7"})
+        self.assertIn("::notice title=Automatic review cap reached::PR #9 already has 3 review rounds "
+                      "(3 automatic, 0 dispatched; the cap is 3)", self.stdout)
         self.assertNotIn("::error", self.stdout)
 
     def test_a_capped_pr_without_the_event_head_reads_the_prs_head(self):
@@ -166,6 +167,77 @@ class OnceAsksForARefreshOnlyOnARerunOfTheSameRun(unittest.TestCase):
         self.assertEqual(self.once([other]), {"review": "true"})
 
 
+class DispatchedReviewsCountTowardTheCap(OnceAsksForARefreshOnlyOnARerunOfTheSameRun):
+    """A marker comment from a write-access login is one review round toward the cap (airia-ci#145)."""
+
+    def marker(self, assoc="MEMBER", head=None, kind="dispatched", cid=90, extra=""):
+        head = head or "a" * 40
+        return {"id": cid, "html_url": f"https://github.com/o/r/pull/9#c{cid}", "author_association": assoc,
+                "user": {"login": "someone"}, "body": f"Reviewed.\n{extra}<!-- airia-review kind={kind} head={head} -->\n"}
+
+    def two_bot_reviews(self):
+        old = "a" * 40
+        return [review(40, comment_id=5), review(41, comment_id=7)], {40: old, 41: old}
+
+    def test_two_bot_reviews_and_a_members_marker_reach_the_cap(self):
+        comments, heads = self.two_bot_reviews()
+        out = self.once(comments + [self.marker("MEMBER")], attempt="1", heads=heads)
+        self.assertEqual(out, {"review": "false", "capped": "true", "head": self.HEAD, "count": "3", "bot": "2",
+                               "dispatched": "1", "cap": "3", "newest": "https://github.com/o/r/pull/9#c7"})
+        self.assertIn("(2 automatic, 1 dispatched; the cap is 3)", self.stdout)
+
+    def test_owner_and_collaborator_markers_count_too(self):
+        comments, heads = self.two_bot_reviews()
+        for assoc in ("OWNER", "COLLABORATOR"):
+            with self.subTest(assoc):
+                self.assertEqual(self.once(comments + [self.marker(assoc)], attempt="1", heads=heads)["capped"], "true")
+
+    def test_a_marker_from_a_non_writer_does_not_count(self):
+        # It could cap a PR early and let an unreviewed head pass.
+        comments, heads = self.two_bot_reviews()
+        for assoc in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR"):
+            with self.subTest(assoc):
+                self.assertEqual(self.once(comments + [self.marker(assoc)], attempt="1", heads=heads),
+                                 {"review": "true", "prior-comment-id": "7", "prior-head": "a" * 40})
+
+    def test_a_marker_naming_the_current_head_does_not_skip_the_bots_review(self):
+        comments, heads = self.two_bot_reviews()
+        out = self.once(comments[:1] + [self.marker(head=self.HEAD)], attempt="1", heads={40: "a" * 40})
+        self.assertEqual(out, {"review": "true", "prior-comment-id": "5", "prior-head": "a" * 40})
+        # And with no bot review at all, the head is reviewed.
+        self.assertEqual(self.once([self.marker(head=self.HEAD)], attempt="1"), {"review": "true"})
+
+    def test_a_marker_never_triggers_a_refresh(self):
+        self.assertEqual(self.once([self.marker(cid=42)], run_id="42", attempt="2"), {"review": "true"})
+
+    def test_a_malformed_marker_is_ignored(self):
+        comments, heads = self.two_bot_reviews()
+        bad = {"short head": self.marker(head="abc123"), "no head": {**self.marker(), "body": "<!-- airia-review kind=dispatched -->"},
+               "long head": self.marker(head="a" * 41), "non-hex head": self.marker(head="g" * 40),
+               "not alone on its line": self.marker(extra="see ")}
+        for name, comment in bad.items():
+            with self.subTest(name):
+                self.assertEqual(self.once(comments + [comment], attempt="1", heads=heads)["review"], "true")
+
+    def test_any_kind_counts_and_one_comment_is_one_round(self):
+        comments, heads = self.two_bot_reviews()
+        self.assertEqual(self.once(comments + [self.marker(kind="security-audit")], attempt="1", heads=heads)["capped"], "true")
+        twice = {**self.marker(), "body": self.marker()["body"] * 2}
+        self.assertEqual(self.once(comments + [twice], attempt="1", heads=heads)["capped"], "true")
+        self.assertEqual(self.once(comments[:1] + [twice], attempt="1", heads={40: "a" * 40})["review"], "true")
+
+    def test_markers_alone_can_cap_a_pr(self):
+        markers = [self.marker(cid=90 + i) for i in range(3)]
+        out = self.once(markers, attempt="1")
+        self.assertEqual(out, {"review": "false", "capped": "true", "head": self.HEAD, "count": "3", "bot": "0",
+                               "dispatched": "3", "cap": "3", "newest": ""})
+        self.assertEqual(self.once(markers[:2], attempt="1"), {"review": "true"})
+
+    def test_the_third_bot_review_head_still_skips_with_markers_present(self):
+        comments, heads = self.three_reviews(self.HEAD)
+        self.assertEqual(self.once(comments + [self.marker()], attempt="1", heads=heads), {"review": "false"})
+
+
 class NoteTheReviewCap(unittest.TestCase):
     """At the cap the PR gets one summary comment per head, never a fourth review (airia-ci#70)."""
 
@@ -173,12 +245,14 @@ class NoteTheReviewCap(unittest.TestCase):
     HEAD = "c" * 40
     MARKER = f"<!-- airia-ci review-cap {HEAD} -->"
 
-    def note(self, comments, head=HEAD, pulls=(), threads=(), pulls_reply=None):
+    def note(self, comments, head=HEAD, pulls=(), threads=(), pulls_reply=None, count="3", bot="3", dispatched="0",
+             newest="https://github.com/o/r/pull/9#c7"):
         r = Runner(self, [[r"issues/9/comments", {"json": comments}],
                           [r"pulls/9/comments", pulls_reply or {"json": list(pulls)}],
                           [r"graphql", {"json": thread_doc(*threads)}],
                           [r"^pr comment 9 ", {"text": "https://github.com/o/r/pull/9#c9\n"}]])
-        p = r.run(WORKFLOW, self.STEP, PR="9", HEAD=head, COUNT="3", CAP="3", NEWEST="https://github.com/o/r/pull/9#c7")
+        p = r.run(WORKFLOW, self.STEP, PR="9", HEAD=head, COUNT=count, CAP="3", BOT=bot,
+                  DISPATCHED=dispatched, NEWEST=newest)
         self.assertEqual(p.returncode, 0, p.stderr)
         posts = [c for c in r.calls() if c["args"][:2] == ["pr", "comment"]]
         return posts, p.stdout + (r.summary.read_text() if r.summary.exists() else "")
@@ -189,13 +263,23 @@ class NoteTheReviewCap(unittest.TestCase):
         self.assertEqual(posts[0]["args"][:5], ["pr", "comment", "9", "--repo", "o/r"])
         body = posts[0]["files"]["--body-file"]
         self.assertIn("Review cap reached; no new automatic review.", body)
-        self.assertIn("3 automatic reviews (the cap is 3)", body)
-        self.assertIn("https://github.com/o/r/pull/9#c7", body)
+        self.assertIn("3 review rounds (the cap is 3): 3 automatic and 0 dispatched", body)
+        self.assertIn("the newest automatic review https://github.com/o/r/pull/9#c7", body)
         self.assertIn(f"`{self.HEAD}`", body)
         self.assertIn("every finding in the reviews has a reply", body)
         self.assertIn(self.MARKER, body)
         # The once step counts any bot comment with the footer as a review: this one must never be review #4.
         self.assertNotIn(FOOTER, body)
+
+    def test_the_comment_says_how_many_rounds_were_bot_and_how_many_dispatched(self):
+        posts, _ = self.note([review(41)], count="3", bot="2", dispatched="1")
+        self.assertIn("3 review rounds (the cap is 3): 2 automatic and 1 dispatched", posts[0]["files"]["--body-file"])
+
+    def test_without_a_bot_review_there_is_no_newest_link(self):
+        posts, _ = self.note([], count="3", bot="0", dispatched="3", newest="")
+        body = posts[0]["files"]["--body-file"]
+        self.assertIn("0 automatic and 3 dispatched. Head", body)
+        self.assertNotIn("newest", body)
 
     def listed(self, **kw):
         posts, _ = self.note([review(41)], **kw)
