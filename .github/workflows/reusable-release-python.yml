@@ -1,0 +1,302 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: AIRIA Python release (shared)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RELEASE A CALLER'S PURE-PYTHON PACKAGE (airia-ci#151, slice 1). One job calls
+# the airia-release CLI. It holds no release logic of its own: no build matrix
+# and no provenance attestation. The compiled entry point (matrix, build,
+# record, supply-*, publish) is slice 2 and is not this file.
+#
+# THE CALL. The caller names its package and grants contents: write. It does
+# not grant id-token or attestations, and it passes no token. A dispatch
+# rehearses unless dry-run is set false. The internal index still needs an
+# upload, so index-upload defaults to true until the REQ-187 pull exists.
+#
+#   name: release
+#   on:
+#     workflow_dispatch:
+#   permissions: {}
+#   jobs:
+#     release:
+#       permissions:
+#         contents: write
+#       uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-release-python.yml@main
+#       with:
+#         package: sample-package
+#       secrets:
+#         AIRIA_PYPI_PASSWORD: ${{ secrets.AIRIA_PYPI_PASSWORD }}
+#
+# THE CHECK GitHub reports is `<caller job> / release`.
+#
+# THE TOKEN (ADR-108). The publish step sets GH_TOKEN to github.token and to
+# nothing else. There is no input and no secret a PAT or an app token could
+# arrive through. With github.token the publisher is github-actions[bot]. Any
+# other token fails ADR-108's publisher check, and that fail-closed outcome is
+# the point. The job's permission is contents: write. There is no
+# attest-build-provenance step.
+#
+# THE COMMAND, for a single-package repository whose manifest is the root
+# pyproject.toml. The checkout is subject/ at full history (tags are
+# `<package>/v<version>`). With no src/, the CLI's no-version-symbol check
+# walks the whole checkout.
+#
+#   .release/bin/airia-release publish --repo "$GITHUB_REPOSITORY" \
+#     --package "$PACKAGE" --ref "$REF" --source subject --out release-out \
+#     --default-branch "$DEFAULT_BRANCH" --manifest subject/pyproject.toml \
+#     --governed "$PACKAGE" --yes
+#
+# --governed is the package name. --ref is github.sha, the commit being
+# released. --default-branch is the caller's github.event.repository.default_branch.
+# --yes is passed only when the caller's event is workflow_dispatch and dry-run
+# is false. Every other event, and a dispatch that leaves dry-run at its
+# default, passes --dry-run instead.
+#
+# THE INSTALL. uv venv .release, then airia-release at the pinned version from
+# the internal index (anonymous), then the manifest's project into the same
+# venv with --no-deps. That directory is ./subject when the manifest is the
+# root pyproject.toml, and subject/<dirname of the manifest> when the path is
+# nested, so versioning-policy reads that project's importlib.metadata. An
+# isolated `uv tool install` has no subject and refuses. The pin is the
+# airia-release-version input (default in pins.toml [release]), not a lookup.
+#
+# THE INDEX. When index-upload is true (the default), the publish command also
+# gets --index-url https://pypi.de.airia.systems/simple/ and the step's env
+# gets secrets.AIRIA_PYPI_PASSWORD. The secret is never an argument. When
+# index-upload is false, the command gets --index-pull of that same URL and
+# AIRIA_PYPI_PASSWORD is not in the step environment. --index-pull ships with
+# DES-147's implementation, after airia-release 0.8.1. Until then,
+# index-upload=false with the default pin fails at the argument parser, and
+# that fail-closed outcome is intended. The runner must be self-hosted: the
+# index is internal-only, so a GitHub-hosted runner is refused.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: >-
+          The distribution name. It is passed as --package and, unchanged, as
+          --governed. Tags the CLI writes are `<package>/v<version>`.
+        required: true
+        type: string
+      manifest:
+        description: >-
+          Path of the subject's pyproject.toml inside the repository. A
+          single-package repository passes its root pyproject.toml (the
+          default); the workflow checks it out at subject/ and passes
+          --manifest subject/<path>. The project installed into the release
+          venv is that file's directory: ./subject for the default, and
+          subject/<dirname> when the manifest is nested.
+        required: false
+        type: string
+        default: pyproject.toml
+      airia-release-version:
+        description: >-
+          The exact airia-release version to install from the internal index.
+          The default is the pin in pins.toml [release]. Not a live lookup: a
+          caller's token may not read the framework repository's tags.
+        required: false
+        type: string
+        default: "0.8.1"
+      dry-run:
+        description: >-
+          When true (the default), or when the caller's event is not
+          workflow_dispatch, publish receives --dry-run. --yes is passed only
+          when this is false and the event is workflow_dispatch.
+        required: false
+        type: boolean
+        default: true
+      index-upload:
+        description: >-
+          When true (the default), pass --index-url for the internal index and
+          map secrets.AIRIA_PYPI_PASSWORD into the publish step. When false,
+          pass --index-pull of the same URL and do not put the password in the
+          step environment. --index-pull ships with DES-147's implementation,
+          after airia-release 0.8.1. Until then, index-upload=false with the
+          default pin fails at airia-release's argument parser, and that
+          fail-closed outcome is intended. The REQ-187 cutover sets this to false.
+        required: false
+        type: boolean
+        default: true
+      runner:
+        description: >-
+          The runs-on labels, as a JSON array. The default is the AIRIA Thor
+          pool, which serves only the organization's private repositories. A
+          GitHub-hosted image (ubuntu-*, windows-*, macos-*) is refused: the
+          index is internal-only.
+        required: false
+        type: string
+        default: '["self-hosted","linux","x64","thor"]'
+    secrets:
+      AIRIA_PYPI_PASSWORD:
+        description: >-
+          Password for the interim index upload. Mapped into the publish step's
+          environment only when index-upload is true, never passed as an
+          argument. Omit it when index-upload is false.
+        required: false
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Refuse a GitHub-hosted runner
+        env:
+          RUNNER: ${{ inputs.runner }}
+        run: |
+          # The index is internal-only. RUNNER_ENVIRONMENT is the runner's own
+          # variable: it is not an input, so a caller cannot claim otherwise.
+          if [ "${RUNNER_ENVIRONMENT:-}" != self-hosted ]; then
+            echo "::error title=Runner::this workflow refuses GitHub-hosted runners (RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-unset}); the internal index is reachable only from the estate"
+            exit 1
+          fi
+          if ! python3 -c 'import json, os, sys
+          try:
+              labels = json.loads(os.environ["RUNNER"])
+          except json.JSONDecodeError:
+              sys.exit(1)
+          hosted = ("ubuntu-", "windows-", "macos-")
+          ok = (
+              isinstance(labels, list)
+              and all(isinstance(item, str) for item in labels)
+              and "self-hosted" in labels
+              and not any(item.startswith(hosted) for item in labels)
+          )
+          sys.exit(0 if ok else 1)'; then
+            echo "::error title=Runner::runner must be a JSON array that includes self-hosted and no GitHub-hosted image (ubuntu-*, windows-*, macos-*), not '$RUNNER'"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The caller's repository, at the commit that triggered the caller.
+          # Full history: tags are <package>/v<version>, and a shallow clone has neither them nor the commits they point at.
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.1"
+          # The Thor pool keeps its own uv cache. The Actions cache is for GitHub-hosted runners, which this job refuses.
+          enable-cache: false
+
+      - name: Install airia-release and publish the package
+        env:
+          # Hard-coded. No input and no secret may replace it (ADR-108).
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ inputs.package }}
+          MANIFEST: ${{ inputs.manifest }}
+          AIRIA_RELEASE_VERSION: ${{ inputs.airia-release-version }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          EVENT_NAME: ${{ github.event_name }}
+          INDEX_UPLOAD: ${{ inputs.index-upload }}
+          REF: ${{ github.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          AIRIA_PYPI_PASSWORD: ${{ inputs.index-upload == true && secrets.AIRIA_PYPI_PASSWORD || '' }}
+        run: |
+          # GH_TOKEN is the step env above. Do not assign it: a PAT fails ADR-108 closed.
+          index_url="https://pypi.de.airia.systems/simple/"
+          case "$DRY_RUN" in
+            true|false) ;;
+            *) echo "::error title=dry-run::dry-run must be true or false, not '$DRY_RUN'"; exit 1 ;;
+          esac
+          if ! [[ "$AIRIA_RELEASE_VERSION" =~ ^[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "::error title=airia-release::pin an exact version, not '$AIRIA_RELEASE_VERSION'"
+            exit 1
+          fi
+          case "$PACKAGE" in
+            ""|-*|*[!A-Za-z0-9._-]*)
+              echo "::error title=Package::package must be the distribution name, not '$PACKAGE'"
+              exit 1
+              ;;
+          esac
+          case "$MANIFEST" in
+            ""|/*|../*|*/../*|*/..|*..*|*' '*)
+              echo "::error title=Manifest::manifest must be a path inside the checkout, not '$MANIFEST'"
+              exit 1
+              ;;
+          esac
+          if [ -z "$REF" ] || [ -z "$DEFAULT_BRANCH" ] || [ -z "$GITHUB_REPOSITORY" ]; then
+            echo "::error title=Release::the repository, the commit and the default branch must be set"
+            exit 1
+          fi
+          if [ ! -f "subject/$MANIFEST" ]; then
+            echo "::error title=Manifest::subject/$MANIFEST does not exist"
+            exit 1
+          fi
+          # The release venv imports the subject. Prefer its interpreter over whatever uv would fetch.
+          unset UV_PYTHON
+          if [ -f subject/.python-version ]; then
+            UV_PYTHON="$(tr -d '[:space:]' < subject/.python-version)"
+            if [ -n "$UV_PYTHON" ]; then
+              export UV_PYTHON
+            fi
+          fi
+          index_args=()
+          case "$INDEX_UPLOAD" in
+            true)
+              if [ -z "${AIRIA_PYPI_PASSWORD:-}" ]; then
+                echo "::error title=Index upload::index-upload is true and AIRIA_PYPI_PASSWORD is empty; pass the secret or set index-upload to false"
+                exit 1
+              fi
+              index_args=(--index-url "$index_url")
+              ;;
+            false)
+              # DES-147: the index pulls, so the upload password is barred.
+              # --index-pull ships with that implementation, after airia-release
+              # 0.8.1. Until then the default pin fails at the argument parser,
+              # and that fail-closed outcome is intended.
+              unset AIRIA_PYPI_PASSWORD
+              index_args=(--index-pull "$index_url")
+              ;;
+            *)
+              echo "::error title=Index upload::index-upload must be true or false, not '$INDEX_UPLOAD'"
+              exit 1
+              ;;
+          esac
+          uv venv .release
+          uv pip install --python .release --index "$index_url" "airia-release==${AIRIA_RELEASE_VERSION}"
+          # versioning-policy reads importlib.metadata of the installed project. The default
+          # manifest is the checkout root (./subject). A nested path must install its own
+          # directory: packages/foo/pyproject.toml is subject/packages/foo, not the root.
+          subject_dir="./subject"
+          case "$MANIFEST" in
+            */*) subject_dir="subject/${MANIFEST%/*}" ;;
+          esac
+          uv pip install --python .release --no-deps "$subject_dir"
+          if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
+            confirm=--yes
+          else
+            confirm=--dry-run
+          fi
+          echo "publish package=$PACKAGE ref=$REF confirm=$confirm index_upload=$INDEX_UPLOAD"
+          .release/bin/airia-release publish \
+            --repo "$GITHUB_REPOSITORY" \
+            --package "$PACKAGE" \
+            --ref "$REF" \
+            --source subject \
+            --out release-out \
+            --default-branch "$DEFAULT_BRANCH" \
+            --manifest "subject/$MANIFEST" \
+            --governed "$PACKAGE" \
+            "${index_args[@]}" \
+            "$confirm"
