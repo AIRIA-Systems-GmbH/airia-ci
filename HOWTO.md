@@ -396,6 +396,41 @@ jobs:
 - **Result**: a plan per recipient in the job summary (package, locked, target, `bump`/`current`/`kept`/`not-moved`, and what holds it), and the outputs `moves`, `failed` and `plan` (JSON). The run **fails** when the index cannot be read, a recipient cannot be read, or a lock does not match its `pyproject.toml`; every recipient is tried and reported first, so a partial plan never reads as "nothing to bump".
 - **Try it by hand**: `python3 scripts/bump_plan.py --dry-run --recipient <owner/name> --pyproject … --lock …` plans one recipient from local files.
 
+## Release a pure-Python package
+
+**Slice 1 of [#151](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/151).** One reusable workflow calls `airia-release publish` for a single standalone Python package. It does not build a native-code matrix, record provenance, or pull the index: that is slice 2, and it is not in this file. The call contract is the header of [`reusable-release-python.yml`](.github/workflows/reusable-release-python.yml); what follows is the part a caller has to get right.
+
+The internal index resolves only inside the estate, so the job refuses a GitHub-hosted runner (`ubuntu-*`, `windows-*`, `macos-*`, or a runner that does not report `RUNNER_ENVIRONMENT=self-hosted`). The default `runner` is the Thor pool. A public repository cannot use this workflow.
+
+```yaml
+name: release
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: AIRIA-Systems-GmbH/airia-ci/.github/workflows/reusable-release-python.yml@main
+    with:
+      package: sample-package          # your distribution name
+      # dry-run: false                 # the default is true, so a dispatch rehearses
+    secrets:
+      AIRIA_PYPI_PASSWORD: ${{ secrets.AIRIA_PYPI_PASSWORD }}
+```
+
+- **Permissions the caller must grant:** `contents: write` on the calling job, and nothing else. Do not grant `id-token: write` or `attestations: write`. There is no `attest-build-provenance` step. The workflow's own job asks for `contents: write` only.
+- **Token rule (ADR-108):** the publish step sets `GH_TOKEN` to `github.token` and the workflow has no input or secret that can replace it. With that token the publisher is `github-actions[bot]`. A PAT or an app token would make the release provenance-unattested, and the fail-closed outcome is intended. Do not pass one.
+- **Inputs**, `package` required, the rest optional:
+  - `package`: the distribution name. It is passed as `--package` and, unchanged, as `--governed`.
+  - `manifest`: path of `pyproject.toml` inside the repository, default `pyproject.toml`. The checkout is `subject/` with `fetch-depth: 0` (tags are `<package>/v<version>`), and the flag is `--manifest subject/<path>`. With no `src/`, the CLI's no-version-symbol check walks the whole checkout.
+  - `airia-release-version`: exact pin, default `0.8.1` (the `[release]` pin in [`pins.toml`](pins.toml)). Not a live lookup.
+  - `dry-run`: default `true`. `--yes` is passed only when the caller's event is `workflow_dispatch` and this is `false`. A push, a pull request, or a dispatch that leaves the default passes `--dry-run`.
+  - `index-upload`: default `true`. When `true`, the command gets `--index-url https://pypi.de.airia.systems/simple/` and the step's environment gets the password below. When `false`, it gets neither. The REQ-187 cutover sets this to `false`.
+  - `runner`: JSON array of `runs-on` labels, default `["self-hosted","linux","x64","thor"]`.
+- **Secret:** `AIRIA_PYPI_PASSWORD`, declared on the workflow and optional so the cutover can omit it. Pass it while `index-upload` is `true`. It is never a command argument. The install of `airia-release` itself is an anonymous read of the same index.
+- **What the job runs:** `uv venv .release`, then `airia-release==<pin>` into that venv, then `uv pip install --python .release --no-deps ./subject` so `versioning-policy` can read `importlib.metadata`. `--ref` is `github.sha`. `--default-branch` is the repository's default branch.
+
 ## Stay current
 
 - **Call `@main`, never a pinned tag** (Andrea, 2026-10-20). Every fix that merges here reaches your next run; there is nothing to do. A build that turns red because of airia-ci is fixed here, in airia-ci: file it ([CONTRIBUTING.md](CONTRIBUTING.md)) and never pin back to a tag.

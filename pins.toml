@@ -52,3 +52,11 @@ mypy-strict-repositories = ["AIRIA-Systems-GmbH/AIRIA-process"]
 # before they have onboarded; from it on, the lint job fails. A project fails
 # early with `[tool.airia] ruff-floor = "error"` in its pyproject.toml.
 ruff-floor-error-from = 2026-10-22
+
+# Not a gate tool: the python-toolchain action installs [tools] only, and a
+# caller's uv.lock does not have to pin it. reusable-release-python.yml's
+# airia-release-version input defaults to this exact version. A live lookup
+# would need the framework repository's tags, which a caller's token may not
+# read (airia-ci#151). A test holds the input default equal to this pin.
+[release]
+airia-release = "0.8.1"

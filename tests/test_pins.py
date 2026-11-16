@@ -135,6 +135,17 @@ class Standard(unittest.TestCase):
         self.assertEqual(standard["type-checkers"], ["pyright", "mypy-strict"])
         self.assertEqual(standard["mypy-strict-repositories"], ["AIRIA-Systems-GmbH/AIRIA-process"])
 
+    def test_the_release_cli_pin_is_exact_and_not_a_gate_tool(self):
+        # airia-release is not a gate tool: adding it to [tools] would make the
+        # toolchain install it in every caller. The release workflow's default
+        # is this pin, because a caller's token may not read the framework's tags.
+        pin = self.pins["release"]["airia-release"]
+        self.assertEqual(pin, "0.8.1")
+        self.assertNotIn("airia-release", self.pins["tools"])
+        workflow = yaml.safe_load((ROOT / ".github/workflows/reusable-release-python.yml").read_text())
+        default = workflow[True]["workflow_call"]["inputs"]["airia-release-version"]["default"]
+        self.assertEqual(default, pin)
+
     def test_the_allowed_pythons_are_minor_versions_in_order(self):
         allowed = self.pins["python"]["allowed"]
         self.assertTrue(allowed)
