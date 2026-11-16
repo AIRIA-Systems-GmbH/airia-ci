@@ -398,7 +398,7 @@ jobs:
 
 ## Release a pure-Python package
 
-**Slice 1 of [#151](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/151).** One reusable workflow calls `airia-release publish` for a single standalone Python package. It does not build a native-code matrix, record provenance, or pull the index: that is slice 2, and it is not in this file. The call contract is the header of [`reusable-release-python.yml`](.github/workflows/reusable-release-python.yml); what follows is the part a caller has to get right.
+**Slice 1 of [#151](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/151).** One reusable workflow calls `airia-release publish` for a single standalone Python package. It does not build a native-code matrix or record provenance: that is slice 2, and it is not in this file. When `index-upload` is false the publish command passes `--index-pull`; that flag ships with DES-147's implementation, after airia-release 0.8.1, and until then the default pin fails closed at the argument parser. The call contract is the header of [`reusable-release-python.yml`](.github/workflows/reusable-release-python.yml); what follows is the part a caller has to get right.
 
 The internal index resolves only inside the estate, so the job refuses a GitHub-hosted runner (`ubuntu-*`, `windows-*`, `macos-*`, or a runner that does not report `RUNNER_ENVIRONMENT=self-hosted`). The default `runner` is the Thor pool. A public repository cannot use this workflow.
 
@@ -423,13 +423,13 @@ jobs:
 - **Token rule (ADR-108):** the publish step sets `GH_TOKEN` to `github.token` and the workflow has no input or secret that can replace it. With that token the publisher is `github-actions[bot]`. A PAT or an app token would make the release provenance-unattested, and the fail-closed outcome is intended. Do not pass one.
 - **Inputs**, `package` required, the rest optional:
   - `package`: the distribution name. It is passed as `--package` and, unchanged, as `--governed`.
-  - `manifest`: path of `pyproject.toml` inside the repository, default `pyproject.toml`. The checkout is `subject/` with `fetch-depth: 0` (tags are `<package>/v<version>`), and the flag is `--manifest subject/<path>`. With no `src/`, the CLI's no-version-symbol check walks the whole checkout.
+  - `manifest`: path of `pyproject.toml` inside the repository, default `pyproject.toml`. The checkout is `subject/` with `fetch-depth: 0` (tags are `<package>/v<version>`), and the flag is `--manifest subject/<path>`. The project installed into the release venv is that file's directory: `./subject` for the default, and `subject/<dirname>` when the path is nested (`packages/foo/pyproject.toml` installs `subject/packages/foo`). With no `src/`, the CLI's no-version-symbol check walks the whole checkout.
   - `airia-release-version`: exact pin, default `0.8.1` (the `[release]` pin in [`pins.toml`](pins.toml)). Not a live lookup.
   - `dry-run`: default `true`. `--yes` is passed only when the caller's event is `workflow_dispatch` and this is `false`. A push, a pull request, or a dispatch that leaves the default passes `--dry-run`.
-  - `index-upload`: default `true`. When `true`, the command gets `--index-url https://pypi.de.airia.systems/simple/` and the step's environment gets the password below. When `false`, it gets neither. The REQ-187 cutover sets this to `false`.
+  - `index-upload`: default `true`. When `true`, the command gets `--index-url https://pypi.de.airia.systems/simple/` and the step's environment gets the password below. When `false`, the command gets `--index-pull` of that same URL and the password is not in the step environment. `--index-pull` ships with DES-147's implementation, after airia-release 0.8.1. Until then, `index-upload=false` with the default pin fails at airia-release's argument parser, and that fail-closed outcome is intended. The REQ-187 cutover sets this to `false`.
   - `runner`: JSON array of `runs-on` labels, default `["self-hosted","linux","x64","thor"]`.
-- **Secret:** `AIRIA_PYPI_PASSWORD`, declared on the workflow and optional so the cutover can omit it. Pass it while `index-upload` is `true`. It is never a command argument. The install of `airia-release` itself is an anonymous read of the same index.
-- **What the job runs:** `uv venv .release`, then `airia-release==<pin>` into that venv, then `uv pip install --python .release --no-deps ./subject` so `versioning-policy` can read `importlib.metadata`. `--ref` is `github.sha`. `--default-branch` is the repository's default branch.
+- **Secret:** `AIRIA_PYPI_PASSWORD`, declared on the workflow and optional so the cutover can omit it. Pass it while `index-upload` is `true`. It is never a command argument, and when `index-upload` is `false` it is not in the step environment. The install of `airia-release` itself is an anonymous read of the same index.
+- **What the job runs:** `uv venv .release`, then `airia-release==<pin>` into that venv, then `uv pip install --python .release --no-deps` of the manifest's directory (`./subject` for the default `pyproject.toml`, `subject/<dirname>` when it is nested) so `versioning-policy` can read that project's `importlib.metadata`. `--ref` is `github.sha`. `--default-branch` is the repository's default branch.
 
 ## Stay current
 

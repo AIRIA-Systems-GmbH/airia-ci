@@ -4,9 +4,10 @@
 
 What these tests hold: the workflow is workflow_call only; it publishes with
 github.token and with no other token; --yes is passed only for a human
-workflow_dispatch that turned dry-run off; the index URL and the index
-password reach the publish command only when index-upload is on; a
-GitHub-hosted runner is refused. The compiled entry point is not this workflow.
+workflow_dispatch that turned dry-run off; index-upload true passes
+--index-url and the password, and false passes --index-pull with the password
+unset; a nested manifest installs its own directory; a GitHub-hosted runner is
+refused. The compiled entry point is not this workflow.
 
 Run: python3 -m unittest discover -s tests -p test_release_python.py
 """
@@ -175,6 +176,25 @@ class Shape(unittest.TestCase):
         self.assertNotIn("index-url", CALL["inputs"])
         self.assertIn(f'index_url="{INDEX}"', step(PUBLISH)["run"])
 
+    def test_index_pull_is_documented_as_failing_closed_until_des_147(self):
+        """airia-release 0.8.1 rejects --index-pull. The header, the input and the caller docs say that failure is intended."""
+        description = CALL["inputs"]["index-upload"]["description"]
+        self.assertIn("--index-pull", description)
+        self.assertIn("DES-147", description)
+        self.assertIn("0.8.1", description)
+        self.assertIn("fail-closed", description)
+        header = WORKFLOW.read_text().split("\non:\n", 1)[0]
+        self.assertIn("--index-pull", header)
+        self.assertIn("DES-147", header)
+        self.assertIn("argument parser", header)
+        self.assertIn("fail-closed", header)
+        for path in (ROOT / "HOWTO.md", ROOT / "README.md"):
+            text = path.read_text()
+            self.assertIn("--index-pull", text, path.name)
+            self.assertIn("DES-147", text, path.name)
+            self.assertIn("0.8.1", text, path.name)
+            self.assertIn("fail-closed", text, path.name)
+
 
 class Behaviour(unittest.TestCase):
     def setUp(self):
@@ -282,7 +302,8 @@ class Behaviour(unittest.TestCase):
         self.assertEqual(
             self.argv(),
             "publish --repo o/r --package demo --ref abc123 --source subject --out release-out "
-            "--default-branch main --manifest subject/pyproject.toml --governed demo --yes",
+            "--default-branch main --manifest subject/pyproject.toml --governed demo "
+            f"--index-pull {INDEX} --yes",
         )
         self.assertIn("confirm=--yes", done.stdout)
 
@@ -308,19 +329,22 @@ class Behaviour(unittest.TestCase):
         done = self.publish(INDEX_UPLOAD="true")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn(f"--index-url {INDEX}", self.argv())
+        self.assertNotIn("--index-pull", self.argv())
         self.assertNotIn("s3cret", self.argv())
         self.assertNotIn("sentinel-token", self.argv())
         report = self.release_report()
         self.assertEqual(report[1], "password=set")
         self.assertIn("password=set", self.uv_log.read_text())
 
-    def test_index_upload_off_passes_neither_the_url_nor_the_password(self):
-        """The REQ-187 cutover flips index-upload off. The password must not remain in the child environment."""
+    def test_index_upload_off_passes_index_pull_and_drops_the_password(self):
+        """DES-147 asks the index to pull. The upload flag must not go with that request, and the password must not be in the step's environment."""
         done = self.publish(INDEX_UPLOAD="false", AIRIA_PYPI_PASSWORD="s3cret")
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn(f"--index-pull {INDEX}", self.argv())
         self.assertNotIn("--index-url", self.argv())
         self.assertNotIn("s3cret", self.release_log.read_text())
         self.assertNotIn("s3cret", self.uv_log.read_text())
+        self.assertNotIn("s3cret", done.stdout)
         self.assertEqual(self.release_report()[1], "password=unset")
         self.assertNotIn("password=set", self.uv_log.read_text())
         self.assertIn("password=unset", self.uv_log.read_text())
@@ -353,6 +377,20 @@ class Behaviour(unittest.TestCase):
         )
         self.assertEqual(lines[5], "uv pip install --python .release --no-deps ./subject")
         self.assertNotIn("--index-url", "".join(lines))
+
+    def test_a_nested_manifest_installs_that_projects_directory(self):
+        """versioning-policy reads the installed project's metadata. The checkout root is a different project when the manifest is nested."""
+        self.subject()
+        nested = self.r.tmp / "subject" / "packages" / "foo"
+        nested.mkdir(parents=True)
+        (nested / "pyproject.toml").write_text("[project]\nname = 'foo'\nversion = '4.5.6'\n")
+        done = self.publish(make_subject=False, MANIFEST="packages/foo/pyproject.toml")
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        lines = self.uv_log.read_text().splitlines()
+        self.assertEqual(lines[5], "uv pip install --python .release --no-deps subject/packages/foo")
+        self.assertNotIn("no-deps ./subject", self.uv_log.read_text())
+        self.assertIn("--manifest subject/packages/foo/pyproject.toml", self.argv())
+        self.assertNotIn("--manifest subject/pyproject.toml ", self.argv())
 
     def test_the_subject_interpreter_is_kept_and_an_absent_pin_file_is_not_invented(self):
         """The venv must import the subject with its own Python. A leaked UV_PYTHON from the runner must not replace a missing file."""

@@ -17,9 +17,9 @@ name: AIRIA Python release (shared)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RELEASE A CALLER'S PURE-PYTHON PACKAGE (airia-ci#151, slice 1). One job calls
-# the airia-release CLI. It holds no release logic of its own: no build matrix,
-# no provenance attestation, no index pull. The compiled entry point (matrix,
-# build, record, supply-*, publish) is slice 2 and is not this file.
+# the airia-release CLI. It holds no release logic of its own: no build matrix
+# and no provenance attestation. The compiled entry point (matrix, build,
+# record, supply-*, publish) is slice 2 and is not this file.
 #
 # THE CALL. The caller names its package and grants contents: write. It does
 # not grant id-token or attestations, and it passes no token. A dispatch
@@ -66,16 +66,22 @@ name: AIRIA Python release (shared)
 # default, passes --dry-run instead.
 #
 # THE INSTALL. uv venv .release, then airia-release at the pinned version from
-# the internal index (anonymous), then the subject into the same venv with
-# --no-deps. versioning-policy reads importlib.metadata there; an isolated
-# `uv tool install` has no subject and refuses. The pin is the
+# the internal index (anonymous), then the manifest's project into the same
+# venv with --no-deps. That directory is ./subject when the manifest is the
+# root pyproject.toml, and subject/<dirname of the manifest> when the path is
+# nested, so versioning-policy reads that project's importlib.metadata. An
+# isolated `uv tool install` has no subject and refuses. The pin is the
 # airia-release-version input (default in pins.toml [release]), not a lookup.
 #
 # THE INDEX. When index-upload is true (the default), the publish command also
 # gets --index-url https://pypi.de.airia.systems/simple/ and the step's env
 # gets secrets.AIRIA_PYPI_PASSWORD. The secret is never an argument. When
-# index-upload is false, neither is passed. The runner must be self-hosted:
-# the index is internal-only, so a GitHub-hosted runner is refused.
+# index-upload is false, the command gets --index-pull of that same URL and
+# AIRIA_PYPI_PASSWORD is not in the step environment. --index-pull ships with
+# DES-147's implementation, after airia-release 0.8.1. Until then,
+# index-upload=false with the default pin fails at the argument parser, and
+# that fail-closed outcome is intended. The runner must be self-hosted: the
+# index is internal-only, so a GitHub-hosted runner is refused.
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
@@ -92,7 +98,9 @@ on:
           Path of the subject's pyproject.toml inside the repository. A
           single-package repository passes its root pyproject.toml (the
           default); the workflow checks it out at subject/ and passes
-          --manifest subject/<path>.
+          --manifest subject/<path>. The project installed into the release
+          venv is that file's directory: ./subject for the default, and
+          subject/<dirname> when the manifest is nested.
         required: false
         type: string
         default: pyproject.toml
@@ -116,7 +124,11 @@ on:
         description: >-
           When true (the default), pass --index-url for the internal index and
           map secrets.AIRIA_PYPI_PASSWORD into the publish step. When false,
-          pass neither. The REQ-187 cutover sets this to false.
+          pass --index-pull of the same URL and do not put the password in the
+          step environment. --index-pull ships with DES-147's implementation,
+          after airia-release 0.8.1. Until then, index-upload=false with the
+          default pin fails at airia-release's argument parser, and that
+          fail-closed outcome is intended. The REQ-187 cutover sets this to false.
         required: false
         type: boolean
         default: true
@@ -249,8 +261,12 @@ jobs:
               index_args=(--index-url "$index_url")
               ;;
             false)
-              # The cutover must not see the password: once the index pulls, that credential is barred.
+              # DES-147: the index pulls, so the upload password is barred.
+              # --index-pull ships with that implementation, after airia-release
+              # 0.8.1. Until then the default pin fails at the argument parser,
+              # and that fail-closed outcome is intended.
               unset AIRIA_PYPI_PASSWORD
+              index_args=(--index-pull "$index_url")
               ;;
             *)
               echo "::error title=Index upload::index-upload must be true or false, not '$INDEX_UPLOAD'"
@@ -259,9 +275,14 @@ jobs:
           esac
           uv venv .release
           uv pip install --python .release --index "$index_url" "airia-release==${AIRIA_RELEASE_VERSION}"
-          # versioning-policy reads importlib.metadata in this venv. --no-deps installs the
-          # subject beside the tool; an isolated `uv tool install` has no subject and refuses.
-          uv pip install --python .release --no-deps ./subject
+          # versioning-policy reads importlib.metadata of the installed project. The default
+          # manifest is the checkout root (./subject). A nested path must install its own
+          # directory: packages/foo/pyproject.toml is subject/packages/foo, not the root.
+          subject_dir="./subject"
+          case "$MANIFEST" in
+            */*) subject_dir="subject/${MANIFEST%/*}" ;;
+          esac
+          uv pip install --python .release --no-deps "$subject_dir"
           if [ "$EVENT_NAME" = workflow_dispatch ] && [ "$DRY_RUN" = false ]; then
             confirm=--yes
           else
