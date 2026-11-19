@@ -19,3 +19,9 @@ SPDX-License-Identifier = "Apache-2.0"
 path = ["validation/python-toolchain/project/uv.lock", "validation/python-toolchain/project/.python-version"]
 SPDX-FileCopyrightText = "2026 AIRIA Systems GmbH"
 SPDX-License-Identifier = "Apache-2.0"
+
+# The ruleset baseline is JSON, which cannot carry a comment header.
+[[annotations]]
+path = "rulesets/baseline.json"
+SPDX-FileCopyrightText = "2026 AIRIA Systems GmbH"
+SPDX-License-Identifier = "Apache-2.0"

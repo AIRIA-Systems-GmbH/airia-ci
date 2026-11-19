@@ -1,0 +1,165 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every repository's departure from rulesets/baseline.json, and why.
+# Andrea's ruling 16 (2026-11-19): "ensure all projects have a meaningful shared
+# set of rules, and exceptions should only be allowed for very good reasons."
+# Nothing is implicit: scripts/rulesets.py fails on any live state that is not
+# baseline.json + the exceptions listed here. State read from GitHub 2026-11-19.
+#
+# Per repository:
+#   rulesets         ids of the ruleset that carries the branch rules
+#   required_checks  the status-check contexts the ruleset requires (a per-repo field)
+#   exceptions       one table per departure; `kind` is one of
+#     required_checks  the checks are not the aggregate (none, when the list is empty)
+#     omit_rule        the rule `rule` is absent
+#     ref_include      the ruleset names `include` instead of ~DEFAULT_BRANCH
+#     addition         ruleset `ruleset` is extra: it adds to the baseline, it weakens nothing
+#   Each exception has a non-empty `reason`.
+
+# The one status check the shared airia-ci workflow will report. Empty until it exists;
+# until then every repository's own list is an exception.
+aggregate_check = ""
+
+[repos."AIRIA-Systems-GmbH/AIRIA-process"]
+rulesets = [24500238]
+required_checks = ["lint", "tests"]
+[[repos."AIRIA-Systems-GmbH/AIRIA-process".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own jobs."
+[[repos."AIRIA-Systems-GmbH/AIRIA-process".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+
+[repos."AIRIA-Systems-GmbH/AIRIA-framework"]
+rulesets = [24500242]
+required_checks = [
+  "AIRIA Control Tests",
+  "AIRIA Data Tests",
+  "AIRIA Persistence — PostgreSQL provider",
+  "AIRIA Persistence — Qdrant provider",
+  "AIRIA Persistence — SQLite provider",
+  "AIRIA Persistence — SurrealDB provider",
+  "AIRIA Persistence — whole-package coverage",
+  "AIRIA Server — live engine lane",
+  "Architecture Law",
+  "Lint + Type",
+  "Unit Tests",
+  "check-legacy-docs",
+  "License Compliance Check",
+]
+[[repos."AIRIA-Systems-GmbH/AIRIA-framework".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own 13 jobs."
+[[repos."AIRIA-Systems-GmbH/AIRIA-framework".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+[[repos."AIRIA-Systems-GmbH/AIRIA-framework".exceptions]]
+kind = "addition"
+ruleset = 25892179
+reason = "Release tags (refs/tags/*/v*) are created by the release identity only and never moved or deleted. It adds to the baseline and weakens nothing; its one bypass actor (RepositoryRole 5, admin) is the release path."
+
+[repos."AIRIA-Systems-GmbH/AIRIA-DevTools"]
+rulesets = [24500235]
+required_checks = ["Pyright", "Pytest", "Ruff check", "Ruff format"]
+[[repos."AIRIA-Systems-GmbH/AIRIA-DevTools".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own jobs."
+[[repos."AIRIA-Systems-GmbH/AIRIA-DevTools".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+
+[repos."AIRIA-Systems-GmbH/AIRIA-SiteBuilder"]
+rulesets = [24500240]
+required_checks = ["Code quality (ruff + ty)", "Tests (pytest, coverage gates)", "PostgreSQL tests (pg_replay)"]
+[[repos."AIRIA-Systems-GmbH/AIRIA-SiteBuilder".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own jobs."
+[[repos."AIRIA-Systems-GmbH/AIRIA-SiteBuilder".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+
+[repos."AIRIA-Systems-GmbH/airia-ci"]
+rulesets = [24486275]
+required_checks = ["actions", "coverage", "lint", "unittest"]
+[[repos."AIRIA-Systems-GmbH/airia-ci".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; this repository requires its own jobs."
+[[repos."AIRIA-Systems-GmbH/airia-ci".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+
+[repos."AIRIA-Systems-GmbH/AIRIA-BookAI"]
+rulesets = [25070548]
+required_checks = []
+[[repos."AIRIA-Systems-GmbH/AIRIA-BookAI".exceptions]]
+kind = "required_checks"
+reason = "The repository has no CI job yet, so no check can be required. Goes when its CI exists and reports the aggregate."
+
+[repos."AIRIA-Systems-GmbH/AIRIA-PnP"]
+rulesets = [27651746]
+required_checks = []
+[[repos."AIRIA-Systems-GmbH/AIRIA-PnP".exceptions]]
+kind = "required_checks"
+reason = "No CI jobs are required: the repository takes no pull-request rule, so there is no merge to gate."
+[[repos."AIRIA-Systems-GmbH/AIRIA-PnP".exceptions]]
+kind = "omit_rule"
+rule = "pull_request"
+reason = "Since 2026-11-05, 45 of 78 commits on main came without a PR (handover, Strategic Talk and dispatch config commits pushed straight to main); a PR rule would refuse those writers. Goes when those writers move to PRs."
+[[repos."AIRIA-Systems-GmbH/AIRIA-PnP".exceptions]]
+kind = "omit_rule"
+rule = "required_signatures"
+reason = "Same writers as the missing PR rule (direct handover, Strategic Talk and dispatch config commits); goes with it when they move to PRs."
+
+[repos."AIRIA-Systems-GmbH/Second-Memory-System"]
+rulesets = [27651748]
+required_checks = []
+[[repos."AIRIA-Systems-GmbH/Second-Memory-System".exceptions]]
+kind = "required_checks"
+reason = "No CI jobs are required: the repository takes no pull-request rule, so there is no merge to gate."
+[[repos."AIRIA-Systems-GmbH/Second-Memory-System".exceptions]]
+kind = "omit_rule"
+rule = "pull_request"
+reason = "Since 2026-11-05, 2635 of 2670 commits on main came without a PR (handover, Strategic Talk and dispatch config commits pushed straight to main); a PR rule would refuse those writers. Goes when those writers move to PRs."
+[[repos."AIRIA-Systems-GmbH/Second-Memory-System".exceptions]]
+kind = "omit_rule"
+rule = "required_signatures"
+reason = "Same writers as the missing PR rule (direct handover, Strategic Talk and dispatch config commits); goes with it when they move to PRs."
+
+[repos."tumma72/Portfolio-Dashboard"]
+rulesets = [24500247]
+required_checks = ["ci / gate", "ci / claude-review / claude-review"]
+[[repos."tumma72/Portfolio-Dashboard".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own gate and the Claude review."
+
+[repos."tumma72/CryptoStudio"]
+rulesets = [24500244]
+required_checks = ["test", "rust"]
+[[repos."tumma72/CryptoStudio".exceptions]]
+kind = "required_checks"
+reason = "No aggregate check from the shared airia-ci workflow exists yet; the repository requires its own jobs."
+[[repos."tumma72/CryptoStudio".exceptions]]
+kind = "ref_include"
+include = ["refs/heads/main"]
+reason = "Written as refs/heads/main; the same branch while main is the default. Re-save as ~DEFAULT_BRANCH when the ruleset is next applied."
+
+[repos."tumma72/second_memory"]
+rulesets = [27651749]
+required_checks = []
+[[repos."tumma72/second_memory".exceptions]]
+kind = "required_checks"
+reason = "No CI jobs are required: the repository takes no pull-request rule, so there is no merge to gate."
+[[repos."tumma72/second_memory".exceptions]]
+kind = "omit_rule"
+rule = "pull_request"
+reason = "Since 2026-11-05, 461 of 494 commits on main came without a PR (handover, Strategic Talk and dispatch config commits pushed straight to main); a PR rule would refuse those writers. Goes when those writers move to PRs."
+[[repos."tumma72/second_memory".exceptions]]
+kind = "omit_rule"
+rule = "required_signatures"
+reason = "Same writers as the missing PR rule (direct handover, Strategic Talk and dispatch config commits); goes with it when they move to PRs."

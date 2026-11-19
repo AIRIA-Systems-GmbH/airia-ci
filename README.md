@@ -81,6 +81,18 @@ Callers call `@main`, never a pinned tag (Andrea, 2026-10-20): a merged fix reac
 
 `scripts/consumers.py` lists every caller and flags one pinned to a `ci-vN` tag instead of `@main`; `scripts/canary.py` proves `@claude` answers on a consumer PR.
 
+### The shared ruleset baseline
+
+Andrea's ruling 16 (2026-11-19): "ensure all projects have a meaningful shared set of rules, and exceptions should only be allowed for very good reasons." [`rulesets/baseline.json`](rulesets/baseline.json) is that set, as a GitHub ruleset body for the default branch: no deletion, no force-push, a pull request (0 approvals, threads resolved), signed commits, and required status checks (not strict). The check list is per repository. [`rulesets/exceptions.toml`](rulesets/exceptions.toml) lists, for each repository, its ruleset ids, its required checks and every departure from the baseline, each with a `reason`; nothing is implicit. `scripts/rulesets.py` reads every listed repository's rulesets (GET only, with your own `gh` login, it never writes), prints each live state that is not baseline + its listed exceptions, and exits 1 if there is one (2 if the exceptions file is unusable or a lookup fails):
+
+```
+python3 scripts/rulesets.py
+```
+
+It does not apply rulesets; whoever owns the rulesets does, and then updates the exceptions in the same change.
+
+The wider baseline is **paused until the AIRIA-DevTools wheel ships** (Andrea's freeze, 2026-11-19): one aggregate check from the shared workflow, the framework's 13 checks reconciled, and the pull-request and signature rules on AIRIA-PnP, Second-Memory-System and tumma72/second_memory. `exceptions.toml` is the record of what has been decided until then.
+
 `scripts/findings.py --repo OWNER/NAME --pr N` lists the review findings nobody has answered: a Bot's PR review comment with the `airia-finding` marker, no reply to it and its thread not resolved (a person's comment that quotes the marker is ignored). It prints each as id, file and link, and exits 1 if any is left, 0 if none, 2 if a lookup failed. It runs no model; it is the check behind "every bot finding has a reply" (#73). The *Review cap reached* comment lists the same findings (or says there are none), by a copy of the rule in the workflow's jq; a test holds the two to the same ids. The review itself may read the PR's earlier finding comments and their replies with `gh api repos/<repo>/pulls/<n>/comments`, the one `gh api` call its settings allow, and only when it runs on a `pull_request` event. [CLAUDE.md](CLAUDE.md) has the commands.
 
 ## Licence
