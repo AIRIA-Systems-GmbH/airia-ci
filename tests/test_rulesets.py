@@ -212,6 +212,29 @@ class Refusals(Check):
         self.assertEqual(code, 2)
         self.assertIn("no `rulesets` listed", err)
 
+    # Exit 1 means drift, so an input the check cannot read must exit 2: it must not look like drift.
+    def test_a_malformed_exceptions_file_exits_2_and_reads_nothing(self):
+        r = Runner(self)
+        code, out, err, r = self.finish(r, '[repos."o/r"\nrulesets = [1]\n')
+        self.assertEqual(code, 2)
+        self.assertIn("error:", err)
+        self.assertEqual(r.calls(), [])
+
+    def test_a_ruleset_answer_that_is_not_json_exits_2(self):
+        r = Runner(self, [["repos/o/r/rulesets", {"text": "<html>"}]])
+        code, _, err, _ = self.finish(r, toml())
+        self.assertEqual(code, 2)
+        self.assertIn("error:", err)
+
+    def test_a_status_check_rule_without_its_list_exits_2(self):
+        body = live()
+        for rule in body["rules"]:
+            if rule["type"] == "required_status_checks":
+                del rule["parameters"]["required_status_checks"]
+        code, _, err, _ = self.run_main(toml(), body)
+        self.assertEqual(code, 2)
+        self.assertIn("error:", err)
+
     def test_an_unreadable_ruleset_is_an_error_not_a_pass(self):
         r = Runner(self, [["repos/o/r/rulesets", {"exit": 1, "stderr": "HTTP 403"}]])
         code, _, err, _ = self.finish(r, toml())

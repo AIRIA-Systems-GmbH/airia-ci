@@ -148,11 +148,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{repo}\t{'DRIFT' if problems else 'ok'}\t{len(entry.get('exceptions', []))} exceptions")
             for p in problems:
                 print(f"  - {p}")
-    except Refused as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"{drifting} of {len(data['repos'])} repositories drift from the baseline")
+        return 1 if drifting else 0
+    # Exit 1 is drift: an input that cannot be read must never look like it.
+    except (Refused, tomllib.TOMLDecodeError, json.JSONDecodeError, OSError, KeyError) as exc:
+        print(f"error: {exc!r}" if isinstance(exc, KeyError) else f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"{drifting} of {len(data['repos'])} repositories drift from the baseline")
-    return 1 if drifting else 0
 
 
 if __name__ == "__main__":
