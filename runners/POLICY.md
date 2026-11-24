@@ -149,6 +149,14 @@ In `/etc/ci-slots.d/classes.conf` on the hosts. It is infra's: do not edit it.
 
 If a job is mis-classed (a light job that really runs tests, or a test job that is really light), send infra (the Sysadmin) the `<repo>/<workflow>/<job id>` of the job and which way it is wrong. Do not edit the table; it is infra's.
 
+### Slot order (infra, 2026-11-24)
+
+This is infra's change to the runner hosts' scheduler, announced by Andrea on 2026-11-24:
+
+> New update to the CI Runners, now oldest PRs get priority so they complete faster, the priority is set by the lowest GitHub ID
+
+For a job waiting at "Set up runner", this means the oldest pull request goes first, ordered by lowest GitHub ID, as announced.
+
 ## Changes to the pool are announced first
 
 A change to the pool, such as a new interpreter in the toolcache, a new runner, or a change to concurrency or caches, is announced as a `runner` Issue **before** it lands. On 2026-10-09 CPython 3.14.8 reached the pool unannounced and AIRIA-process went red the same day. The rule is in [CONTRIBUTING.md](../CONTRIBUTING.md#runner-pool-changes); this policy links it and adds nothing to it. A change to a script here is a PR like any other, and the Issue is linked in its description.
