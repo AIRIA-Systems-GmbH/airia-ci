@@ -95,13 +95,12 @@ name: AIRIA Python gate (shared)
 # Without `if: always()` a red extra job skips the whole call: `ci / gate`
 # then never reports, and the PR waits on it rather than merging.
 #
-# TEST-RUN BOUNDARIES (airia-ci#154). Runners have 8-16 cores and a pytest at xdist `-n 4`
-# takes half of that, so (a) the test job runs pytest with `-n <pytest-workers>` (default 4;
-# empty keeps the project's addopts; a missing pytest-xdist fails the job, never a silent
-# serial run) and (b) at most TWO test jobs per repository run at once, across all its pull
-# requests: the job joins one of two FIFO lanes (`concurrency` with `queue: max`), picked
-# from the last digit of `github.run_id`. All matrix legs of one run share a lane and so run
-# one after another.
+# PYTEST WORKERS (airia-ci#154). `pytest-workers` is an explicit opt-in: a caller that sets a
+# positive whole number or `auto` gets `-n <value>` on the test job's pytest. The default is
+# EMPTY today, which keeps the project's own addopts. The intended shared default is 4; it
+# changes once the suites that cannot yet run under xdist (a shared --keepdb database) can.
+# A project that sets it must have pytest-xdist in its dev dependencies: without it the job
+# fails with `No xdist`, never a silent serial run.
 #
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
 # job has two slots, started only when their image is set: Postgres-compatible
@@ -180,11 +179,12 @@ on:
       pytest-workers:
         description: >-
           pytest-xdist workers for the test job (`-n N`): a positive whole number or `auto`.
-          Default 4. Empty leaves the project's own addopts untouched. A project that gets
-          `-n` must have pytest-xdist in its dev dependencies, or the job fails saying so.
+          Default empty: the project's own addopts are untouched (the intended shared default
+          is 4, later). A project that sets it must have pytest-xdist in its dev dependencies,
+          or the job fails saying so.
         required: false
         type: string
-        default: "4"
+        default: ""
       durations:
         description: >-
           How many of the slowest tests pytest lists after every run
@@ -384,12 +384,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-    # Two lanes per repository, FIFO (queue: max, so nothing is cancelled and nothing is dropped).
-    # Expressions have no arithmetic: an odd last digit of run_id is lane b, an even one lane a.
-    # Every matrix leg of a run has the same run_id, hence the same lane, and runs one after another.
-    concurrency:
-      group: airia-pytest-${{ github.repository }}-${{ (endsWith(github.run_id, '1') || endsWith(github.run_id, '3') || endsWith(github.run_id, '5') || endsWith(github.run_id, '7') || endsWith(github.run_id, '9')) && 'b' || 'a' }}
-      queue: max
     strategy:
       fail-fast: false
       matrix:

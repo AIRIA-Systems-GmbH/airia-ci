@@ -97,35 +97,13 @@ class Shape(unittest.TestCase):
         self.assertEqual(INPUTS["docs-paths"]["default"], "")
         self.assertEqual(INPUTS["durations"]["default"], 25)
 
-    def test_pytest_workers_default_to_four_and_reach_the_pytest_step(self):
+    def test_pytest_workers_are_an_opt_in_that_reaches_the_pytest_step(self):
+        # Empty today: a suite that cannot run under xdist yet keeps its own addopts. The intended default is 4.
         self.assertEqual(INPUTS["pytest-workers"]["type"], "string")
-        self.assertEqual(INPUTS["pytest-workers"]["default"], "4")
+        self.assertEqual(INPUTS["pytest-workers"]["default"], "")
+        self.assertNotIn("concurrency", json.dumps(JOBS))  # the per-repository cap is set by runner pool, not here
         pytest = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Pytest at the coverage floor")
         self.assertEqual(pytest["env"]["WORKERS"], "${{ inputs.pytest-workers }}")
-
-    def test_the_test_job_runs_in_one_of_two_fifo_lanes_per_repository(self):
-        """At most two pytest runs per repository: two groups, each a queue (nothing cancelled, nothing dropped)."""
-        conc = JOBS["test"]["concurrency"]
-        self.assertEqual(conc["queue"], "max")
-        self.assertNotIn("cancel-in-progress", conc)
-        self.assertTrue(conc["group"].startswith("airia-pytest-${{ github.repository }}-${{ "), conc["group"])
-        self.assertEqual(set(re.findall(r"&& '(\w)' \|\| '(\w)'", conc["group"])), {("b", "a")})
-        self.assertNotIn("concurrency", DOC)  # the file adds no workflow-level concurrency of its own
-
-    def test_the_lane_expression_sends_odd_last_digits_to_b_and_even_to_a(self):
-        """Mirror the expression in Python: the digits it names are exactly 1,3,5,7,9 -> b, the rest -> a."""
-        group = JOBS["test"]["concurrency"]["group"]
-        odd = set(re.findall(r"endsWith\(github\.run_id, '(\d)'\)", group))
-        self.assertEqual(odd, {"1", "3", "5", "7", "9"})
-        self.assertEqual(len(re.findall(r"endsWith\(", group)), 5)
-
-        def lane(run_id: str) -> str:
-            return "b" if any(run_id.endswith(d) for d in odd) else "a"
-
-        for digit in "13579":
-            self.assertEqual(lane("98765432" + digit), "b")
-        for digit in "02468":
-            self.assertEqual(lane("98765432" + digit), "a")
 
     def test_the_defaults_are_the_standard(self):
         self.assertEqual(INPUTS["coverage-floor"]["default"], PINS["standard"]["coverage-floor"])
