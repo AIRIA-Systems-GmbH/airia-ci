@@ -123,8 +123,16 @@ class Shape(unittest.TestCase):
         check = next(s for s in steps if s.get("name") == "Test timeout check")
         self.assertEqual(check["env"]["STEP_TIMEOUT"], "${{ inputs.test-timeout-minutes }}")
         self.assertLess(steps.index(check), steps.index(pytest), "refused before pytest")
-        self.assertEqual({n: JOBS[n]["timeout-minutes"] for n in ("changes", "lint", "security", "gate")},
-                         {"changes": 5, "lint": 20, "security": 20, "gate": 120})  # gate: #159
+        # Andrea, 2026-11-24: one 120-minute job backstop on every job; the short limits sit on the steps.
+        for name, job in JOBS.items():
+            if "uses" not in job:  # a job that calls a reusable workflow cannot carry timeout-minutes
+                self.assertEqual(job["timeout-minutes"], 120, name)
+        for name, limit in {"changes": 5, "lint": 20, "security": 20, "gate": 5}.items():
+            for s in JOBS[name]["steps"]:
+                self.assertEqual(s["timeout-minutes"], limit, f"{name}: {s.get('name') or s.get('uses')}")
+        for s in steps:
+            if s is not pytest:  # the test job's other steps are covered by the backstop alone
+                self.assertNotIn("timeout-minutes", s, s.get("name") or s.get("uses"))
 
     def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
         # airia-ci#156: nothing here may fail a job or cap it, so the job keeps its 60 minutes and no concurrency.

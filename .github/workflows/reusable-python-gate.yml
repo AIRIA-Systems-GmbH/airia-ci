@@ -113,12 +113,13 @@ name: AIRIA Python gate (shared)
 # TEST TIMEOUTS (airia-ci#161; Andrea, 2026-11-24, runners/POLICY.md "Timeouts"). A hung job whose
 # runner is alive would hold its slot for GitHub's 360-minute default, so nothing is left unbounded.
 # `test-timeout-minutes` (default 60) is the `timeout-minutes` of the pytest step alone: a positive
-# whole number, about 2x the suite's normal time. The `test` job's own `timeout-minutes` is 120, a
-# backstop above that step and above the slot wait. `pytest-timeout-seconds` (default empty = off)
+# whole number, about 2x the suite's normal time. Every job has the same job-level `timeout-minutes: 120`
+# backstop (Andrea, 2026-11-24: the slot wait is in "Set up runner", before any step, so it counts toward the
+# job timeout and not toward step timeouts); the real limits are on the steps. `changes` (5), `lint` (20),
+# `security` (20) and `gate` (5) carry their old job limit on each step; the test job's pytest step carries
+# `test-timeout-minutes`, and its other steps rely on the backstop. `pytest-timeout-seconds` (default empty = off)
 # adds `--timeout=N` so a deadlocked test fails fast and is named; a project that sets it must have
-# pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`. `changes`, `lint`
-# and `security` keep their short limits; `gate` is 120 too until airia-ci#159 is fixed. Whether the slot wait ("Set up runner") stays out of
-# the step timeout is Andrea's claim, to be checked on a caller's first run.
+# pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`.
 #
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
 # job has two slots, started only when their image is set: Postgres-compatible
@@ -272,19 +273,21 @@ permissions: {}
 jobs:
   changes:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 5
+    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
       - if: github.event_name == 'pull_request' && inputs.docs-paths != ''
+        timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The PR's merge commit and its first parent, the base it merges into.
           fetch-depth: 2
           persist-credentials: false
       - name: Did the change touch code
+        timeout-minutes: 5
         id: diff
         env:
           EVENT: ${{ github.event_name }}
@@ -327,22 +330,25 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 20
+    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 20
         with:
           # On a pull request: the merge commit and its first parent (the base), for the debt baseline's compare.
           fetch-depth: 2
           persist-credentials: false
       - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+        timeout-minutes: 20
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
           tools: ${{ inputs.type-checker == 'pyright' && 'ruff pyright' || 'ruff' }}
       - name: Debt baseline only tightens
+        timeout-minutes: 20
         env:
           RATCHET: ${{ inputs.debt-ratchet }}
           EVENT: ${{ github.event_name }}
@@ -363,6 +369,7 @@ jobs:
           fi
           python3 "$AIRIA_DEBT" compare --event "$EVENT" "$base" "$file"
       - name: Ruff
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
         run: |
@@ -374,10 +381,12 @@ jobs:
           ruff format --check "${skip[@]}" "${paths[@]}" || status=1
           exit "$status"
       - name: Ruff floor and suppressions
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
         run: python3 "$AIRIA_TOOLCHAIN" ruff
       - name: Type check
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
           TYPE_CHECKER: ${{ inputs.type-checker }}
@@ -411,6 +420,7 @@ jobs:
             *) echo "::error title=AIRIA standard::no type checker $TYPE_CHECKER"; exit 1 ;;
           esac
       - name: Import contracts
+        timeout-minutes: 20
         run: |
           if [ -f .importlinter ] || grep -q '^\[tool\.importlinter\]' pyproject.toml; then
             lint-imports
@@ -423,7 +433,9 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 120 # backstop above the pytest step's own limit and the slot wait (airia-ci#161)
+    # Backstop above the pytest step's own limit and the slot wait. The setup steps here have no limit of
+    # their own: this 120 covers them.
+    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
@@ -568,14 +580,16 @@ jobs:
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 20
+    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 20
         with:
           persist-credentials: false
       - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+        timeout-minutes: 20
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
@@ -583,26 +597,29 @@ jobs:
           tools: reuse pip-audit zizmor gitleaks
           sync: "false"
       - name: Licences (REUSE)
+        timeout-minutes: 20
         run: reuse lint
       - name: Known vulnerabilities in the locked dependencies
+        timeout-minutes: 20
         run: |
           uv export --locked --no-emit-workspace --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
           pip-audit --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
       - name: Secrets in the tree
+        timeout-minutes: 20
         run: gitleaks dir --redact --no-banner .
       - name: Workflow security
+        timeout-minutes: 20
         run: zizmor --offline --config "$ZIZMOR_CONFIG" .github
 
   gate:
     needs: [changes, lint, test, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
-    # 120, not short: the host still classes this job as a test job, so it can be held for a slot until
-    # infra's class fix lands (airia-ci#159); the real limit is the pytest step. Do not shorten it before then.
-    timeout-minutes: 120
+    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions: {}
     steps:
       - name: Every gate succeeded
+        timeout-minutes: 5
         env:
           OWN: ${{ toJSON(needs) }}
           EXTRA: ${{ inputs.extra-jobs }}

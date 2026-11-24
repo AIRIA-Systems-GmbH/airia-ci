@@ -145,18 +145,25 @@ Superseded: the +20 minutes of headroom is replaced by the "Timeouts (Andrea, 20
 
 ### Timeouts (Andrea, 2026-11-24)
 
-Andrea's ruling, relayed by Control and announced in airia-ci#161, verbatim:
+Andrea's rulings, announced in airia-ci#161, verbatim. First, relayed by Control:
 
 > Don't drop timeouts entirely: the hosts don't kill a hung job whose runner is still alive, so it would hold its slot for GitHub's 360-minute default. Instead: (1) put the real limit as timeout-minutes on the test step (≈ 2× the suite's normal time). The host's slot wait happens in "Set up runner", before any step, so a step timeout doesn't include it; please check this on the first run. (2) Keep a job-level backstop of ~120 min (the gate's maximum wait is 60 min). (3) Add pytest-timeout per test, e.g. --timeout=300, so a deadlock fails fast and names the test. (4) Keep short timeouts on aggregator/lint jobs, which no longer wait.
+
+Then, the same day, on point (4) and on where timeouts go:
+
+> On point (4) it stands as written because: Yes, confirmed. Both runs show the slot wait inside "Set up runner", which runs before any workflow step, so it counts toward the job-level timeout and not toward step timeouts. Time spent in "Set up runner": daemon-shard 1: 1024 s (run 45411214286, earlier this afternoon) / 0 s (run 45424234440, later); daemon-shard 2: 359 / 0; daemon-shard 3: 288 / 1; perf: 141 / 0; tests: 59 / 1; lint: 1 / 0; daemon-tests: – / 4. The difference between the two runs is today's changes landing: learned job sizes, admission as soon as one core is free, and oldest PR first. On aggregator and lint jobs: they never wait for a slot (lint took about 1 s in both runs), so their correction isn't needed for timing. Their rule is still the right one to adopt. One job-level backstop of about 120 minutes on every job, with the short limits on the steps, is uniform and costs nothing. It also protects against a misclassified job: gate was held for a test slot this afternoon until I added it to the light list.
+
+> Every timeout should be placed on steps not on jobs as we have already explained
 
 This replaces the "+20 minutes on `timeout-minutes`" advice in the previous subsection. How `reusable-python-gate.yml` carries it:
 
 1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs. The step limit only takes effect below the 120-minute job backstop (point 2): a larger value is cut off by the job first, and the value is not capped in code.
-2. The `test` job's own `timeout-minutes` is 120, a backstop above the step limit and the gate's maximum slot wait.
+2. Every job has the same job-level `timeout-minutes: 120`, a backstop above the step limits and the slot wait. The test job's setup steps have no limit of their own: the backstop covers them.
 3. `pytest-timeout-seconds` (string, default empty = off) runs pytest with `--timeout=N`, per test. It must be a positive whole number. A project that sets it needs `pytest-timeout` in its dev dependencies, or the job fails with `No pytest-timeout`. The template's dev group has the plugin and `timeout = 300`.
-4. `changes` (5 min), `lint` (20) and `security` (20) keep their short limits. Exception: `gate` is 120, not 5. Result-reading aggregator jobs (`gate`, `daemon-tests`) spent their whole life in "Set up runner" and were cancelled by the 5-minute cap (AIRIA-process runs 45424234440 and 45411214286, and BookAI), because the host still classes them as test jobs; airia-ci#159 is open with no infra answer yet. So point 4 does not hold for `gate` until that class fix lands; the real limit is the step, and `gate` is not shortened again before then.
+4. The short limits sit on the steps, each step carrying its job's former limit: `changes` 5 minutes, `lint` 20, `security` 20, `gate` 5. The call job `claude-review`, which calls a reusable workflow, cannot carry a `timeout-minutes`.
 
-The claim that the slot wait is not counted by a step timeout is Andrea's. It is unverified until a caller's first run shows it; the check stays open in airia-ci#161.
+Confirmed by Andrea on 2026-11-24 from two runs (45411214286, 45424234440): the slot wait is in "Set up runner", counts toward the job-level timeout and not toward step timeouts.
+
 
 ### Where the class table lives
 
