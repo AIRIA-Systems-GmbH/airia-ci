@@ -206,7 +206,8 @@ on:
       test-timeout-minutes:
         description: >-
           The `timeout-minutes` of the test job's pytest step (default 60): a positive whole number,
-          about 2x the suite's normal time. The test job itself is backstopped at 120 minutes.
+          about 2x the suite's normal time. The test job itself is backstopped at 120 minutes:
+          the step limit only takes effect below that, a larger value is cut off by the job first.
         required: false
         type: string
         default: "60"
