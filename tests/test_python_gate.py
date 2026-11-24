@@ -47,6 +47,12 @@ exit "$code"
 # pytest: also writes the JSON coverage report it was asked for, at $FAKE_PERCENT.
 FAKE_PYTEST = """\
 #!/bin/sh
+# `pytest --help` lists -n/--numprocesses only when pytest-xdist is loaded (here: unless $FAKE_NO_XDIST).
+if [ "$1" = --help ]; then
+  echo "  --cov=SOURCE"
+  [ -z "$FAKE_NO_XDIST" ] && echo "  -n numprocesses, --numprocesses=numprocesses"
+  exit 0
+fi
 echo "pytest $*" >> "$(dirname "$0")/calls"
 for a in "$@"; do
   case "$a" in --cov-report=json:*) [ -n "$FAKE_PERCENT" ] && echo "{\\"totals\\": {\\"percent_covered\\": $FAKE_PERCENT}}" > "${a#--cov-report=json:}";; esac
@@ -63,7 +69,7 @@ class Shape(unittest.TestCase):
         self.assertEqual(set(INPUTS), {
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
-            "extra-prompt", "debt-ratchet"})
+            "extra-prompt", "debt-ratchet", "pytest-workers"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -90,6 +96,14 @@ class Shape(unittest.TestCase):
         # Every existing caller keeps today's behaviour: no fast path, the 25 slowest tests listed.
         self.assertEqual(INPUTS["docs-paths"]["default"], "")
         self.assertEqual(INPUTS["durations"]["default"], 25)
+
+    def test_pytest_workers_are_an_opt_in_that_reaches_the_pytest_step(self):
+        # Empty today: a suite that cannot run under xdist yet keeps its own addopts. The intended default is 4.
+        self.assertEqual(INPUTS["pytest-workers"]["type"], "string")
+        self.assertEqual(INPUTS["pytest-workers"]["default"], "")
+        self.assertNotIn("concurrency", json.dumps(JOBS))  # the per-repository cap is set by runner pool, not here
+        pytest = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Pytest at the coverage floor")
+        self.assertEqual(pytest["env"]["WORKERS"], "${{ inputs.pytest-workers }}")
 
     def test_the_defaults_are_the_standard(self):
         self.assertEqual(INPUTS["coverage-floor"]["default"], PINS["standard"]["coverage-floor"])
@@ -253,6 +267,58 @@ class Steps(unittest.TestCase):
                 self.assertEqual(p.returncode, 1)
                 self.assertIn("::error title=durations::", p.stdout)
                 self.assertEqual(self.calls(), [])
+
+    def test_workers_add_n_to_pytest(self):
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="4")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith("pytest -n 4 --durations=25 "), call)
+
+    def test_auto_workers_are_accepted(self):
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="auto")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(self.calls()[0].startswith("pytest -n auto "))
+
+    def test_empty_workers_leave_the_projects_addopts_alone_and_need_no_xdist(self):
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="",
+                          FAKE_NO_XDIST="1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith("pytest --durations=25 "), call)
+        self.assertNotIn(" -n ", call)
+
+    def test_workers_that_are_not_a_positive_number_or_auto_are_refused_before_pytest(self):
+        for w in ("0", "x; rm", "-1", "2.5", "04", "AUTO", "4 8"):
+            with self.subTest(workers=w):
+                p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25",
+                                  WORKERS=w)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=pytest-workers::", p.stdout)
+                self.assertEqual(self.calls(), [])
+
+    def test_workers_without_xdist_fail_naming_the_fix_and_never_run_serially(self):
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="4",
+                          FAKE_NO_XDIST="1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No xdist::", p.stdout)
+        self.assertIn("pytest-xdist", p.stdout)
+        self.assertIn("dev dependencies", p.stdout)
+        self.assertEqual(self.calls(), [])  # no pytest run at all, serial or otherwise
+
+    def test_the_debt_ratchet_pytest_gets_n_too(self):
+        debt = self.r.tmp / "debt.py"
+        debt.write_text("import sys\nprint('debt', *sys.argv[1:])\n")
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="4",
+                          RATCHET="true", AIRIA_DEBT=str(debt))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith("pytest -n 4 --durations=25 -rfE "), call)
+
+    def test_the_debt_ratchet_without_xdist_fails_too(self):
+        p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="4",
+                          RATCHET="true", FAKE_NO_XDIST="1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No xdist::", p.stdout)
 
     def test_pytest_under_the_floor_fails_even_if_pytest_did_not(self):
         # pytest-cov's own fail-under is the first line; the report check is the second.
