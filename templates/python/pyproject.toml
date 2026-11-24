@@ -43,6 +43,8 @@ venv = ".venv"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers -n auto --cov=<package>"
+# Seconds per test (pytest-timeout): a deadlock fails fast and names the test.
+timeout = 300
 
 # Branches count, as in AIRIA-framework: the floor is over statements and branches.
 [tool.coverage.run]
@@ -61,5 +63,6 @@ dev = [
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
     "pytest-xdist==3.8.0",
+    "pytest-timeout==2.4.0",
     "coverage==7.16.2",
 ]

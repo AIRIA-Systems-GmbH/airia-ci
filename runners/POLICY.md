@@ -141,6 +141,33 @@ At most 4 GB per job (AIRIA-DevTools at most 5 GB). Tear down test-spawned serve
 
 The log prints `ci-slot: waiting N min ... position k/n`. Assume the time spent waiting for a slot counts toward the job timeout, so add about 20 min of headroom to `timeout-minutes`.
 
+Superseded: the +20 minutes of headroom is replaced by the "Timeouts (Andrea, 2026-11-24)" subsection below; infra's text above stays as sent.
+
+### Timeouts (Andrea, 2026-11-24)
+
+Andrea's rulings, announced in airia-ci#161, verbatim. First, relayed by Control:
+
+> Don't drop timeouts entirely: the hosts don't kill a hung job whose runner is still alive, so it would hold its slot for GitHub's 360-minute default. Instead: (1) put the real limit as timeout-minutes on the test step (≈ 2× the suite's normal time). The host's slot wait happens in "Set up runner", before any step, so a step timeout doesn't include it; please check this on the first run. (2) Keep a job-level backstop of ~120 min (the gate's maximum wait is 60 min). (3) Add pytest-timeout per test, e.g. --timeout=300, so a deadlock fails fast and names the test. (4) Keep short timeouts on aggregator/lint jobs, which no longer wait.
+
+Then, the same day, on point (4) and on where timeouts go:
+
+> On point (4) it stands as written because: Yes, confirmed. Both runs show the slot wait inside "Set up runner", which runs before any workflow step, so it counts toward the job-level timeout and not toward step timeouts. Time spent in "Set up runner": daemon-shard 1: 1024 s (run 45411214286, earlier this afternoon) / 0 s (run 45424234440, later); daemon-shard 2: 359 / 0; daemon-shard 3: 288 / 1; perf: 141 / 0; tests: 59 / 1; lint: 1 / 0; daemon-tests: – / 4. The difference between the two runs is today's changes landing: learned job sizes, admission as soon as one core is free, and oldest PR first. On aggregator and lint jobs: they never wait for a slot (lint took about 1 s in both runs), so their correction isn't needed for timing. Their rule is still the right one to adopt. One job-level backstop of about 120 minutes on every job, with the short limits on the steps, is uniform and costs nothing. It also protects against a misclassified job: gate was held for a test slot this afternoon until I added it to the light list.
+
+> Every timeout should be placed on steps not on jobs as we have already explained
+
+Last, the same day:
+
+> CI is moving now, the document only PRs are going though very quickly, the others follow the scheduler rules, so every project should only set steps timeouts as explained and the rest will run based on the host scheduler and priorities
+
+The policy now reads: step timeouts only; the host scheduler and priorities govern the rest. The later messages replace the job-level backstop of point (2) and the "+20 minutes on `timeout-minutes`" advice in the previous subsection. How `reusable-python-gate.yml` carries it:
+
+1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs. With no job timeout in the file, the value is simply that step's limit.
+2. No job in the file has a `timeout-minutes`. The test job's setup steps have no limit either.
+3. `pytest-timeout-seconds` (string, default empty = off) runs pytest with `--timeout=N`, per test. It must be a positive whole number. A project that sets it needs `pytest-timeout` in its dev dependencies, or the job fails with `No pytest-timeout`. The template's dev group has the plugin and `timeout = 300`.
+4. The short limits sit on every step of the other jobs: `changes` 5 minutes, `lint` 20, `security` 20, `gate` 5.
+
+Confirmed by Andrea on 2026-11-24 from two runs (45411214286, 45424234440): the slot wait is in "Set up runner", counts toward the job-level timeout and not toward step timeouts.
+
 ### Where the class table lives
 
 In `/etc/ci-slots.d/classes.conf` on the hosts. It is infra's: do not edit it.

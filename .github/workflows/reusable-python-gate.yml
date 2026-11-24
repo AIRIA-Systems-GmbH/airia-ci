@@ -107,8 +107,16 @@ name: AIRIA Python gate (shared)
 # step alone (the wait for a runner slot before the job starts is not counted), rounds up to a
 # whole minute and, over the budget, prints `::warning title=Test budget::` and adds the line to
 # the job summary. WARNING ONLY, it never fails the job (a bad value for the input does, before
-# pytest runs); the job's `timeout-minutes` stays 60. A positive whole number sets the budget,
+# pytest runs). A positive whole number sets the budget,
 # empty turns the report off.
+#
+# TEST TIMEOUTS (airia-ci#161; Andrea, 2026-11-24, runners/POLICY.md "Timeouts"). STEP TIMEOUTS ONLY:
+# no job in this file has a `timeout-minutes`; the host scheduler and its priorities govern the rest.
+# `test-timeout-minutes` (default 60) is the `timeout-minutes` of the pytest step alone: a positive
+# whole number, about 2x the suite's normal time. Every step of `changes` (5), `lint` (20), `security` (20)
+# and `gate` (5) carries that limit; the test job's other steps have none. `pytest-timeout-seconds` (default empty = off)
+# adds `--timeout=N` so a deadlocked test fails fast and is named; a project that sets it must have
+# pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`.
 #
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
 # job has two slots, started only when their image is set: Postgres-compatible
@@ -193,6 +201,22 @@ on:
         required: false
         type: string
         default: ""
+      test-timeout-minutes:
+        description: >-
+          The `timeout-minutes` of the test job's pytest step (default 60): a positive whole number,
+          about 2x the suite's normal time. No job in this workflow has a timeout of its own, so this
+          is simply the limit of that step.
+        required: false
+        type: string
+        default: "60"
+      pytest-timeout-seconds:
+        description: >-
+          pytest-timeout limit per test (`--timeout=N`): a positive whole number of seconds. Default
+          empty: off. A project that sets it must have pytest-timeout in its dev dependencies, or the
+          job fails saying so.
+        required: false
+        type: string
+        default: ""
       test-budget-minutes:
         description: >-
           The minutes the test job's pytest run may take (default 10; the slot wait is not counted).
@@ -246,19 +270,20 @@ permissions: {}
 jobs:
   changes:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
       - if: github.event_name == 'pull_request' && inputs.docs-paths != ''
+        timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The PR's merge commit and its first parent, the base it merges into.
           fetch-depth: 2
           persist-credentials: false
       - name: Did the change touch code
+        timeout-minutes: 5
         id: diff
         env:
           EVENT: ${{ github.event_name }}
@@ -301,22 +326,24 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 20
         with:
           # On a pull request: the merge commit and its first parent (the base), for the debt baseline's compare.
           fetch-depth: 2
           persist-credentials: false
       - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+        timeout-minutes: 20
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
           tools: ${{ inputs.type-checker == 'pyright' && 'ruff pyright' || 'ruff' }}
       - name: Debt baseline only tightens
+        timeout-minutes: 20
         env:
           RATCHET: ${{ inputs.debt-ratchet }}
           EVENT: ${{ github.event_name }}
@@ -337,6 +364,7 @@ jobs:
           fi
           python3 "$AIRIA_DEBT" compare --event "$EVENT" "$base" "$file"
       - name: Ruff
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
         run: |
@@ -348,10 +376,12 @@ jobs:
           ruff format --check "${skip[@]}" "${paths[@]}" || status=1
           exit "$status"
       - name: Ruff floor and suppressions
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
         run: python3 "$AIRIA_TOOLCHAIN" ruff
       - name: Type check
+        timeout-minutes: 20
         env:
           PATHS: ${{ inputs.paths }}
           TYPE_CHECKER: ${{ inputs.type-checker }}
@@ -385,6 +415,7 @@ jobs:
             *) echo "::error title=AIRIA standard::no type checker $TYPE_CHECKER"; exit 1 ;;
           esac
       - name: Import contracts
+        timeout-minutes: 20
         run: |
           if [ -f .importlinter ] || grep -q '^\[tool\.importlinter\]' pyproject.toml; then
             lint-imports
@@ -397,7 +428,6 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -435,6 +465,15 @@ jobs:
           debt-ratchet: ${{ inputs.debt-ratchet }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
+      - name: Test timeout check
+        env:
+          STEP_TIMEOUT: ${{ inputs.test-timeout-minutes }}
+        run: |
+          # The pytest step's timeout-minutes reads this value: anything but a positive whole number is refused first.
+          if ! [[ "$STEP_TIMEOUT" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "::error title=test-timeout-minutes::test-timeout-minutes must be a positive whole number of minutes, not '$STEP_TIMEOUT'"
+            exit 1
+          fi
       - name: Test budget clock
         id: budget-clock
         env:
@@ -447,11 +486,13 @@ jobs:
           fi
           echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Pytest at the coverage floor
+        timeout-minutes: ${{ fromJSON(inputs.test-timeout-minutes) }}
         env:
           # With debt-ratchet the toolchain's floor (a valid baseline's, maybe under 90); else the input.
           FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
           DURATIONS: ${{ inputs.durations }}
           WORKERS: ${{ inputs.pytest-workers }}
+          TEST_TIMEOUT: ${{ inputs.pytest-timeout-seconds }}
           RATCHET: ${{ inputs.debt-ratchet }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
@@ -473,6 +514,21 @@ jobs:
             fi
             xdist=(-n "$WORKERS")
           fi
+          # Empty: no per-test limit. Else a positive whole number of seconds.
+          ptimeout=()
+          if [ -n "$TEST_TIMEOUT" ]; then
+            if ! [[ "$TEST_TIMEOUT" =~ ^[1-9][0-9]{0,5}$ ]]; then
+              echo "::error title=pytest-timeout-seconds::pytest-timeout-seconds must be empty or a positive whole number of seconds, not '$TEST_TIMEOUT'"
+              exit 1
+            fi
+            # Ask the pytest that will run: it lists --timeout only when pytest-timeout is loaded in its environment.
+            help="$(pytest --help 2>&1 || true)"
+            if ! grep -q -- '--timeout' <<< "$help"; then
+              echo "::error title=No pytest-timeout::pytest runs with --timeout $TEST_TIMEOUT but pytest-timeout is not installed. Add pytest-timeout to the project's dev dependencies (and refresh uv.lock), or set pytest-timeout-seconds to empty."
+              exit 1
+            fi
+            ptimeout=("--timeout=$TEST_TIMEOUT")
+          fi
           report="$RUNNER_TEMP/coverage.json"
           rm -f "$report"
           if [ "$RATCHET" = true ]; then
@@ -480,11 +536,11 @@ jobs:
             # -rfE lists every failing and erroring id. The coverage floor below still holds, whatever the ids say.
             output="$RUNNER_TEMP/pytest.out"
             # The step runs under `bash -e` without pipefail, so the pipeline ends in tee's status; pytest's is read after it.
-            pytest "${xdist[@]}" "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
+            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
             status=${PIPESTATUS[0]}
             python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
           else
-            pytest "${xdist[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
           fi
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
@@ -516,14 +572,15 @@ jobs:
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 20
         with:
           persist-credentials: false
       - uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+        timeout-minutes: 20
         with:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
@@ -531,24 +588,28 @@ jobs:
           tools: reuse pip-audit zizmor gitleaks
           sync: "false"
       - name: Licences (REUSE)
+        timeout-minutes: 20
         run: reuse lint
       - name: Known vulnerabilities in the locked dependencies
+        timeout-minutes: 20
         run: |
           uv export --locked --no-emit-workspace --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
           pip-audit --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
       - name: Secrets in the tree
+        timeout-minutes: 20
         run: gitleaks dir --redact --no-banner .
       - name: Workflow security
+        timeout-minutes: 20
         run: zizmor --offline --config "$ZIZMOR_CONFIG" .github
 
   gate:
     needs: [changes, lint, test, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 5
     permissions: {}
     steps:
       - name: Every gate succeeded
+        timeout-minutes: 5
         env:
           OWN: ${{ toJSON(needs) }}
           EXTRA: ${{ inputs.extra-jobs }}
