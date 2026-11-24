@@ -168,6 +168,8 @@ The policy now reads: step timeouts only; the host scheduler and priorities gove
 
 Confirmed by Andrea on 2026-11-24 from two runs (45411214286, 45424234440): the slot wait is in "Set up runner", counts toward the job-level timeout and not toward step timeouts.
 
+**Basis for the number.** This is Control's measurement of 2026-11-24, not Andrea's wording. The "about 2×" is taken on the step time measured under load, for example the slowest green run of the last week, not on a run made on an idle host. Lanes that took "2×" from an idle-host run were cancelled under load: AIRIA-DevTools' Pytest ran 29+ minutes and was cancelled at its 30-minute step limit on PRs #514, #519 and #525, and its plugin step was cancelled at 20 minutes (run 45447802374). Each lane re-checks its step timeout numbers against this basis.
+
 ### Where the class table lives
 
 In `/etc/ci-slots.d/classes.conf` on the hosts. It is infra's: do not edit it.
