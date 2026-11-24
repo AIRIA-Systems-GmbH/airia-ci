@@ -154,7 +154,7 @@ This replaces the "+20 minutes on `timeout-minutes`" advice in the previous subs
 1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs.
 2. The `test` job's own `timeout-minutes` is 120, a backstop above the step limit and the gate's maximum slot wait.
 3. `pytest-timeout-seconds` (string, default empty = off) runs pytest with `--timeout=N`, per test. It must be a positive whole number. A project that sets it needs `pytest-timeout` in its dev dependencies, or the job fails with `No pytest-timeout`. The template's dev group has the plugin and `timeout = 300`.
-4. `changes` (5 min), `lint` (20), `security` (20) and `gate` (5) keep their short limits.
+4. `changes` (5 min), `lint` (20) and `security` (20) keep their short limits. Exception: `gate` is 120, not 5. Result-reading aggregator jobs (`gate`, `daemon-tests`) spent their whole life in "Set up runner" and were cancelled by the 5-minute cap (AIRIA-process runs 45424234440 and 45411214286, and BookAI), because the host still classes them as test jobs; airia-ci#159 is open with no infra answer yet. So point 4 does not hold for `gate` until that class fix lands; the real limit is the step, and `gate` is not shortened again before then.
 
 The claim that the slot wait is not counted by a step timeout is Andrea's. It is unverified until a caller's first run shows it; the check stays open in airia-ci#161.
 

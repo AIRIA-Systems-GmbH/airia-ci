@@ -116,8 +116,8 @@ name: AIRIA Python gate (shared)
 # whole number, about 2x the suite's normal time. The `test` job's own `timeout-minutes` is 120, a
 # backstop above that step and above the slot wait. `pytest-timeout-seconds` (default empty = off)
 # adds `--timeout=N` so a deadlocked test fails fast and is named; a project that sets it must have
-# pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`. `changes`, `lint`,
-# `security` and `gate` keep their short limits. Whether the slot wait ("Set up runner") stays out of
+# pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`. `changes`, `lint`
+# and `security` keep their short limits; `gate` is 120 too until airia-ci#159 is fixed. Whether the slot wait ("Set up runner") stays out of
 # the step timeout is Andrea's claim, to be checked on a caller's first run.
 #
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
@@ -596,7 +596,9 @@ jobs:
     needs: [changes, lint, test, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 5
+    # 120, not short: the host still classes this job as a test job, so it can be held for a slot until
+    # infra's class fix lands (airia-ci#159); the real limit is the pytest step. Do not shorten it before then.
+    timeout-minutes: 120
     permissions: {}
     steps:
       - name: Every gate succeeded

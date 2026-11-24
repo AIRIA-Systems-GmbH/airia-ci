@@ -124,7 +124,7 @@ class Shape(unittest.TestCase):
         self.assertEqual(check["env"]["STEP_TIMEOUT"], "${{ inputs.test-timeout-minutes }}")
         self.assertLess(steps.index(check), steps.index(pytest), "refused before pytest")
         self.assertEqual({n: JOBS[n]["timeout-minutes"] for n in ("changes", "lint", "security", "gate")},
-                         {"changes": 5, "lint": 20, "security": 20, "gate": 5})
+                         {"changes": 5, "lint": 20, "security": 20, "gate": 120})  # gate: #159
 
     def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
         # airia-ci#156: nothing here may fail a job or cap it, so the job keeps its 60 minutes and no concurrency.
