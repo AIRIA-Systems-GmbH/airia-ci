@@ -95,7 +95,8 @@ class CiLocal(unittest.TestCase):
     def test_its_commands_are_the_gates_own(self):
         # The gate's lines, with its variable names, are ci-local's after `uv run`.
         ours = SCRIPT.read_text().replace("\\\n  ", "")
-        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations"}
+        # The gate adds `-n $WORKERS`; ci-local leaves -n to the project's addopts and caps `auto` with the env.
+        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations", '"${xdist[@]}" ': ""}
         seen = 0
         ratchet_lines = []
         for name in ("Ruff", "Type check", "Pytest at the coverage floor"):
@@ -317,7 +318,7 @@ class CiLocalWriteDebtBaseline(unittest.TestCase):
         pytest = [line for line in lines if re.match(r"pytest .* -rfE ", line)]
         self.assertEqual((len(pyright), len(pytest)), (1, 1), lines)
         self.assertIn("uv run " + pyright[0].split(" > ")[0], ours)
-        cmd = pytest[0].split(" 2>&1")[0].replace("$DURATIONS", "$durations").replace('"--cov-fail-under=$FLOOR"',
+        cmd = pytest[0].split(" 2>&1")[0].replace('"${xdist[@]}" ', "").replace("$DURATIONS", "$durations").replace('"--cov-fail-under=$FLOOR"',
                                                                                          '"--cov-fail-under=0"')
         self.assertIn("uv run " + cmd, ours)
 

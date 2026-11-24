@@ -266,6 +266,7 @@ uvx zizmor@<pin> --offline .github
 | `extra-jobs` | your own gate jobs, counted by `ci / gate` | see below |
 | `runner` | GitHub's runners (`'["ubuntu-24.04"]'`) for a public repository or one outside AIRIA-Systems-GmbH | |
 | `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
+| `pytest-workers` | pytest-xdist workers for the test job (default `4`: `-n 4`); a positive number or `auto`; empty keeps your own addopts | needs `pytest-xdist` in your dev dependencies, or the job fails with `No xdist`. The test job also joins one of two FIFO lanes per repository, so at most two pytest runs per repository are active at once (airia-ci#154) |
 | `docs-paths` | the docs-only fast path, see below | some paths are never docs |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
 

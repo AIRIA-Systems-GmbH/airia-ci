@@ -95,6 +95,14 @@ name: AIRIA Python gate (shared)
 # Without `if: always()` a red extra job skips the whole call: `ci / gate`
 # then never reports, and the PR waits on it rather than merging.
 #
+# TEST-RUN BOUNDARIES (airia-ci#154). Runners have 8-16 cores and a pytest at xdist `-n 4`
+# takes half of that, so (a) the test job runs pytest with `-n <pytest-workers>` (default 4;
+# empty keeps the project's addopts; a missing pytest-xdist fails the job, never a silent
+# serial run) and (b) at most TWO test jobs per repository run at once, across all its pull
+# requests: the job joins one of two FIFO lanes (`concurrency` with `queue: max`), picked
+# from the last digit of `github.run_id`. All matrix legs of one run share a lane and so run
+# one after another.
+#
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
 # job has two slots, started only when their image is set: Postgres-compatible
 # (`postgres-image`, user/password/database `postgres`) and Qdrant. Their
@@ -169,6 +177,14 @@ on:
         required: false
         type: string
         default: '["self-hosted","linux","x64","thor"]'
+      pytest-workers:
+        description: >-
+          pytest-xdist workers for the test job (`-n N`): a positive whole number or `auto`.
+          Default 4. Empty leaves the project's own addopts untouched. A project that gets
+          `-n` must have pytest-xdist in its dev dependencies, or the job fails saying so.
+        required: false
+        type: string
+        default: "4"
       durations:
         description: >-
           How many of the slowest tests pytest lists after every run
@@ -368,6 +384,12 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    # Two lanes per repository, FIFO (queue: max, so nothing is cancelled and nothing is dropped).
+    # Expressions have no arithmetic: an odd last digit of run_id is lane b, an even one lane a.
+    # Every matrix leg of a run has the same run_id, hence the same lane, and runs one after another.
+    concurrency:
+      group: airia-pytest-${{ github.repository }}-${{ (endsWith(github.run_id, '1') || endsWith(github.run_id, '3') || endsWith(github.run_id, '5') || endsWith(github.run_id, '7') || endsWith(github.run_id, '9')) && 'b' || 'a' }}
+      queue: max
     strategy:
       fail-fast: false
       matrix:
@@ -408,11 +430,27 @@ jobs:
           # With debt-ratchet the toolchain's floor (a valid baseline's, maybe under 90); else the input.
           FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
           DURATIONS: ${{ inputs.durations }}
+          WORKERS: ${{ inputs.pytest-workers }}
           RATCHET: ${{ inputs.debt-ratchet }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
             echo "::error title=durations::durations must be a whole number of tests to list (0 lists all), not '$DURATIONS'"
             exit 1
+          fi
+          # Empty: the project's own addopts decide. Else a positive whole number or auto.
+          xdist=()
+          if [ -n "$WORKERS" ]; then
+            if ! [[ "$WORKERS" =~ ^([1-9][0-9]*|auto)$ ]]; then
+              echo "::error title=pytest-workers::pytest-workers must be empty, a positive whole number or auto, not '$WORKERS'"
+              exit 1
+            fi
+            # Ask the pytest that will run: it lists -n only when pytest-xdist is loaded in its environment.
+            help="$(pytest --help 2>&1 || true)"
+            if ! grep -q -- '--numprocesses' <<< "$help"; then
+              echo "::error title=No xdist::pytest runs with -n $WORKERS but pytest-xdist is not installed. Add pytest-xdist to the project's dev dependencies (and refresh uv.lock), or set pytest-workers to empty."
+              exit 1
+            fi
+            xdist=(-n "$WORKERS")
           fi
           report="$RUNNER_TEMP/coverage.json"
           rm -f "$report"
@@ -421,11 +459,11 @@ jobs:
             # -rfE lists every failing and erroring id. The coverage floor below still holds, whatever the ids say.
             output="$RUNNER_TEMP/pytest.out"
             # The step runs under `bash -e` without pipefail, so the pipeline ends in tee's status; pytest's is read after it.
-            pytest "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
+            pytest "${xdist[@]}" "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
             status=${PIPESTATUS[0]}
             python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
           else
-            pytest "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+            pytest "${xdist[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
           fi
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
