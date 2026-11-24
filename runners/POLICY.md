@@ -155,7 +155,7 @@ This is infra's change to the runner hosts' scheduler, announced by Andrea on 20
 
 > New update to the CI Runners, now oldest PRs get priority so they complete faster, the priority is set by the lowest GitHub ID
 
-For a job waiting at "Set up runner", this means the oldest pull request goes first, ordered by lowest GitHub ID, as announced.
+For a job waiting at "Set up runner", this means the oldest pull request goes first, ordered by lowest GitHub ID, as announced. The announcement does not say which id is meant (the pull request number, its database id or the author's user id); this is open until infra confirms the key.
 
 ## Changes to the pool are announced first
 
