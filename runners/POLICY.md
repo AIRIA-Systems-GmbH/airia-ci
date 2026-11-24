@@ -96,6 +96,8 @@ Jobs share one `~/.gitconfig`, and two jobs writing `git config --global` at the
 
 What the scripts and Issues show, and nothing more:
 
+- **Read the figures below as of 2026-10-24 to 2026-10-26.** Since 2026-11-24 the hosts enforce a per-host test-job budget; see "CI brief for projects (infra, 2026-11-24)" below, which wins for test jobs.
+
 - **Runners per repository.** `register.sh <repo> [count]` registers `count` runners per repository, default 2 (`thor-1`, `thor-2`, …), one service each, persistent. Each runner executes one job at a time. The pool's concurrent job capacity is the sum over registered repositories; the live total is read with `gh api /repos/<repo>/actions/runners` per repository (`register.sh` prints it) and is not recorded here.
 - **Names in the Issues differ from the script's.** #27 and #35 report runners named `org-orlando-2`, `org-orlando-4` and `thor-org-5`, which `add-runner.sh` does not generate (`thor-<index>`). The pool therefore has runners registered some other way (an organisation-level registration). Which scripts or steps created them is **to confirm**; until then this directory does not describe the whole pool.
 - **Container resources.** No script here sets them. Measured on 2026-10-24 (read-only snapshot, [#27](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/27) Step 0), at an idle moment, not a burst:
@@ -116,7 +118,7 @@ What the scripts and Issues show, and nothing more:
 
 ## CI brief for projects (infra, 2026-11-24)
 
-Owned by infra (the Sysadmin); the runner hosts enforce it. airia-ci only carries this text, so it is versioned where the runner scripts live. It is the brief as infra sent it on 2026-11-24, lightly edited into this section. It is not a statement of this repository's own measurements: where it differs from the "Capacity and concurrency" section above (which records 2026-10-24 to 2026-10-26 and says nothing here limits concurrent jobs), both stand and the difference is open.
+Owned by infra (the Sysadmin); the runner hosts enforce it. airia-ci only carries this text, so it is versioned where the runner scripts live. It is the brief as infra sent it on 2026-11-24, lightly edited into this section. It is not a statement of this repository's own measurements: where it differs from the "Capacity and concurrency" section above (which records 2026-10-24 to 2026-10-26 and says nothing here limits concurrent jobs), both stand and the difference is open. No `runner` Issue announcing this concurrency enforcement was found among the repository's `runner`-labelled issues (checked 2026-11-24: #148, #115, #53, #50, #35, #29 and #27 are the ones there, none about it), so the "announced first" rule below was not followed for it.
 
 No workflow change is required. This tells you how your jobs now behave.
 
