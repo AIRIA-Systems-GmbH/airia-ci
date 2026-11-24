@@ -141,6 +141,23 @@ At most 4 GB per job (AIRIA-DevTools at most 5 GB). Tear down test-spawned serve
 
 The log prints `ci-slot: waiting N min ... position k/n`. Assume the time spent waiting for a slot counts toward the job timeout, so add about 20 min of headroom to `timeout-minutes`.
 
+Superseded: the +20 minutes of headroom is replaced by the "Timeouts (Andrea, 2026-11-24)" subsection below; infra's text above stays as sent.
+
+### Timeouts (Andrea, 2026-11-24)
+
+Andrea's ruling, relayed by Control and announced in airia-ci#161, verbatim:
+
+> Don't drop timeouts entirely: the hosts don't kill a hung job whose runner is still alive, so it would hold its slot for GitHub's 360-minute default. Instead: (1) put the real limit as timeout-minutes on the test step (≈ 2× the suite's normal time). The host's slot wait happens in "Set up runner", before any step, so a step timeout doesn't include it; please check this on the first run. (2) Keep a job-level backstop of ~120 min (the gate's maximum wait is 60 min). (3) Add pytest-timeout per test, e.g. --timeout=300, so a deadlock fails fast and names the test. (4) Keep short timeouts on aggregator/lint jobs, which no longer wait.
+
+This replaces the "+20 minutes on `timeout-minutes`" advice in the previous subsection. How `reusable-python-gate.yml` carries it:
+
+1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs.
+2. The `test` job's own `timeout-minutes` is 120, a backstop above the step limit and the gate's maximum slot wait.
+3. `pytest-timeout-seconds` (string, default empty = off) runs pytest with `--timeout=N`, per test. It must be a positive whole number. A project that sets it needs `pytest-timeout` in its dev dependencies, or the job fails with `No pytest-timeout`. The template's dev group has the plugin and `timeout = 300`.
+4. `changes` (5 min), `lint` (20), `security` (20) and `gate` (5) keep their short limits.
+
+The claim that the slot wait is not counted by a step timeout is Andrea's. It is unverified until a caller's first run shows it; the check stays open in airia-ci#161.
+
 ### Where the class table lives
 
 In `/etc/ci-slots.d/classes.conf` on the hosts. It is infra's: do not edit it.

@@ -443,7 +443,7 @@ class Pyproject(unittest.TestCase):
         self.assertIn("pytest==9.0.0", dev, "an older one is reported, not rewritten")
         self.assertIn("httpx>=0.27", dev)
         self.assertNotIn("ruff==0.17.0", dev)
-        for spec in ("pyright[nodejs]==1.1.414", "pytest-cov==7.1.0", "pytest-xdist==3.8.0", "coverage==7.16.2"):
+        for spec in ("pyright[nodejs]==1.1.414", "pytest-cov==7.1.0", "pytest-xdist==3.8.0", "pytest-timeout==2.4.0", "coverage==7.16.2"):
             self.assertIn(spec, dev)
         self.assertIn("warning: the dev group has pytest==9.0.0, below the standard's pytest==9.1.1", out)
         self.assertIn("kept      ruff==0.99.0 in the dev group (exists)", out)

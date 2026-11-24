@@ -47,10 +47,12 @@ exit "$code"
 # pytest: also writes the JSON coverage report it was asked for, at $FAKE_PERCENT.
 FAKE_PYTEST = """\
 #!/bin/sh
-# `pytest --help` lists -n/--numprocesses only when pytest-xdist is loaded (here: unless $FAKE_NO_XDIST).
+# `pytest --help` lists -n/--numprocesses only when pytest-xdist is loaded (here: unless $FAKE_NO_XDIST), and
+# --timeout only when pytest-timeout is (unless $FAKE_NO_PTIMEOUT).
 if [ "$1" = --help ]; then
   echo "  --cov=SOURCE"
   [ -z "$FAKE_NO_XDIST" ] && echo "  -n numprocesses, --numprocesses=numprocesses"
+  [ -z "$FAKE_NO_PTIMEOUT" ] && echo "  --timeout=TIMEOUT     Timeout in seconds for each test (pytest-timeout)"
   exit 0
 fi
 echo "pytest $*" >> "$(dirname "$0")/calls"
@@ -69,7 +71,8 @@ class Shape(unittest.TestCase):
         self.assertEqual(set(INPUTS), {
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
-            "extra-prompt", "debt-ratchet", "pytest-workers", "test-budget-minutes"})
+            "extra-prompt", "debt-ratchet", "pytest-workers", "test-timeout-minutes",
+            "pytest-timeout-seconds", "test-budget-minutes"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -105,11 +108,29 @@ class Shape(unittest.TestCase):
         pytest = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Pytest at the coverage floor")
         self.assertEqual(pytest["env"]["WORKERS"], "${{ inputs.pytest-workers }}")
 
+    def test_the_timeouts_are_a_step_limit_a_job_backstop_and_an_opt_in_per_test_limit(self):
+        # airia-ci#161: step limit ~2x the suite, job backstop 120, aggregator/lint limits untouched.
+        self.assertEqual(INPUTS["test-timeout-minutes"]["type"], "string")
+        self.assertEqual(INPUTS["test-timeout-minutes"]["default"], "60", "today's limit: no caller turns red")
+        self.assertEqual(INPUTS["pytest-timeout-seconds"]["type"], "string")
+        self.assertEqual(INPUTS["pytest-timeout-seconds"]["default"], "", "off unless a caller opts in")
+        steps = JOBS["test"]["steps"]
+        pytest = next(s for s in steps if s.get("name") == "Pytest at the coverage floor")
+        self.assertEqual(pytest["timeout-minutes"], "${{ fromJSON(inputs.test-timeout-minutes) }}")
+        self.assertEqual(pytest["env"]["TEST_TIMEOUT"], "${{ inputs.pytest-timeout-seconds }}")
+        self.assertEqual(JOBS["test"]["timeout-minutes"], 120)
+        self.assertGreater(JOBS["test"]["timeout-minutes"], int(INPUTS["test-timeout-minutes"]["default"]))
+        check = next(s for s in steps if s.get("name") == "Test timeout check")
+        self.assertEqual(check["env"]["STEP_TIMEOUT"], "${{ inputs.test-timeout-minutes }}")
+        self.assertLess(steps.index(check), steps.index(pytest), "refused before pytest")
+        self.assertEqual({n: JOBS[n]["timeout-minutes"] for n in ("changes", "lint", "security", "gate")},
+                         {"changes": 5, "lint": 20, "security": 20, "gate": 5})
+
     def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
         # airia-ci#156: nothing here may fail a job or cap it, so the job keeps its 60 minutes and no concurrency.
         self.assertEqual(INPUTS["test-budget-minutes"]["type"], "string")
         self.assertEqual(INPUTS["test-budget-minutes"]["default"], "10")
-        self.assertEqual(JOBS["test"]["timeout-minutes"], 60)
+        self.assertEqual(JOBS["test"]["timeout-minutes"], 120)  # the backstop (airia-ci#161), not a cap on the budget
         for name, job in JOBS.items():
             self.assertNotIn("concurrency", job, name)
         self.assertNotIn("concurrency", DOC)
@@ -344,6 +365,68 @@ class Steps(unittest.TestCase):
                 self.assertEqual(p.returncode, 1)
                 self.assertIn("::error title=test-budget-minutes::", p.stdout)
                 self.assertEqual(self.calls(), [])
+
+    def test_a_step_timeout_that_is_not_a_positive_whole_number_is_refused_before_pytest(self):
+        for t in ("", "0", "x; rm", "-5", "2.5", "060", "sixty", "1000000"):
+            with self.subTest(timeout=t):
+                p = self.run_step("Test timeout check", STEP_TIMEOUT=t)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=test-timeout-minutes::", p.stdout)
+                self.assertEqual(self.calls(), [])
+
+    def test_a_positive_whole_step_timeout_is_accepted(self):
+        for t in ("60", "1", "120"):
+            with self.subTest(timeout=t):
+                self.assertEqual(self.run_step("Test timeout check", STEP_TIMEOUT=t).returncode, 0)
+
+    def pytest_step(self, **env):
+        return self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", **env)
+
+    def test_the_per_test_timeout_adds_timeout_to_pytest(self):
+        p = self.pytest_step(TEST_TIMEOUT="300")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith("pytest --timeout=300 --durations=25 "), call)
+
+    def test_workers_and_the_per_test_timeout_combine(self):
+        p = self.pytest_step(WORKERS="4", TEST_TIMEOUT="300")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(self.calls()[0].startswith("pytest -n 4 --timeout=300 --durations=25 "))
+
+    def test_no_per_test_timeout_means_no_flag_and_no_plugin_needed(self):
+        p = self.pytest_step(TEST_TIMEOUT="", FAKE_NO_PTIMEOUT="1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertTrue(call.startswith("pytest --durations=25 "), call)
+        self.assertNotIn("--timeout", call)
+
+    def test_a_per_test_timeout_that_is_not_a_positive_whole_number_is_refused_before_pytest(self):
+        for t in ("0", "x; rm", "-1", "2.5", "030", "5m", "3 4"):
+            with self.subTest(timeout=t):
+                p = self.pytest_step(TEST_TIMEOUT=t)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=pytest-timeout-seconds::", p.stdout)
+                self.assertEqual(self.calls(), [])
+
+    def test_a_per_test_timeout_without_the_plugin_fails_naming_the_fix_and_runs_nothing(self):
+        p = self.pytest_step(TEST_TIMEOUT="300", FAKE_NO_PTIMEOUT="1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No pytest-timeout::", p.stdout)
+        self.assertIn("Add pytest-timeout to the project's dev dependencies (and refresh uv.lock)", p.stdout)
+        self.assertIn("or set pytest-timeout-seconds to empty.", p.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_the_debt_ratchet_pytest_gets_the_timeout_too_and_fails_without_the_plugin(self):
+        debt = self.r.tmp / "debt.py"
+        debt.write_text("import sys\nprint('debt', *sys.argv[1:])\n")
+        p = self.pytest_step(TEST_TIMEOUT="300", RATCHET="true", AIRIA_DEBT=str(debt))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(self.calls()[0].startswith("pytest --timeout=300 --durations=25 -rfE "), self.calls())
+        self.r.bin.joinpath("calls").unlink()
+        p = self.pytest_step(TEST_TIMEOUT="300", RATCHET="true", FAKE_NO_PTIMEOUT="1")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No pytest-timeout::", p.stdout)
+        self.assertEqual(self.calls(), [])
 
     def test_workers_add_n_to_pytest(self):
         p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS="25", WORKERS="4")

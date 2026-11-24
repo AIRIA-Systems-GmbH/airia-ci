@@ -114,7 +114,7 @@ class Standard(unittest.TestCase):
         # A range or a bare name is what broke SiteBuilder (airia-ci#37).
         tools = self.pins["tools"]
         self.assertEqual(set(tools), {"uv", "ruff", "pyright", "mypy", "pytest", "pytest-cov", "coverage",
-                                      "pytest-xdist", "import-linter", "reuse", "pip-audit", "zizmor", "gitleaks"})
+                                      "pytest-xdist", "pytest-timeout", "import-linter", "reuse", "pip-audit", "zizmor", "gitleaks"})
         for name, version in [*tools.items(), *self.pins["harness"].items()]:
             with self.subTest(tool=name):
                 self.assertRegex(version, r"^\d+(\.\d+)+$")
@@ -165,7 +165,7 @@ class Template(unittest.TestCase):
         for spec in dev:
             name, version = re.fullmatch(r"([a-z-]+)(?:\[\w+\])?==([\d.]+)", spec).groups()
             found[name] = version
-        self.assertEqual(set(found), {"ruff", "pyright", "pytest", "pytest-cov", "pytest-xdist", "coverage"})
+        self.assertEqual(set(found), {"ruff", "pyright", "pytest", "pytest-cov", "pytest-xdist", "pytest-timeout", "coverage"})
         for name, version in found.items():
             with self.subTest(tool=name):
                 self.assertEqual(version, pins[name])
