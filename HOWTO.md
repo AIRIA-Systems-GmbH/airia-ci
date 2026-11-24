@@ -267,6 +267,7 @@ uvx zizmor@<pin> --offline .github
 | `runner` | GitHub's runners (`'["ubuntu-24.04"]'`) for a public repository or one outside AIRIA-Systems-GmbH | |
 | `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
 | `pytest-workers` | pytest-xdist workers for the test job (`-n N`); a positive number or `auto`; default empty, which keeps your own addopts (the intended shared default is 4, later) | needs `pytest-xdist` in your dev dependencies, or the job fails with `No xdist`. (airia-ci#154) |
+| `test-budget-minutes` | the minutes the test job's pytest step may take (default `10`; the wait for a runner slot is not counted); over it the job prints `::warning title=Test budget::` and a summary line; empty turns the report off | warning only, it never fails the job; anything but empty or a positive whole number is refused before pytest runs. (airia-ci#156) |
 | `docs-paths` | the docs-only fast path, see below | some paths are never docs |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
 

@@ -69,7 +69,7 @@ class Shape(unittest.TestCase):
         self.assertEqual(set(INPUTS), {
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
-            "extra-prompt", "debt-ratchet", "pytest-workers"})
+            "extra-prompt", "debt-ratchet", "pytest-workers", "test-budget-minutes"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -105,6 +105,25 @@ class Shape(unittest.TestCase):
         pytest = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Pytest at the coverage floor")
         self.assertEqual(pytest["env"]["WORKERS"], "${{ inputs.pytest-workers }}")
 
+    def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
+        # airia-ci#156: nothing here may fail a job or cap it, so the job keeps its 60 minutes and no concurrency.
+        self.assertEqual(INPUTS["test-budget-minutes"]["type"], "string")
+        self.assertEqual(INPUTS["test-budget-minutes"]["default"], "10")
+        self.assertEqual(JOBS["test"]["timeout-minutes"], 60)
+        for name, job in JOBS.items():
+            self.assertNotIn("concurrency", job, name)
+        self.assertNotIn("concurrency", DOC)
+        steps = JOBS["test"]["steps"]
+        names = [s.get("name") for s in steps]
+        i = names.index("Pytest at the coverage floor")
+        self.assertEqual(names[i - 1:i + 2], ["Test budget clock", "Pytest at the coverage floor", "Test budget report"])
+        clock, report = steps[i - 1], steps[i + 1]
+        self.assertEqual(clock["env"]["BUDGET"], "${{ inputs.test-budget-minutes }}")
+        self.assertEqual(report["env"]["BUDGET"], "${{ inputs.test-budget-minutes }}")
+        self.assertEqual(report["env"]["STARTED"], f"${{{{ steps.{clock['id']}.outputs.epoch }}}}")
+        self.assertEqual(report["if"], "always()")
+        self.assertNotIn("continue-on-error", report)
+
     def test_the_defaults_are_the_standard(self):
         self.assertEqual(INPUTS["coverage-floor"]["default"], PINS["standard"]["coverage-floor"])
         self.assertEqual(INPUTS["type-checker"]["default"], PINS["standard"]["type-checkers"][0])
@@ -129,7 +148,7 @@ class Shape(unittest.TestCase):
                 self.assertNotIn("continue-on-error", job)
                 for s in job["steps"]:
                     self.assertNotIn("continue-on-error", s)
-                    if not s.get("uses", "").startswith("actions/checkout@"):
+                    if not s.get("uses", "").startswith("actions/checkout@") and s.get("name") != "Test budget report":
                         self.assertNotIn("if", s)
 
     def test_changes_reads_the_merge_commit_only_when_it_needs_to(self):
@@ -266,6 +285,64 @@ class Steps(unittest.TestCase):
                 p = self.run_step("Pytest at the coverage floor", FLOOR="90", FAKE_PERCENT="95", DURATIONS=n)
                 self.assertEqual(p.returncode, 1)
                 self.assertIn("::error title=durations::", p.stdout)
+                self.assertEqual(self.calls(), [])
+
+    def budget_step(self, now: int, budget: str, started: str):
+        # `date` is faked, so the elapsed time is exact: the shipped block reads the clock only through it.
+        self.r.tool("date", f"#!/bin/sh\necho {now}\n")
+        return self.run_step("Test budget report", BUDGET=budget, STARTED=started)
+
+    def summary(self) -> str:
+        return self.r.summary.read_text() if self.r.summary.exists() else ""
+
+    def test_a_pytest_within_the_budget_is_summarised_without_a_warning(self):
+        p = self.budget_step(1000 + 9 * 60, "10", "1000")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertNotIn("::warning", p.stdout)
+        self.assertEqual(self.summary().strip(), "pytest took 9 min, within the 10-minute budget")
+
+    def test_a_pytest_over_the_budget_warns_with_both_numbers_and_never_fails(self):
+        # 10 min 1 s rounds up to 11.
+        p = self.budget_step(1000 + 10 * 60 + 1, "10", "1000")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        line = "pytest took 11 min against a budget of 10 min (airia-ci#156)"
+        self.assertIn(f"::warning title=Test budget::{line}", p.stdout)
+        self.assertEqual(self.summary().strip(), line)
+
+    def test_a_pytest_exactly_at_the_budget_does_not_warn(self):
+        p = self.budget_step(1000 + 10 * 60, "10", "1000")
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("::warning", p.stdout)
+        self.assertIn("within the 10-minute budget", self.summary())
+
+    def test_an_empty_budget_turns_the_report_off(self):
+        p = self.budget_step(1000 + 99 * 60, "", "1000")
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("::warning", p.stdout)
+        self.assertEqual(self.summary(), "")
+
+    def test_a_missing_start_epoch_ends_zero_with_nothing_reported(self):
+        for started in ("", "x"):
+            with self.subTest(started=started):
+                p = self.budget_step(5000, "10", started)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertNotIn("::warning", p.stdout)
+                self.assertEqual(self.summary(), "")
+
+    def test_the_clock_step_records_the_start_epoch(self):
+        self.r.tool("date", "#!/bin/sh\necho 1234\n")
+        p = self.run_step("Test budget clock", BUDGET="10")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.r.outputs()["epoch"], "1234")
+        p = self.run_step("Test budget clock", BUDGET="")
+        self.assertEqual(p.returncode, 0)
+
+    def test_a_budget_that_is_not_a_positive_whole_number_is_refused_before_pytest(self):
+        for b in ("0", "x; rm", "-5", "2.5", "010", "ten"):
+            with self.subTest(budget=b):
+                p = self.run_step("Test budget clock", BUDGET=b)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=test-budget-minutes::", p.stdout)
                 self.assertEqual(self.calls(), [])
 
     def test_workers_add_n_to_pytest(self):
