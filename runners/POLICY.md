@@ -96,6 +96,8 @@ Jobs share one `~/.gitconfig`, and two jobs writing `git config --global` at the
 
 What the scripts and Issues show, and nothing more:
 
+- **Read the figures below as of 2026-10-24 to 2026-10-26.** Since 2026-11-24 the hosts enforce a per-host test-job budget; see "CI brief for projects (infra, 2026-11-24)" below, which wins for test jobs.
+
 - **Runners per repository.** `register.sh <repo> [count]` registers `count` runners per repository, default 2 (`thor-1`, `thor-2`, …), one service each, persistent. Each runner executes one job at a time. The pool's concurrent job capacity is the sum over registered repositories; the live total is read with `gh api /repos/<repo>/actions/runners` per repository (`register.sh` prints it) and is not recorded here.
 - **Names in the Issues differ from the script's.** #27 and #35 report runners named `org-orlando-2`, `org-orlando-4` and `thor-org-5`, which `add-runner.sh` does not generate (`thor-<index>`). The pool therefore has runners registered some other way (an organisation-level registration). Which scripts or steps created them is **to confirm**; until then this directory does not describe the whole pool.
 - **Container resources.** No script here sets them. Measured on 2026-10-24 (read-only snapshot, [#27](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/27) Step 0), at an idle moment, not a burst:
@@ -112,7 +114,40 @@ What the scripts and Issues show, and nothing more:
 - **A burst of about 15 PR runs.** On 2026-10-13, four night runs' PRs plus four backlog PRs opened within one minute started roughly 15 workflow runs together. Two jobs on two runners timed out (a 124 exit from the job's timeout wrapper; two `pytest-timeout` 300 s setup errors) in PRs that changed only `BACKLOG.md` ([#27](https://github.com/AIRIA-Systems-GmbH/airia-ci/issues/27)). #27's hypothesis, not a measurement: the burst saturates CPU or IO. The pool has no queue limit, no admission control and no per-consumer share; nothing in this directory limits how many jobs run at once beyond the number of runners.
 - **Superseding in-flight runs.** [`add-concurrency.py`](add-concurrency.py) adds a `concurrency:` group per workflow and ref that cancels the previous run on a PR branch (`main` is exempt). It reduces the burst a push causes; it does not limit a burst of different PRs.
 - **Measured on CT 144 (2026-10-24 to 2026-10-26, 8 runners):** the container carried 8 runners with no timeout, and queue wait (job created to started) was median 2 s and p90 365 s overall, and median 319 s, p90 691 s, max 1,108 s when 7 or more CT 144 jobs were running at creation. Jobs that ran with six or more CT 144 jobs in flight, themselves included, took a median 11 % longer than the median of the same job. The largest runner count CT 144 carries without timeouts is answered at 8; raising it is closed (Andrea, 2026-10-25, #27).
-- **To measure before any number is set:** CPU and IO load during a 15-run burst (the largest seen was 8 runs in a minute); the Orlando VM's load and queue time (its log is unread). No runner count or concurrency cap is stated here until those exist.
+- **To measure before any number is set:** CPU and IO load during a 15-run burst (the largest seen was 8 runs in a minute); the Orlando VM's load and queue time (its log is unread). No cap measured by this repository is stated here; the enforced budget is in the CI brief below.
+
+## CI brief for projects (infra, 2026-11-24)
+
+Owned by infra (the Sysadmin); the runner hosts enforce it. airia-ci only carries this text, so it is versioned where the runner scripts live. It is the brief as infra sent it on 2026-11-24, lightly edited into this section. It is not a statement of this repository's own measurements: where it differs from the "Capacity and concurrency" section above (which records 2026-10-24 to 2026-10-26 and says nothing here limits concurrent jobs), both stand and the difference is open. No `runner` Issue announcing this concurrency enforcement was found among the repository's `runner`-labelled issues (checked 2026-11-24: #148, #115, #53, #50, #35, #29 and #27 are the ones there, none about it), so the "announced first" rule below was not followed for it.
+
+No workflow change is required. This tells you how your jobs now behave.
+
+### Job classes and the per-host test budget
+
+Before every job, the runner host classifies it.
+
+- **Light jobs:** lint, ruff, pyright, review, scans and publish jobs never wait and get 1 core.
+- **Test jobs:** every other job is a test job. It gets 4 cores and 4 GB (AIRIA-DevTools: 5 GB).
+- **Per-host budget:** a test job waits at "Set up runner" until its host has 4 free cores. Thor runs at most 3 test jobs at once, orlando (vm16) at most 2.
+- **CPU cap:** the job's runner is hard-capped at its 4 cores (cgroup CPUQuota). `-n 8` or `-n auto` on a big box cannot take more; it only makes your suite slower.
+- **Environment:** the job carries `PYTEST_XDIST_AUTO_NUM_WORKERS=4`, `CARGO_BUILD_JOBS=4`, `RUST_TEST_THREADS=4` and `NEXTEST_TEST_THREADS=4`. Use `-n auto` or `-n 4`, nothing higher.
+- **What infra asks of each project:** every test job at most 10 min wall time at `-n 4`. Today AIRIA-DevTools takes about 27 min and Portfolio about 45 min, and a long job holds a third to half of a host. Split slow suites into parallel jobs (each takes its own slot) or speed them up. Serial `-n0` jobs (AIRIA-process `tests`) waste 3 of their 4 cores.
+
+### Per-job memory limit
+
+At most 4 GB per job (AIRIA-DevTools at most 5 GB). Tear down test-spawned servers (uvicorn) at session end. Thor's pool OOM-kills over-budget jobs.
+
+### Slot wait and `timeout-minutes`
+
+The log prints `ci-slot: waiting N min ... position k/n`. Assume the time spent waiting for a slot counts toward the job timeout, so add about 20 min of headroom to `timeout-minutes`.
+
+### Where the class table lives
+
+In `/etc/ci-slots.d/classes.conf` on the hosts. It is infra's: do not edit it.
+
+### Reporting a mis-classed job
+
+If a job is mis-classed (a light job that really runs tests, or a test job that is really light), send infra (the Sysadmin) the `<repo>/<workflow>/<job id>` of the job and which way it is wrong. Do not edit the table; it is infra's.
 
 ## Changes to the pool are announced first
 
