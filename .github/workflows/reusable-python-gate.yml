@@ -102,6 +102,14 @@ name: AIRIA Python gate (shared)
 # A project that sets it must have pytest-xdist in its dev dependencies: without it the job
 # fails with `No xdist`, never a silent serial run.
 #
+# TEST BUDGET (airia-ci#156). `test-budget-minutes` (default 10) is the time one pytest run may
+# take: Andrea, 2026-11-24, "a suite runs in 10 minutes or less". The test job times its pytest
+# step alone (the wait for a runner slot before the job starts is not counted), rounds up to a
+# whole minute and, over the budget, prints `::warning title=Test budget::` and adds the line to
+# the job summary. WARNING ONLY, it never fails the job (a bad value for the input does, before
+# pytest runs); the job's `timeout-minutes` stays 60. A positive whole number sets the budget,
+# empty turns the report off.
+#
 # SERVICES. A reusable workflow cannot take a `services:` block, so the test
 # job has two slots, started only when their image is set: Postgres-compatible
 # (`postgres-image`, user/password/database `postgres`) and Qdrant. Their
@@ -185,6 +193,14 @@ on:
         required: false
         type: string
         default: ""
+      test-budget-minutes:
+        description: >-
+          The minutes the test job's pytest run may take (default 10; the slot wait is not counted).
+          A positive whole number; over it the job prints a warning and a summary line, and never
+          fails because of it. Empty turns the report off.
+        required: false
+        type: string
+        default: "10"
       durations:
         description: >-
           How many of the slowest tests pytest lists after every run
@@ -419,6 +435,17 @@ jobs:
           debt-ratchet: ${{ inputs.debt-ratchet }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
+      - name: Test budget clock
+        id: budget-clock
+        env:
+          BUDGET: ${{ inputs.test-budget-minutes }}
+        run: |
+          # Empty turns the report off; anything but a positive whole number is refused before pytest runs.
+          if [ -n "$BUDGET" ] && ! [[ "$BUDGET" =~ ^[1-9][0-9]{0,5}$ ]]; then
+            echo "::error title=test-budget-minutes::test-budget-minutes must be empty or a positive whole number of minutes, not '$BUDGET'"
+            exit 1
+          fi
+          echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
       - name: Pytest at the coverage floor
         env:
           # With debt-ratchet the toolchain's floor (a valid baseline's, maybe under 90); else the input.
@@ -464,6 +491,28 @@ jobs:
             exit 1
           fi
           jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
+      - name: Test budget report
+        if: always()
+        env:
+          BUDGET: ${{ inputs.test-budget-minutes }}
+          STARTED: ${{ steps.budget-clock.outputs.epoch }}
+        run: |
+          # Warning only: this step ends 0 in every case, so it never turns a green job red or hides a red one.
+          if [ -z "$BUDGET" ] || ! [[ "$BUDGET" =~ ^[1-9][0-9]{0,5}$ ]] || ! [[ "$STARTED" =~ ^[0-9]+$ ]]; then
+            echo "No test budget report: budget '$BUDGET', start '$STARTED'."
+            exit 0
+          fi
+          seconds=$(( $(date +%s) - STARTED ))
+          [ "$seconds" -ge 0 ] || seconds=0
+          minutes=$(( (seconds + 59) / 60 ))
+          if [ "$minutes" -gt "$BUDGET" ]; then
+            line="pytest took $minutes min against a budget of $BUDGET min (Andrea 2026-11-24: a suite runs in 10 minutes or less)"
+            echo "::warning title=Test budget::$line"
+            echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "pytest took $minutes min, within the $BUDGET-minute budget" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
