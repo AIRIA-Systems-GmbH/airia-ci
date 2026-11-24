@@ -108,8 +108,8 @@ class Shape(unittest.TestCase):
         pytest = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Pytest at the coverage floor")
         self.assertEqual(pytest["env"]["WORKERS"], "${{ inputs.pytest-workers }}")
 
-    def test_the_timeouts_are_a_step_limit_a_job_backstop_and_an_opt_in_per_test_limit(self):
-        # airia-ci#161: step limit ~2x the suite, job backstop 120, aggregator/lint limits untouched.
+    def test_the_timeouts_are_step_limits_only_and_an_opt_in_per_test_limit(self):
+        # airia-ci#161: step limit ~2x the suite; no job has a timeout, the host scheduler governs the rest.
         self.assertEqual(INPUTS["test-timeout-minutes"]["type"], "string")
         self.assertEqual(INPUTS["test-timeout-minutes"]["default"], "60", "today's limit: no caller turns red")
         self.assertEqual(INPUTS["pytest-timeout-seconds"]["type"], "string")
@@ -118,27 +118,24 @@ class Shape(unittest.TestCase):
         pytest = next(s for s in steps if s.get("name") == "Pytest at the coverage floor")
         self.assertEqual(pytest["timeout-minutes"], "${{ fromJSON(inputs.test-timeout-minutes) }}")
         self.assertEqual(pytest["env"]["TEST_TIMEOUT"], "${{ inputs.pytest-timeout-seconds }}")
-        self.assertEqual(JOBS["test"]["timeout-minutes"], 120)
-        self.assertGreater(JOBS["test"]["timeout-minutes"], int(INPUTS["test-timeout-minutes"]["default"]))
         check = next(s for s in steps if s.get("name") == "Test timeout check")
         self.assertEqual(check["env"]["STEP_TIMEOUT"], "${{ inputs.test-timeout-minutes }}")
         self.assertLess(steps.index(check), steps.index(pytest), "refused before pytest")
-        # Andrea, 2026-11-24: one 120-minute job backstop on every job; the short limits sit on the steps.
+        # Andrea, 2026-11-24: step timeouts only; no job in the file has a timeout-minutes.
         for name, job in JOBS.items():
-            if "uses" not in job:  # a job that calls a reusable workflow cannot carry timeout-minutes
-                self.assertEqual(job["timeout-minutes"], 120, name)
+            self.assertNotIn("timeout-minutes", job, name)
         for name, limit in {"changes": 5, "lint": 20, "security": 20, "gate": 5}.items():
             for s in JOBS[name]["steps"]:
                 self.assertEqual(s["timeout-minutes"], limit, f"{name}: {s.get('name') or s.get('uses')}")
         for s in steps:
-            if s is not pytest:  # the test job's other steps are covered by the backstop alone
+            if s is not pytest:  # the test job's other steps have no limit
                 self.assertNotIn("timeout-minutes", s, s.get("name") or s.get("uses"))
 
     def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
-        # airia-ci#156: nothing here may fail a job or cap it, so the job keeps its 60 minutes and no concurrency.
+        # airia-ci#156: nothing here may fail a job or cap it, so no job timeout and no concurrency.
         self.assertEqual(INPUTS["test-budget-minutes"]["type"], "string")
         self.assertEqual(INPUTS["test-budget-minutes"]["default"], "10")
-        self.assertEqual(JOBS["test"]["timeout-minutes"], 120)  # the backstop (airia-ci#161), not a cap on the budget
+        self.assertNotIn("timeout-minutes", JOBS["test"])  # airia-ci#161: step timeouts only
         for name, job in JOBS.items():
             self.assertNotIn("concurrency", job, name)
         self.assertNotIn("concurrency", DOC)

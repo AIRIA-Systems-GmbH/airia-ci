@@ -155,15 +155,18 @@ Then, the same day, on point (4) and on where timeouts go:
 
 > Every timeout should be placed on steps not on jobs as we have already explained
 
-This replaces the "+20 minutes on `timeout-minutes`" advice in the previous subsection. How `reusable-python-gate.yml` carries it:
+Last, the same day:
 
-1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs. The step limit only takes effect below the 120-minute job backstop (point 2): a larger value is cut off by the job first, and the value is not capped in code.
-2. Every job has the same job-level `timeout-minutes: 120`, a backstop above the step limits and the slot wait. The test job's setup steps have no limit of their own: the backstop covers them.
+> CI is moving now, the document only PRs are going though very quickly, the others follow the scheduler rules, so every project should only set steps timeouts as explained and the rest will run based on the host scheduler and priorities
+
+The policy now reads: step timeouts only; the host scheduler and priorities govern the rest. The later messages replace the job-level backstop of point (2) and the "+20 minutes on `timeout-minutes`" advice in the previous subsection. How `reusable-python-gate.yml` carries it:
+
+1. `test-timeout-minutes` (string, default `60`) is the `timeout-minutes` of the step "Pytest at the coverage floor". A caller sets about 2× its suite's normal time. A value that is not a positive whole number is refused with `::error title=test-timeout-minutes::` before pytest runs. With no job timeout in the file, the value is simply that step's limit.
+2. No job in the file has a `timeout-minutes`. The test job's setup steps have no limit either.
 3. `pytest-timeout-seconds` (string, default empty = off) runs pytest with `--timeout=N`, per test. It must be a positive whole number. A project that sets it needs `pytest-timeout` in its dev dependencies, or the job fails with `No pytest-timeout`. The template's dev group has the plugin and `timeout = 300`.
-4. The short limits sit on the steps, each step carrying its job's former limit: `changes` 5 minutes, `lint` 20, `security` 20, `gate` 5. The call job `claude-review`, which calls a reusable workflow, cannot carry a `timeout-minutes`.
+4. The short limits sit on every step of the other jobs: `changes` 5 minutes, `lint` 20, `security` 20, `gate` 5.
 
 Confirmed by Andrea on 2026-11-24 from two runs (45411214286, 45424234440): the slot wait is in "Set up runner", counts toward the job-level timeout and not toward step timeouts.
-
 
 ### Where the class table lives
 

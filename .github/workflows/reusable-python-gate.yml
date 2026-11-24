@@ -107,17 +107,14 @@ name: AIRIA Python gate (shared)
 # step alone (the wait for a runner slot before the job starts is not counted), rounds up to a
 # whole minute and, over the budget, prints `::warning title=Test budget::` and adds the line to
 # the job summary. WARNING ONLY, it never fails the job (a bad value for the input does, before
-# pytest runs); the job's `timeout-minutes` is the 120-minute backstop below. A positive whole number sets the budget,
+# pytest runs). A positive whole number sets the budget,
 # empty turns the report off.
 #
-# TEST TIMEOUTS (airia-ci#161; Andrea, 2026-11-24, runners/POLICY.md "Timeouts"). A hung job whose
-# runner is alive would hold its slot for GitHub's 360-minute default, so nothing is left unbounded.
+# TEST TIMEOUTS (airia-ci#161; Andrea, 2026-11-24, runners/POLICY.md "Timeouts"). STEP TIMEOUTS ONLY:
+# no job in this file has a `timeout-minutes`; the host scheduler and its priorities govern the rest.
 # `test-timeout-minutes` (default 60) is the `timeout-minutes` of the pytest step alone: a positive
-# whole number, about 2x the suite's normal time. Every job has the same job-level `timeout-minutes: 120`
-# backstop (Andrea, 2026-11-24: the slot wait is in "Set up runner", before any step, so it counts toward the
-# job timeout and not toward step timeouts); the real limits are on the steps. `changes` (5), `lint` (20),
-# `security` (20) and `gate` (5) carry their old job limit on each step; the test job's pytest step carries
-# `test-timeout-minutes`, and its other steps rely on the backstop. `pytest-timeout-seconds` (default empty = off)
+# whole number, about 2x the suite's normal time. Every step of `changes` (5), `lint` (20), `security` (20)
+# and `gate` (5) carries that limit; the test job's other steps have none. `pytest-timeout-seconds` (default empty = off)
 # adds `--timeout=N` so a deadlocked test fails fast and is named; a project that sets it must have
 # pytest-timeout in its dev dependencies, or the job fails with `No pytest-timeout`.
 #
@@ -207,8 +204,8 @@ on:
       test-timeout-minutes:
         description: >-
           The `timeout-minutes` of the test job's pytest step (default 60): a positive whole number,
-          about 2x the suite's normal time. The test job itself is backstopped at 120 minutes:
-          the step limit only takes effect below that, a larger value is cut off by the job first.
+          about 2x the suite's normal time. No job in this workflow has a timeout of its own, so this
+          is simply the limit of that step.
         required: false
         type: string
         default: "60"
@@ -273,7 +270,6 @@ permissions: {}
 jobs:
   changes:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     outputs:
@@ -330,7 +326,6 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     steps:
@@ -433,9 +428,6 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
-    # Backstop above the pytest step's own limit and the slot wait. The setup steps here have no limit of
-    # their own: this 120 covers them.
-    timeout-minutes: 120
     permissions:
       contents: read
     strategy:
@@ -580,7 +572,6 @@ jobs:
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions:
       contents: read
     steps:
@@ -615,7 +606,6 @@ jobs:
     needs: [changes, lint, test, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
-    timeout-minutes: 120 # backstop; the real limits are on the steps (airia-ci#161)
     permissions: {}
     steps:
       - name: Every gate succeeded
