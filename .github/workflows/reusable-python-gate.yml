@@ -506,7 +506,7 @@ jobs:
           [ "$seconds" -ge 0 ] || seconds=0
           minutes=$(( (seconds + 59) / 60 ))
           if [ "$minutes" -gt "$BUDGET" ]; then
-            line="pytest took $minutes min against a budget of $BUDGET min (Andrea 2026-11-24: a suite runs in 10 minutes or less)"
+            line="pytest took $minutes min against a budget of $BUDGET min (airia-ci#156)"
             echo "::warning title=Test budget::$line"
             echo "$line" >> "$GITHUB_STEP_SUMMARY"
           else

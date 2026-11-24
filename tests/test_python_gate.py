@@ -305,7 +305,7 @@ class Steps(unittest.TestCase):
         # 10 min 1 s rounds up to 11.
         p = self.budget_step(1000 + 10 * 60 + 1, "10", "1000")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        line = "pytest took 11 min against a budget of 10 min (Andrea 2026-11-24: a suite runs in 10 minutes or less)"
+        line = "pytest took 11 min against a budget of 10 min (airia-ci#156)"
         self.assertIn(f"::warning title=Test budget::{line}", p.stdout)
         self.assertEqual(self.summary().strip(), line)
 
