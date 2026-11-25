@@ -587,9 +587,29 @@ jobs:
               echo "::error title=Collection format::pytest --collect-only -q printed per-file counts, not test ids; remove -q from addopts so the suite can be sharded"
               exit 1
             fi
+            # An id is a line that starts at column 0 and holds `::`; it may hold spaces and `::` inside its brackets
+            # (`t.py::test_f[hello world]`), so it is read whole, line by line, and passed as one argument.
+            all=()
             while IFS= read -r id; do
-              ids+=("$id")
-            done < <(grep -E '^[^[:space:]]+::' "$collected" | awk -v n="$SHARDS" -v s="$SHARD" '(NR - 1) % n == s - 1')
+              all+=("$id")
+            done < <(grep -E '^[^[:space:]].*::' "$collected")
+            # Never silent: pytest's own count (`N tests collected`, `N/M tests collected (K deselected)`) must equal the ids kept.
+            summary="$(grep -Eo '^[0-9]+(/[0-9]+)? tests? collected' "$collected" | tail -n 1 || true)"
+            if [ -n "$summary" ]; then
+              expected="${summary%% *}"
+              expected="${expected%%/*}"
+              if [ "${#all[@]}" -ne "$expected" ]; then
+                echo "::error title=Collection count::pytest collected $expected tests but ${#all[@]} ids were read from its listing, so a test would run in no shard"
+                exit 1
+              fi
+            fi
+            i=0
+            for id in "${all[@]}"; do
+              if [ $((i % SHARDS)) -eq $((SHARD - 1)) ]; then
+                ids+=("$id")
+              fi
+              i=$((i + 1))
+            done
             if [ "${#ids[@]}" -eq 0 ]; then
               echo "Shard $SHARD of $SHARDS has no tests: it passes and uploads no coverage data."
               exit 0

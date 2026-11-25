@@ -819,10 +819,49 @@ class Shards(unittest.TestCase):
         self.assertEqual(len(self.calls()), 1, "collected, and nothing else")
 
     def test_noise_around_the_ids_is_not_an_id(self):
-        noise = "\n".join(["a.py::t0", "", "=== warnings summary ===", "x.py:1: UserWarning: no", "3 tests collected in 0.1s"])
+        noise = "\n".join(["a.py::t0", "", "=== warnings summary ===", "x.py:1: UserWarning: no", "1 test collected in 0.1s"])
         p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT=noise)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertTrue(self.calls()[1].endswith("a.py::t0"))
+
+    ODD = ["t.py::test_f[hello world]", "t.py::test_g[a::b]", "t.py::test_h[x y::z w]", "t.py::plain"]
+
+    def test_ids_with_spaces_or_colons_inside_brackets_are_kept_whole_in_exactly_one_shard(self):
+        # airia-ci#169 F1: a space in a parametrized id once dropped the test from every shard.
+        listing = "\n".join(self.ODD + ["", f"{len(self.ODD)} tests collected in 0.02s"])
+        landed = []
+        for shard in (1, 2, 3):
+            self.setUp()
+            p = self.run_step(SHARDS="3", SHARD=str(shard), FAKE_COLLECT=listing)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            mine = [i for n, i in enumerate(self.ODD) if n % 3 == shard - 1]
+            run = self.calls()[1]
+            for i in mine:
+                self.assertIn(" " + i, run)  # the whole id, as one argument
+            landed += mine
+        self.assertEqual(sorted(landed), sorted(self.ODD))
+
+    def test_an_id_with_a_space_reaches_pytest_as_one_argument(self):
+        argv = self.r.bin / "argv"
+        self.r.tool("pytest", FAKE_PYTEST.replace('echo "pytest $*" >> "$(dirname "$0")/calls"',
+                                                  'echo "pytest $*" >> "$(dirname "$0")/calls"; '
+                                                  'for a in "$@"; do echo "[$a]" >> "$(dirname "$0")/argv"; done'))
+        self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT="t.py::test_f[hello world]\n1 test collected")
+        self.assertIn("[t.py::test_f[hello world]]", argv.read_text().splitlines())
+
+    def test_the_count_guard_fails_when_ids_read_differ_from_pytests_count(self):
+        for listing, expected in (("a.py::t0\nb.py::t1\n3 tests collected in 0.1s", 3),
+                                  ("a.py::t0\nb.py::t1\n1 test collected in 0.1s", 1)):
+            with self.subTest(expected=expected):
+                self.setUp()
+                p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT=listing)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn(f"::error title=Collection count::pytest collected {expected} tests but 2 ids", p.stdout)
+                self.assertEqual(len(self.calls()), 1, "no test ran")
+
+    def test_the_count_guard_reads_the_deselected_form_and_passes_when_equal(self):
+        p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT="a.py::t0\nb.py::t1\n2/5 tests collected (3 deselected) in 0.1s")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
     def test_per_file_counts_from_a_q_in_addopts_are_refused_not_run_as_everything(self):
         p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT="tests/test_a.py: 7")
