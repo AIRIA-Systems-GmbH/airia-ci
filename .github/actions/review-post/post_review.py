@@ -43,6 +43,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -61,6 +62,14 @@ MARKER = re.compile(r"<!-- airia-finding run=\d+ id=(\S+) file=(\S+) -->")
 # the diff"); any other 422 (a stale commit_id, a rejected body) is a real failure.
 NOT_IN_THE_DIFF = re.compile(r"could not be resolved|must be part of the diff", re.IGNORECASE)
 NOT_IN_DIFF = "not in the diff: answer in a PR comment that quotes its id"
+# A POST that GitHub answers with a 5xx, a 429 or a malformed/empty body is tried again after these waits
+# (4 attempts in all; airia-ci#166). `gh api` prints no response headers, so Retry-After is not readable.
+# REVIEW_POST_BACKOFF ("0,0,0") replaces the waits: the tests' way of not sleeping.
+BACKOFF = (5, 15, 45)
+HTTP_STATUS = re.compile(r"\(HTTP (\d{3})\)")
+# A failed call with no HTTP status that is still the network or a truncated body, not a refusal.
+MALFORMED = re.compile(r"unexpected end of JSON|unexpected EOF|\bEOF\b|invalid character|timeout|timed out|"
+                       r"connection (?:reset|refused)|no such host|TLS handshake|broken pipe", re.IGNORECASE)
 RETRY = "re-run this job after the reset or comment `@claude please review`."
 
 
@@ -211,6 +220,42 @@ def gh(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True)
 
 
+def backoff() -> tuple[float, ...]:
+    raw = os.environ.get("REVIEW_POST_BACKOFF")
+    return tuple(float(x) for x in raw.split(",")) if raw else BACKOFF
+
+
+def transient(p: subprocess.CompletedProcess) -> bool:
+    """A failure worth another attempt: 5xx, 429, a truncated body or a dropped connection, never another 4xx."""
+    if not p.returncode:
+        return not p.stdout.strip()
+    status = HTTP_STATUS.search(p.stderr)
+    if status:
+        return int(status.group(1)) >= 500 or status.group(1) == "429"
+    return bool(MALFORMED.search(p.stderr + p.stdout))
+
+
+def gh_post(call: str, *args: str) -> subprocess.CompletedProcess:
+    """`gh` for a POST (`call` names it, "METHOD path"), repeated while GitHub fails transiently.
+
+    Returns the last answer when it is not transient; when the attempts run out the step fails naming
+    the call, its attempts and the last status, in the log and in the step summary.
+    """
+    waits = backoff()
+    for attempt in range(len(waits) + 1):
+        p = gh(*args)
+        if not transient(p):
+            return p
+        if attempt < len(waits):
+            time.sleep(waits[attempt])
+    status = HTTP_STATUS.search(p.stderr)
+    last = f"HTTP {status.group(1)}" if status else ("an empty response" if not p.returncode else "no HTTP status")
+    detail = p.stderr.strip() or "no error text"
+    message = f"{call} failed after {len(waits) + 1} attempts, last status {last}: {detail}"
+    print(f"**Review not posted:** {message}")
+    raise ReviewError(message)
+
+
 def gh_ok(*args: str) -> str:
     p = gh(*args)
     if p.returncode:
@@ -250,7 +295,7 @@ def post_finding(repo: str, pr: str, head: str, run_id: str, finding: dict) -> s
             attempts.append([*base, "-F", f"line={finding['line']}", "-f", "side=RIGHT"])
         attempts.append([*base, "-f", "subject_type=file"])
         for args in attempts:
-            p = gh(*args)
+            p = gh_post(f"POST repos/{repo}/pulls/{pr}/comments", *args)
             if not p.returncode:
                 return p.stdout.strip()
             # A 422 about the line or the path means it is not in the diff: try the next, wider attempt. `gh api`
@@ -279,8 +324,10 @@ def post_review_object(repo: str, pr: str, head: str, run_url: str, findings: li
     with tempfile.NamedTemporaryFile("w", suffix=".md", dir=os.environ.get("RUNNER_TEMP"), delete=False) as fh:
         fh.write(body)
     try:
-        gh_ok("api", "--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", "-f", f"commit_id={head}",
-              "-f", "event=COMMENT", "-F", f"body=@{fh.name}")
+        p = gh_post(f"POST repos/{repo}/pulls/{pr}/reviews", "api", "--method", "POST", f"repos/{repo}/pulls/{pr}/reviews",
+                    "-f", f"commit_id={head}", "-f", "event=COMMENT", "-F", f"body=@{fh.name}")
+        if p.returncode:
+            raise ReviewError(f"gh api --method failed: {p.stderr.strip()}")
     finally:
         os.unlink(fh.name)
 
@@ -347,7 +394,9 @@ def main() -> int:
         with tempfile.NamedTemporaryFile("w", suffix=".md", dir=env.get("RUNNER_TEMP"), delete=False) as fh:
             fh.write(summary + ("\n\n" + section if section else "") + footer)
         try:
-            gh_ok("pr", "comment", pr, "--repo", repo, "--body-file", fh.name)
+            p = gh_post(f"POST repos/{repo}/issues/{pr}/comments", "pr", "comment", pr, "--repo", repo, "--body-file", fh.name)
+            if p.returncode:
+                raise ReviewError(f"gh pr comment failed: {p.stderr.strip()}")
         finally:
             os.unlink(fh.name)
         if problems:
