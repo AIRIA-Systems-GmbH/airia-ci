@@ -95,8 +95,8 @@ class CiLocal(unittest.TestCase):
     def test_its_commands_are_the_gates_own(self):
         # The gate's lines, with its variable names, are ci-local's after `uv run`.
         ours = SCRIPT.read_text().replace("\\\n  ", "")
-        # The gate adds `-n $WORKERS`; ci-local leaves -n to the project's addopts and caps `auto` with the env.
-        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations", '"${xdist[@]}" ': "", '"${ptimeout[@]}" ': ""}
+        # The gate adds `-n $WORKERS`; ci-local leaves -n to the project's addopts, never shards (`ids` is empty unless shards > 1) and caps `auto` with the env.
+        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations", '"${xdist[@]}" ': "", '"${ptimeout[@]}" ': "", ' "${ids[@]}"': ""}
         seen = 0
         ratchet_lines = []
         for name in ("Ruff", "Type check", "Pytest at the coverage floor"):

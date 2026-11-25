@@ -56,6 +56,8 @@ if [ "$1" = --help ]; then
   exit 0
 fi
 echo "pytest $*" >> "$(dirname "$0")/calls"
+# `--collect-only`: print $FAKE_COLLECT, the listing a real pytest would give (exit $FAKE_COLLECT_EXIT).
+case " $* " in *" --collect-only "*) printf '%s\\n' "$FAKE_COLLECT"; exit "${FAKE_COLLECT_EXIT:-0}";; esac
 for a in "$@"; do
   case "$a" in --cov-report=json:*) [ -n "$FAKE_PERCENT" ] && echo "{\\"totals\\": {\\"percent_covered\\": $FAKE_PERCENT}}" > "${a#--cov-report=json:}";; esac
 done
@@ -72,7 +74,7 @@ class Shape(unittest.TestCase):
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
             "extra-prompt", "debt-ratchet", "pytest-workers", "test-timeout-minutes",
-            "pytest-timeout-seconds", "test-budget-minutes"})
+            "pytest-timeout-seconds", "test-budget-minutes", "shards"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -128,7 +130,7 @@ class Shape(unittest.TestCase):
             for s in JOBS[name]["steps"]:
                 self.assertEqual(s["timeout-minutes"], limit, f"{name}: {s.get('name') or s.get('uses')}")
         for s in steps:
-            if s is not pytest:  # the test job's other steps have no limit
+            if s is not pytest:  # the test job's other steps have no limit (even the shard upload)
                 self.assertNotIn("timeout-minutes", s, s.get("name") or s.get("uses"))
 
     def test_the_test_budget_is_a_warning_only_input_that_reaches_both_steps(self):
@@ -156,7 +158,7 @@ class Shape(unittest.TestCase):
 
     def test_gate_needs_every_gate_job_and_runs_when_one_failed(self):
         gates = set(JOBS) - {"gate", "claude-review"}
-        self.assertEqual(gates, {"changes", "lint", "test", "security"})
+        self.assertEqual(gates, {"changes", "lint", "test", "coverage", "security"})
         self.assertEqual(set(JOBS["gate"]["needs"]), gates)
         self.assertEqual(JOBS["gate"]["if"], "always()")
         self.assertEqual(JOBS["gate"]["steps"][0]["env"]["CODE"], "${{ needs.changes.outputs.code }}")
@@ -165,20 +167,24 @@ class Shape(unittest.TestCase):
         # A job that can be skipped, or a step that may fail, is a gate that can be switched off.
         # The one condition: lint and test wait for `changes` and skip on a docs-only PR.
         # security never skips: REUSE and gitleaks hold for a doc too.
-        conditions = {"lint": "needs.changes.outputs.code == 'true'", "test": "needs.changes.outputs.code == 'true'"}
-        for name in ("changes", "lint", "test", "security"):
+        # `coverage` also waits for `test` and only exists for a sharded run (`gate` excuses its skip at shards = 1 only).
+        conditions = {"lint": "needs.changes.outputs.code == 'true'", "test": "needs.changes.outputs.code == 'true'",
+                      "coverage": "needs.changes.outputs.code == 'true' && inputs.shards > 1"}
+        for name in ("changes", "lint", "test", "coverage", "security"):
             job = JOBS[name]
             with self.subTest(job=name):
                 self.assertEqual(job.get("if"), conditions.get(name))
-                self.assertEqual(job.get("needs"), ["changes"] if name in conditions else None)
+                self.assertEqual(job.get("needs"), (["changes", "test"] if name == "coverage" else ["changes"])
+                                 if name in conditions else None)
                 self.assertNotIn("continue-on-error", job)
                 for s in job["steps"]:
                     self.assertNotIn("continue-on-error", s)
-                    if not s.get("uses", "").startswith("actions/checkout@") and s.get("name") != "Test budget report":
+                    if not s.get("uses", "").startswith("actions/checkout@") and s.get("name") not in (
+                            "Test budget report", "Upload this shard's coverage data"):
                         self.assertNotIn("if", s)
 
     def test_changes_reads_the_merge_commit_only_when_it_needs_to(self):
-        checkout, diff = JOBS["changes"]["steps"]
+        _, checkout, diff = JOBS["changes"]["steps"]
         self.assertEqual(checkout["if"], "github.event_name == 'pull_request' && inputs.docs-paths != ''")
         self.assertEqual(checkout["with"], {"fetch-depth": 2, "persist-credentials": False})
         self.assertNotIn("ref", checkout["with"])  # the default on a pull request: refs/pull/N/merge
@@ -653,9 +659,9 @@ class Changes(unittest.TestCase):
 class Gate(unittest.TestCase):
     STEP = "Every gate succeeded"
 
-    def verdict(self, own: str, extra: str = "{}", code: str = "true"):
+    def verdict(self, own: str, extra: str = "{}", code: str = "true", shards: str = "1"):
         r = Runner(self)
-        p = r.run(WORKFLOW, self.STEP, OWN=own, EXTRA=extra, CODE=code)
+        p = r.run(WORKFLOW, self.STEP, OWN=own, EXTRA=extra, CODE=code, SHARDS=shards)
         return p, r
 
     def test_docs_only_passes_with_lint_and_test_skipped(self):
@@ -716,6 +722,233 @@ class Gate(unittest.TestCase):
         p, _ = self.verdict(needs(lint="success"), "e2e")
         self.assertEqual(p.returncode, 1)
         self.assertIn("::error title=extra-jobs::", p.stdout)
+
+
+class ShardShape(unittest.TestCase):
+    """airia-ci#168: `shards` splits `test`; at 1 the jobs, names and required checks are today's."""
+
+    def test_shards_is_an_optional_number_defaulting_to_one(self):
+        self.assertEqual(INPUTS["shards"]["type"], "number")
+        self.assertEqual(INPUTS["shards"]["default"], 1)
+        self.assertFalse(INPUTS["shards"]["required"])
+
+    def test_at_one_shard_the_job_names_are_todays(self):
+        # Expressions cannot be evaluated here, so this holds the structure: with the shard suffix expression removed (it is
+        # empty unless `inputs.shards > 1`) the test job's name is the old literal, `gate` has no `name:` of its own (so its
+        # check is still `ci / gate`), and the only job added is `coverage`, which is skipped at 1.
+        suffix = "${{ inputs.shards > 1 && format(' shard {0}/{1}', matrix.shard, inputs.shards) || '' }}"
+        name = JOBS["test"]["name"]
+        self.assertTrue(name.endswith(suffix), name)
+        self.assertEqual(name.removesuffix(suffix), "test ${{ matrix.python || '(.python-version)' }}")
+        self.assertNotIn("name", JOBS["gate"])
+        self.assertEqual(list(JOBS), ["changes", "lint", "test", "coverage", "security", "gate", "claude-review"])
+        self.assertIn("inputs.shards > 1", JOBS["coverage"]["if"])
+
+    def test_the_matrix_is_one_job_per_python_at_one_shard_and_n_at_n(self):
+        table = re.search(r"fromJSON\('(.*)'\)\[inputs.shards\]", JOBS["test"]["strategy"]["matrix"]["shard"]).group(1)
+        rows = json.loads(table)
+        self.assertEqual(rows[1], [0], "one shard: the single index 0, not shown in the name")
+        for n in range(2, 9):
+            self.assertEqual(rows[n], list(range(1, n + 1)))
+        self.assertNotIn("max-parallel", JOBS["test"]["strategy"])
+        self.assertNotIn("timeout-minutes", JOBS["test"])
+
+    def test_gate_waits_for_coverage_and_knows_the_shard_count(self):
+        self.assertIn("coverage", JOBS["gate"]["needs"])
+        self.assertEqual(JOBS["gate"]["steps"][0]["env"]["SHARDS"], "${{ inputs.shards }}")
+
+
+class Shards(unittest.TestCase):
+    STEP = "Pytest at the coverage floor"
+    IDS = [f"tests/test_a.py::t{i}" for i in range(7)]
+
+    def setUp(self):
+        self.r = Runner(self)
+        self.r.tool("pytest", FAKE_PYTEST)
+        self.project = self.r.tmp / "project"
+        self.project.mkdir()
+
+    def run_step(self, **env):
+        base = {"FLOOR": "95", "FAKE_PERCENT": "40", "DURATIONS": "25", "FAKE_COLLECT": "\n".join(self.IDS)}
+        return self.r.run(WORKFLOW, self.STEP, cwd=self.project, **{**base, **env})
+
+    def calls(self) -> list[str]:
+        f = self.r.bin / "calls"
+        return f.read_text().splitlines() if f.exists() else []
+
+    def test_one_shard_calls_pytest_exactly_as_before_and_never_collects(self):
+        p = self.run_step(SHARDS="1", SHARD="0", FAKE_PERCENT="96")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertNotIn("--collect-only", call)
+        self.assertNotIn("::", call)
+        self.assertIn("--cov-fail-under=95", call)
+
+    def test_a_shard_runs_its_modulo_slice_at_n_4_and_holds_no_partial_floor(self):
+        p = self.run_step(SHARDS="3", SHARD="2")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        collect, run = self.calls()
+        self.assertIn("--collect-only -q --no-cov", collect)
+        self.assertTrue(run.startswith("pytest -n 4 "), run)
+        self.assertIn("--cov-fail-under=0", run, "a slice cannot reach the floor; the coverage job holds it")
+        self.assertTrue(run.endswith("tests/test_a.py::t1 tests/test_a.py::t4"), run)  # positions 1 and 4 of 0..6
+
+    def test_the_shards_are_disjoint_and_together_the_whole_suite(self):
+        seen = []
+        for shard in (1, 2, 3):
+            self.setUp()
+            self.run_step(SHARDS="3", SHARD=str(shard))
+            mine = [i for i in self.IDS if self.IDS.index(i) % 3 == shard - 1]
+            ran = self.calls()[1].split()[-len(mine):]
+            self.assertEqual(ran, mine)
+            seen += ran
+        self.assertEqual(sorted(seen), sorted(self.IDS))
+
+    def test_a_shard_writes_its_coverage_data_where_the_upload_reads_it(self):
+        p = self.run_step(SHARDS="2", SHARD="1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue((self.r.tmp / "shard-cov").is_dir())
+        up = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Upload this shard's coverage data")
+        self.assertEqual(up["with"]["path"], "${{ runner.temp }}/shard-cov/")
+        self.assertIs(up["with"]["include-hidden-files"], True, ".coverage.N is a hidden file")
+
+    def test_an_empty_slice_passes_without_running_pytest(self):
+        p = self.run_step(SHARDS="4", SHARD="4", FAKE_COLLECT="a.py::t0\nb.py::t1")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("Shard 4 of 4 has no tests", p.stdout)
+        self.assertEqual(len(self.calls()), 1, "collected, and nothing else")
+
+    def test_noise_around_the_ids_is_not_an_id(self):
+        noise = "\n".join(["a.py::t0", "", "=== warnings summary ===", "x.py:1: UserWarning: no", "3 tests collected in 0.1s"])
+        p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT=noise)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(self.calls()[1].endswith("a.py::t0"))
+
+    def test_per_file_counts_from_a_q_in_addopts_are_refused_not_run_as_everything(self):
+        p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT="tests/test_a.py: 7")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Collection format::", p.stdout)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_a_collection_error_fails_the_shard(self):
+        p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT_EXIT="2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Collection failed::", p.stdout)
+
+    def test_workers_above_four_or_auto_are_refused_with_shards(self):
+        for workers in ("8", "auto"):
+            with self.subTest(workers=workers):
+                p = self.run_step(SHARDS="2", SHARD="1", WORKERS=workers)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=pytest-workers::", p.stdout)
+
+    def test_a_smaller_worker_count_is_kept(self):
+        p = self.run_step(SHARDS="2", SHARD="1", WORKERS="2")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertTrue(self.calls()[1].startswith("pytest -n 2 "))
+
+    def test_a_failing_slice_fails_the_shard(self):
+        p = self.run_step(SHARDS="2", SHARD="1", FAKE_PYTEST_EXIT="1")
+        self.assertEqual(p.returncode, 1)
+
+
+class ShardsCheck(unittest.TestCase):
+    STEP = "Shards check"
+
+    def run_step(self, shards, ratchet="false"):
+        return Runner(self).run(WORKFLOW, self.STEP, SHARDS=shards, RATCHET=ratchet)
+
+    def test_one_to_eight_pass(self):
+        for n in "12345678":
+            self.assertEqual(self.run_step(n).returncode, 0, n)
+
+    def test_anything_else_is_refused_by_name(self):
+        for bad in ("0", "9", "2.5", "", "x", "-1"):
+            with self.subTest(shards=bad):
+                p = self.run_step(bad)
+                self.assertEqual(p.returncode, 1)
+                self.assertIn("::error title=shards::", p.stdout)
+
+    def test_the_debt_ratchet_cannot_be_sharded(self):
+        p = self.run_step("2", "true")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("debt-ratchet", p.stdout)
+        self.assertEqual(self.run_step("1", "true").returncode, 0)
+
+
+class CombinedCoverage(unittest.TestCase):
+    """The `coverage` job holds the floor on the shards' combined data (a fake `coverage`, the real jq)."""
+
+    STEP = "The combined coverage holds the floor"
+    FAKE_COVERAGE = """\
+#!/bin/sh
+echo "coverage $*" >> "$(dirname "$0")/calls"
+[ "$1" = json ] && echo "{\\"totals\\": {\\"percent_covered\\": $FAKE_PERCENT}}" > "$3"
+exit 0
+"""
+
+    def run_step(self, data: bool, percent: str = "96", floor: str = "95"):
+        r = Runner(self)
+        r.tool("coverage", self.FAKE_COVERAGE)
+        if data:
+            (r.tmp / "shard-cov").mkdir()
+            (r.tmp / "shard-cov" / ".coverage.1").write_text("x")
+        return r, r.run(WORKFLOW, self.STEP, FLOOR=floor, FAKE_PERCENT=percent)
+
+    def test_combined_data_at_or_over_the_floor_passes(self):
+        r, p = self.run_step(True, percent="95.0")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual((r.bin / "calls").read_text().split()[:2], ["coverage", "combine"])
+
+    def test_combined_data_under_the_floor_fails(self):
+        _, p = self.run_step(True, percent="94.9")
+        self.assertEqual(p.returncode, 1)
+
+    def test_no_data_from_any_shard_fails_naming_the_fix(self):
+        _, p = self.run_step(False)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=No coverage data::", p.stdout)
+
+    def test_the_job_downloads_what_the_shards_upload(self):
+        up = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Upload this shard's coverage data")
+        down = next(s for s in JOBS["coverage"]["steps"] if s.get("uses", "").startswith("actions/download-artifact@"))
+        self.assertEqual(up["with"]["name"], "coverage-${{ matrix.python || 'default' }}-${{ matrix.shard }}")
+        self.assertEqual(down["with"]["pattern"], "coverage-${{ matrix.python || 'default' }}-*")
+        self.assertIs(down["with"]["merge-multiple"], True)
+        self.assertEqual(down["with"]["path"], "${{ runner.temp }}/shard-cov")
+
+
+class ShardedGate(unittest.TestCase):
+    """`gate` still reports one result for a sharded run: a red, skipped or missing coverage job fails it."""
+
+    verdict = Gate.verdict
+    STEP = Gate.STEP
+
+    def test_a_sharded_run_needs_coverage_to_succeed(self):
+        ok = needs(changes="success", lint="success", test="success", coverage="success", security="success")
+        self.assertEqual(self.verdict(ok, shards="2")[0].returncode, 0)
+        for result in ("skipped", "failure", "cancelled"):
+            with self.subTest(coverage=result):
+                p, _ = self.verdict(needs(changes="success", lint="success", test="success", coverage=result,
+                                          security="success"), shards="2")
+                self.assertEqual(p.returncode, 1)
+                self.assertIn(f"::error title=Gate not passed::coverage: {result}", p.stdout)
+
+    def test_a_failed_shard_fails_the_gate_through_test(self):
+        p, _ = self.verdict(needs(changes="success", lint="success", test="failure", coverage="skipped",
+                                  security="success"), shards="2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=Gate not passed::test: failure", p.stdout)
+
+    def test_unsharded_the_coverage_skip_is_normal(self):
+        p, _ = self.verdict(needs(changes="success", lint="success", test="success", coverage="skipped",
+                                  security="success"), shards="1")
+        self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_docs_only_excuses_the_coverage_skip(self):
+        p, _ = self.verdict(needs(changes="success", lint="skipped", test="skipped", coverage="skipped",
+                                  security="success"), code="false", shards="2")
+        self.assertEqual(p.returncode, 0, p.stdout)
 
 
 if __name__ == "__main__":
