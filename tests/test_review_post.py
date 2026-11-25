@@ -18,6 +18,7 @@ import importlib.util
 import json
 import re
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from steps import ROOT, Runner
@@ -84,7 +85,7 @@ class TheStep(unittest.TestCase):
         if msgs is not None:
             exe.write_text(json.dumps(msgs))
         p = r.run(ACTION, "Post the review", PR="9", RUN_ID=run_id, EXECUTION_FILE=str(exe), CLAUDE_VERSION=version,
-                  HEAD_SHA=head, RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}")
+                  HEAD_SHA=head, REVIEW_POST_BACKOFF="0,0,0", RUN_URL=f"https://github.com/o/r/actions/runs/{run_id}")
         calls = r.calls()
         summaries = [c["files"]["--body-file"] for c in calls if c["args"][:2] == ["pr", "comment"]]
         findings = [(c["args"], c["files"]) for c in calls if "--method" in c["args"] and "/comments " in c["args"][3] + " "]
@@ -146,6 +147,55 @@ class TheStep(unittest.TestCase):
         p, summaries, _ = self.post(execution(message([])), rules=[[REVIEWS, {"exit": 1, "stderr": "HTTP 403"}]])
         self.assertEqual((p.returncode, summaries), (1, []))
         self.assertIn("::error title=No review posted::gh api --method failed: HTTP 403", p.stdout)
+
+    def test_a_502_then_success_posts_the_review_once(self):
+        # airia-ci#166: GitHub's 5xx on a POST is a retry, not a failed review.
+        bad = {"first": 1, "before": {"exit": 1, "stderr": "gh: Server Error (HTTP 502)\n"}, "json": {"id": 7}}
+        p, summaries, _ = self.post(execution(message([])), rules=[[REVIEWS, bad]])
+        self.assertEqual((p.returncode, len(summaries), len(self.reviews)), (0, 1, 2), p.stdout)
+        self.assertNotIn("::error", p.stdout)
+
+    def test_four_500s_fail_the_step_naming_the_call_in_the_log_and_the_summary(self):
+        p, summaries, _ = self.post(execution(message([])),
+                                    rules=[[REVIEWS, {"exit": 1, "stderr": "gh: Server Error (HTTP 500)\n"}]])
+        self.assertEqual((p.returncode, summaries, len(self.reviews)), (1, [], 4))
+        named = "POST repos/o/r/pulls/9/reviews failed after 4 attempts, last status HTTP 500"
+        self.assertEqual(p.stdout.count("::error"), 1)
+        self.assertIn(f"::error title=No review posted::{named}", p.stdout)
+        self.assertIn(f"**Review not posted:** {named}", p.stdout)
+
+    def test_a_422_is_not_retried(self):
+        p, _, comments = self.post(execution(message([finding()])), rules=[[INLINE, OTHER_422]])
+        self.assertEqual((p.returncode, len(comments)), (1, 1))
+
+    def test_a_429_is_retried_and_a_403_is_not(self):
+        limited = {"first": 1, "before": {"exit": 1, "stderr": "gh: Too Many Requests (HTTP 429)\n"}, "json": {"id": 7}}
+        p, _, _ = self.post(execution(message([])), rules=[[REVIEWS, limited]])
+        self.assertEqual((p.returncode, len(self.reviews)), (0, 2), p.stdout)
+        p, _, _ = self.post(execution(message([])), rules=[[REVIEWS, {"exit": 1, "stderr": "gh: Forbidden (HTTP 403)\n"}]])
+        self.assertEqual((p.returncode, len(self.reviews)), (1, 1))
+
+    def test_an_empty_body_then_success_posts_the_finding_once(self):
+        empty = {"first": 1, "before": {"text": ""}, "json": {"html_url": "https://github.com/o/r/pull/9#discussion_r1"}}
+        p, summaries, comments = self.post(execution(message([finding()])), rules=[[INLINE, empty]])
+        self.assertEqual((p.returncode, len(summaries), len(comments)), (0, 1, 2), p.stdout)
+        self.assertIn("[comment](https://github.com/o/r/pull/9#discussion_r1)", summaries[0])
+
+    def test_a_truncated_response_is_retried_and_the_summary_comment_too(self):
+        cut = {"first": 2, "before": {"exit": 1, "stderr": "unexpected end of JSON input\n"}, "text": "https://x/c1\n"}
+        p, summaries, _ = self.post(execution(message([])), rules=[[SUMMARY, cut]])
+        self.assertEqual((p.returncode, len(summaries)), (0, 3), p.stdout)
+
+    def test_the_waits_are_5_15_and_45_seconds_unless_a_test_replaces_them(self):
+        self.assertEqual(pr_mod.BACKOFF, (5, 15, 45))
+        gone = pr_mod.subprocess.CompletedProcess([], 1, "", "gh: Server Error (HTTP 503)")
+        with (unittest.mock.patch.dict("os.environ", clear=False) as env,
+              unittest.mock.patch.object(pr_mod, "gh", return_value=gone),
+              unittest.mock.patch.object(pr_mod.time, "sleep") as sleep):
+            env.pop("REVIEW_POST_BACKOFF", None)
+            with self.assertRaises(pr_mod.ReviewError):
+                pr_mod.gh_post("POST x", "api")
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [5, 15, 45])
 
     def test_each_finding_comment_names_the_run_and_the_finding_in_a_hidden_marker(self):
         _, _, comments = self.post(execution(message([finding("F7")])), run_id="42")
