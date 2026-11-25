@@ -61,25 +61,31 @@ def _header(path: Path, s: dict) -> str:
     raise ValueError(f"{path}: step {s.get('name')!r} uses shell {s.get('shell')!r}, which the harness does not model")
 
 
+def _publish(out: Path, text: str, mode: int = 0o644) -> Path:
+    """Write a sliced file so a parallel worker never sees it half-written: identical bytes are left alone, new ones replace it atomically."""
+    SRC.mkdir(parents=True, exist_ok=True)
+    if out.exists() and out.read_text() == text and out.stat().st_mode & 0o777 == mode:
+        return out
+    fd, name = tempfile.mkstemp(dir=SRC, prefix=out.name + ".")
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    os.chmod(name, mode)
+    os.replace(name, out)
+    return out
+
+
 def script(path: Path, step_name: str) -> Path:
     """The step's `run:` block as an executable file, with GitHub's shell flags."""
     s = step(path, step_name)
     if "${{" in s["run"]:
         raise ValueError(f"{path}: {step_name!r} has an expression inside run:, so a sliced copy is not the shipped code")
-    SRC.mkdir(parents=True, exist_ok=True)
-    out = SRC / (_slug(path, step_name) + ".sh")
-    out.write_text(_header(path, s) + s["run"])
-    out.chmod(0o755)
-    return out
+    return _publish(SRC / (_slug(path, step_name) + ".sh"), _header(path, s) + s["run"], 0o755)
 
 
 def heredoc(path: Path, step_name: str) -> Path:
     """The Python heredoc inside a step, as a file `python3 <file> ARGS` runs like `python3 - ARGS`."""
     (body,) = HEREDOC.findall(step(path, step_name)["run"])
-    SRC.mkdir(parents=True, exist_ok=True)
-    out = SRC / (_slug(path, step_name).replace("-", "_") + ".py")
-    out.write_text(textwrap.dedent(body) + "\n")
-    return out
+    return _publish(SRC / (_slug(path, step_name).replace("-", "_") + ".py"), textwrap.dedent(body) + "\n")
 
 
 def materialise() -> None:

@@ -296,8 +296,9 @@ class Cli(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def files(self, py, lk):
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(lambda: [f.unlink() for f in tmp.iterdir()] and tmp.rmdir())
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        tmp = Path(scratch.name)
         (tmp / "pyproject.toml").write_text(py)
         (tmp / "uv.lock").write_text(lk)
         return ["--pyproject", str(tmp / "pyproject.toml"), "--lock", str(tmp / "uv.lock")], tmp
