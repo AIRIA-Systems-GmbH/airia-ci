@@ -32,14 +32,59 @@ def listing(*names, renamed=None):
 
 
 class Changes(unittest.TestCase):
-    def classify(self, files=None, skip=DOCS, event="pull_request", api=None):
+    def classify(self, files=None, skip=DOCS, event="pull_request", api=None, **env):
         r = Runner(self, [[FILES, api or {"json": files}]])
-        p = r.script(SCRIPT, EVENT=event, REPO="o/r", PR_NUMBER="7", SKIP_PATHS=skip)
+        p = r.script(SCRIPT, EVENT=event, REPO="o/r", PR_NUMBER="7", SKIP_PATHS=skip, **env)
         self.assertEqual(p.returncode, 0, p.stderr)
+        self.last_scope = r.outputs()["scope"]
         return r.outputs()["code"], r.summary.read_text(), r
 
     def code(self, files, **kw):
         return self.classify(files, **kw)[0]
+
+    def scope(self, files, skip="", **env):
+        self.classify(files, skip=skip, **env)
+        return self.last_scope
+
+    def test_a_modified_only_path_skips_an_edit_but_not_an_add_a_delete_or_a_rename(self):
+        # AIRIA-process's rule (airia-ci#175): an M edit of a task record is skippable, anything else is code.
+        mod = {"MODIFIED_SKIP_PATHS": ".airia/memory/task/*.md"}
+        path = ".airia/memory/task/T-1.md"
+        for status, want in (("modified", "none"), ("added", "all"), ("removed", "all"), ("renamed", "all")):
+            with self.subTest(status=status):
+                self.assertEqual(self.scope([{"filename": path, "status": status}], **mod), want)
+        renamed = [{"filename": ".airia/memory/task/T-2.md", "previous_filename": path, "status": "renamed"}]
+        self.assertEqual(self.scope(renamed, **mod), "all")
+        self.assertEqual(self.scope([{"filename": path}], **mod), "all", "no status: code")
+
+    def test_a_modified_only_path_beside_a_skip_path_is_none_and_beside_code_is_all(self):
+        mod = {"MODIFIED_SKIP_PATHS": ".airia/memory/task/*.md"}
+        edit = {"filename": ".airia/memory/task/T-1.md", "status": "modified"}
+        self.assertEqual(self.scope([edit, {"filename": "README.md", "status": "added"}], skip="*.md", **mod), "none")
+        self.assertEqual(self.scope([edit, {"filename": "src/app.py", "status": "modified"}], skip="*.md", **mod), "all")
+
+    def test_records_scope_needs_every_path_skippable_or_a_record_and_one_record(self):
+        rec = {"RECORDS_PATHS": "stories/**"}
+        for names, skip, want, code in (
+            (["stories/a.md"], "docs/**", "records", "true"),
+            (["stories/a.md", "docs/x.md"], "docs/**", "records", "true"),
+            (["docs/x.md"], "docs/**", "none", "false"),
+            (["stories/a.md", "src/app.py"], "docs/**", "all", "true"),
+            (["other/a.md"], "docs/**", "all", "true"),
+        ):
+            with self.subTest(names=names):
+                got_code = self.classify(listing(*names), skip=skip, **rec)[0]
+                self.assertEqual((self.last_scope, got_code), (want, code))
+
+    def test_records_alone_without_skip_paths_is_still_records(self):
+        self.assertEqual(self.scope(listing("stories/a.md"), skip="", RECORDS_PATHS="stories/**"), "records")
+
+    def test_every_other_case_has_scope_all(self):
+        for event in ("push", "merge_group"):
+            self.assertEqual(self.scope(listing("README.md"), event=event, skip="*.md", RECORDS_PATHS="x/**"), "all")
+        self.assertEqual(self.scope(listing("README.md"), skip="*.md", RECORDS_PATHS=":(nosuchmagic)x"), "all")
+        self.assertEqual(self.scope(None, skip="*.md", RECORDS_PATHS="x/**", api={"stderr": "HTTP 502", "exit": 1}), "all")
+        self.assertEqual(self.scope([], skip="*.md", RECORDS_PATHS="x/**"), "all")
 
     def test_docs_only_is_not_code(self):
         code, summary, r = self.classify(listing("README.md", "docs/a/b.png", "HOWTO.md"))
@@ -135,7 +180,11 @@ class Changes(unittest.TestCase):
     def test_the_shipped_step_hands_the_action_inputs_to_the_script(self):
         # The step in action.yml is what runs on GitHub: it must pass every input the script reads.
         step = yaml.safe_load(ACTION.read_text())["runs"]["steps"][0]
-        self.assertEqual(set(step["env"]), {"EVENT", "REPO", "PR_NUMBER", "SKIP_PATHS", "GH_TOKEN"})
+        self.assertEqual(set(step["env"]), {"EVENT", "REPO", "PR_NUMBER", "SKIP_PATHS", "MODIFIED_SKIP_PATHS",
+                                           "RECORDS_PATHS", "GH_TOKEN"})
+        self.assertEqual(step["env"]["RECORDS_PATHS"], "${{ inputs.records-paths }}")
+        self.assertEqual(step["env"]["MODIFIED_SKIP_PATHS"], "${{ inputs.modified-skip-paths }}")
+        self.assertEqual(yaml.safe_load(ACTION.read_text())["outputs"]["scope"]["value"], "${{ steps.classify.outputs.scope }}")
         self.assertEqual(step["env"]["GH_TOKEN"], "${{ inputs.github-token }}")
         self.assertEqual(yaml.safe_load(ACTION.read_text())["inputs"]["github-token"]["default"], "${{ github.token }}")
         r = Runner(self, [[FILES, {"json": listing("docs/a.md")}]])
