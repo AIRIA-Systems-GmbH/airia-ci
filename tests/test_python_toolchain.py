@@ -523,6 +523,10 @@ class Steps(unittest.TestCase):
         self.assertEqual(self.run_step("Install the locked project").returncode, 0)
         self.assertEqual((self.r.bin / "uv-calls").read_text(), "sync --locked\n")
 
+    VALUED = ("--extra", "--no-extra", "--group", "--only-group", "--no-group", "--no-install-package")
+    FLAGS = ("--all-extras", "--all-groups", "--no-dev", "--no-default-groups", "--no-install-project",
+             "--no-install-workspace")
+
     def test_good_sync_arguments_pass_the_check_and_reach_the_sync(self):
         cases = {
             "": "",
@@ -533,6 +537,12 @@ class Steps(unittest.TestCase):
             "--extra dev\n--group test\n": " --extra dev --group test",
             "--all-extras --no-install-package airia_surreal.db-2": " --all-extras --no-install-package airia_surreal.db-2",
         }
+        # Every allowed name, in both forms where it takes a value.
+        for name in self.VALUED:
+            cases[f"{name} x"] = f" {name} x"
+            cases[f"{name}=x"] = f" {name}=x"
+        for name in self.FLAGS:
+            cases[name] = f" {name}"
         for given, added in cases.items():
             with self.subTest(args=given):
                 (self.r.bin / "uv-calls").unlink(missing_ok=True)
@@ -550,25 +560,27 @@ class Steps(unittest.TestCase):
             ("--extra dev; id", "dev;"), ("--extra $(id)", "$(id)"), ("--extra `id`", "`id`"),
             ("--extra dev && id", "&&"), ("--extra dev | id", "|"), ("--extra > out", ">"),
             ("--extra 'dev'", "'dev'"), ("--extra=$HOME", "--extra=$HOME"), ("--extra *", "*"),
-            ("--directory ../other", "../other"), ("--index-url=https://x.test", "--index-url=https://x.test"),
+            ("--extra ../other", "../other"), ("--extra=a/b", "--extra=a/b"),
             ("--group test\nrm -rf x", "rm"),  # a second line is words like any other
+            # A flag takes no value, and a name is whole: no prefix or suffix of an allowed one passes.
+            ("--no-dev dev", "dev"), ("--all-extras=x", "--all-extras=x"), ("--extras dev", "--extras"),
+            ("--no-install-local", "--no-install-local"), ("x--no-dev", "x--no-dev"),
+            # Another project, configuration or interpreter than the job checked, and any other uv option.
+            ("--project sub", "--project"), ("--project=sub", "--project=sub"), ("--directory sub", "--directory"),
+            ("--no-config", "--no-config"), ("--python 3.9", "--python"),
+            ("--extra dev --python=3.14", "--python=3.14"), ("--managed-python", "--managed-python"),
+            ("--no-managed-python", "--no-managed-python"), ("--no-python-downloads", "--no-python-downloads"),
+            ("--python-preference only-managed", "--python-preference"), ("--frozen", "--frozen"),
+            ("--index-url=https://x.test", "--index-url=https://x.test"),
         ]
         for given, named in cases:
             with self.subTest(args=given):
                 p = self.run_step("Check the sync arguments", UV_SYNC_ARGS=given)
                 self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
-                self.assertIn("::error title=uv-sync-args::", p.stdout)
-                self.assertIn(f"refused: '{named}'", p.stdout)
-
-    def test_the_sync_arguments_cannot_choose_the_interpreter(self):
-        # uv would rebuild .venv on it: a Python pins.toml never allowed, under a job named for another one.
-        for given in ("--python 3.9", "--extra dev --python=3.14"):
-            with self.subTest(args=given):
-                p = self.run_step("Check the sync arguments", UV_SYNC_ARGS=given)
-                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
-                self.assertIn("::error title=uv-sync-args::uv-sync-args may not choose the interpreter", p.stdout)
-        self.assertEqual(self.run_step("Check the sync arguments",
-                                       UV_SYNC_ARGS="--python-preference only-managed").returncode, 0)
+                self.assertIn(f"::error title=uv-sync-args::refused: '{named}'. Allowed", p.stdout)
+                # The message is the caller's way out: it names every allowed option.
+                for name in self.VALUED + self.FLAGS:
+                    self.assertRegex(p.stdout, rf"{name}[,;.]")
 
     def test_the_arguments_are_checked_in_every_job_and_the_rust_environment_precedes_the_sync(self):
         steps = yaml.safe_load(ACTION.read_text())["runs"]["steps"]

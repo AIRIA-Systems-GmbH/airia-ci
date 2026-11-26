@@ -64,8 +64,8 @@ name: AIRIA Python gate (shared)
 #             exception, below.
 #
 # THE SYNC (airia-ci#184). `uv-sync-args` adds arguments to every job's `uv sync --locked` (an extra or a dependency
-# group the tests need); anything but `--` options and their values fails the job. `rust-sdist-build` (default false)
-# sets, before the sync, a CARGO_TARGET_DIR on the runner's cache volume and a release profile without LTO.
+# group the tests need); anything but the allowed extra, group and install options fails the job. `rust-sdist-build`
+# (default false) sets, before the sync, a CARGO_TARGET_DIR on the runner's cache volume and a release profile without LTO.
 #
 # THE DOCS-ONLY FAST PATH, opt-in. `changes` decides whether a PR touched
 # code. With `docs-paths` empty (the default) the answer is always yes and
@@ -309,9 +309,9 @@ on:
       uv-sync-args:
         description: >-
           Extra arguments for the gate's `uv sync --locked` in every job that syncs, so tests whose tools
-          live in an extra or a dependency group can run (`--extra dev`, `--group test`). Options start with
-          `--`, each with at most one value word; letters, digits, `.`, `_` and `-` only; not `--python`
-          (`python-versions` picks the interpreters). Empty (the default): none.
+          live in an extra or a dependency group can run (`--extra dev`, `--group test`). Only uv's extra,
+          group and --no-install options are accepted (HOWTO.md lists them); anything else fails the job.
+          Empty (the default): none.
         required: false
         type: string
         default: ""

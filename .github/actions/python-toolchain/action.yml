@@ -73,10 +73,11 @@ inputs:
     default: "true"
   uv-sync-args:
     description: >-
-      Extra arguments for `uv sync --locked`, e.g. `--extra dev --group test`. Each option starts with `--`
-      (`--name` or `--name=value`) and may be followed by one value word; letters, digits, `.`, `_` and `-`
-      only. `--python` is refused (`python-version` picks the interpreter). Anything else fails, also with
-      `sync: false`. Empty (the default): none.
+      Extra arguments for `uv sync --locked`, e.g. `--extra dev --group test`. Allowed: `--extra`,
+      `--no-extra`, `--group`, `--only-group`, `--no-group`, `--no-install-package` (as `--name value` or
+      `--name=value`; letters, digits, `.`, `_` and `-`), and `--all-extras`, `--all-groups`, `--no-dev`,
+      `--no-default-groups`, `--no-install-project`, `--no-install-workspace`. Anything else fails, also
+      with `sync: false`. Empty (the default): none.
     required: false
     default: ""
   rust-sdist-build:
@@ -125,24 +126,22 @@ runs:
       env:
         UV_SYNC_ARGS: ${{ inputs.uv-sync-args }}
       run: |
-        # An option (`--name`, `--name=value`), or the one value word after a `--name`. No shell metacharacter passes.
+        # Only the options that pick what is installed. Any other could move the sync off the project, lock or
+        # interpreter this job checked (--project, --directory, --no-config, --python, --managed-python).
         read -ra args <<< "$(tr '\n' ' ' <<< "$UV_SYNC_ARGS")"
-        option='^--[a-z0-9][a-z0-9-]*(=[A-Za-z0-9_][A-Za-z0-9._-]*)?$'
-        value='^[A-Za-z0-9_][A-Za-z0-9._-]*$'
+        valued='--(extra|no-extra|group|only-group|no-group|no-install-package)'
+        flag='--(all-extras|all-groups|no-dev|no-default-groups|no-install-project|no-install-workspace)'
+        value='[A-Za-z0-9_][A-Za-z0-9._-]*'
         takes_value=false
         for arg in "${args[@]}"; do
-          # --python would sync another interpreter than the one checked against pins.toml and named by the job.
-          if [[ "$arg" = --python || "$arg" = --python=* ]]; then
-            echo "::error title=uv-sync-args::uv-sync-args may not choose the interpreter ('$arg'): use .python-version, or the gate's python-versions"
-            exit 1
-          fi
-          if [[ "$arg" =~ $option ]]; then
+          if [[ "$arg" =~ ^$valued$ ]]; then
             takes_value=true
-            [[ "$arg" != *=* ]] || takes_value=false
-          elif [ "$takes_value" = true ] && [[ "$arg" =~ $value ]]; then
+          elif [[ "$arg" =~ ^($flag|$valued=$value)$ ]]; then
+            takes_value=false
+          elif [ "$takes_value" = true ] && [[ "$arg" =~ ^$value$ ]]; then
             takes_value=false
           else
-            echo "::error title=uv-sync-args::uv-sync-args takes options starting with -- (--name or --name=value), each followed by at most one value of letters, digits, '.', '_' and '-'; refused: '$arg'"
+            echo "::error title=uv-sync-args::refused: '$arg'. Allowed, as --name value or --name=value: --extra, --no-extra, --group, --only-group, --no-group, --no-install-package; without a value: --all-extras, --all-groups, --no-dev, --no-default-groups, --no-install-project, --no-install-workspace. A value is letters, digits, '.', '_' and '-'."
             exit 1
           fi
         done
