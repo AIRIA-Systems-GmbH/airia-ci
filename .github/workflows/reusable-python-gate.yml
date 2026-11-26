@@ -102,8 +102,8 @@ name: AIRIA Python gate (shared)
 # A project that sets it must have pytest-xdist in its dev dependencies: without it the job
 # fails with `No xdist`, never a silent serial run.
 #
-# SHARDS (airia-ci#168). `shards` (default 1, 1 to 8) splits the test job: with N > 1 each `test` job runs the ids at
-# positions i, i+N, i+2N… of `pytest --collect-only -q` at `-n 4`, a `coverage` job combines the shards' coverage data and
+# SHARDS (airia-ci#168). `shards` (default 1, 1 to 8) splits the test job: with N > 1 each `test` job runs a share of the test files
+# of `pytest --collect-only -q` (balanced by test count, whole files; #171) at `-n 4`, a `coverage` job combines the shards' coverage data and
 # holds the floor, and `gate` still reports one result (`ci / gate`, the required check). With 1 nothing changes.
 #
 # TEST BUDGET (airia-ci#156). `test-budget-minutes` (default 10) is the time one pytest run may
@@ -563,9 +563,10 @@ jobs:
             ptimeout=("--timeout=$TEST_TIMEOUT")
           fi
           # One slice of the collected ids per job (shards > 1); with 1 nothing below runs and pytest is called as before.
-          # The slice is every id whose 0-based position in `pytest --collect-only -q` is SHARD-1 modulo SHARDS: the shards are
-          # disjoint, together they are the whole suite, and sizes differ by at most one. Stable because collection order is
-          # deterministic for one commit (files, then definition order); ids that embed a random value would break it.
+          # The slice is whole files (airia-ci#171), never ids: passing node ids changes which `conftest` pytest imports first,
+          # and a module-scoped fixture would be rebuilt in every shard holding one of its tests. shard.py assigns the files
+          # of `pytest --collect-only -q` by descending test count (ties by name) to the least-loaded shard: deterministic for
+          # one commit, disjoint, together the whole suite; a suite that is one huge file gets uneven shards, never a lost test.
           # No dependency is added to the caller's lockfile. Each shard holds a partial coverage figure: the floor is held
           # on the combined data by the `coverage` job, so a slice runs with floor 0.
           ids=()
@@ -587,34 +588,20 @@ jobs:
               echo "::error title=Collection format::pytest --collect-only -q printed per-file counts, not test ids; remove -q from addopts so the suite can be sharded"
               exit 1
             fi
-            # An id is a line that starts at column 0 and holds `::`; it may hold spaces and `::` inside its brackets
-            # (`t.py::test_f[hello world]`), so it is read whole, line by line, and passed as one argument.
-            all=()
-            while IFS= read -r id; do
-              all+=("$id")
-            done < <(grep -E '^[^[:space:]].*::' "$collected")
-            # Never silent: pytest's own count (`N tests collected`, `N/M tests collected (K deselected)`) must equal the ids kept.
-            summary="$(grep -Eo '^[0-9]+(/[0-9]+)? tests? collected' "$collected" | tail -n 1 || true)"
-            if [ -n "$summary" ]; then
-              expected="${summary%% *}"
-              expected="${expected%%/*}"
-              if [ "${#all[@]}" -ne "$expected" ]; then
-                echo "::error title=Collection count::pytest collected $expected tests but ${#all[@]} ids were read from its listing, so a test would run in no shard"
-                exit 1
-              fi
+            # shard.py reads the ids (a line at column 0 holding `::`, spaces and `::` inside brackets included), checks
+            # them against pytest's own count and assigns whole files to shards; a listing it cannot read fails here.
+            if ! assigned="$(python3 "$AIRIA_SHARD" "$collected" "$SHARDS" "$SHARD")"; then
+              echo "$assigned"
+              exit 1
             fi
-            i=0
-            for id in "${all[@]}"; do
-              if [ $((i % SHARDS)) -eq $((SHARD - 1)) ]; then
-                ids+=("$id")
-              fi
-              i=$((i + 1))
-            done
+            while IFS= read -r file; do
+              [ -n "$file" ] && ids+=("$file")
+            done <<< "$assigned"
             if [ "${#ids[@]}" -eq 0 ]; then
               echo "Shard $SHARD of $SHARDS has no tests: it passes and uploads no coverage data."
               exit 0
             fi
-            echo "Shard $SHARD of $SHARDS runs ${#ids[@]} tests at ${xdist[*]}."
+            echo "Shard $SHARD of $SHARDS runs ${#ids[@]} test files at ${xdist[*]}."
             mkdir -p "$RUNNER_TEMP/shard-cov"
             export COVERAGE_FILE="$RUNNER_TEMP/shard-cov/.coverage.$SHARD"
             FLOOR=0
