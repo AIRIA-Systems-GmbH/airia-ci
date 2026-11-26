@@ -102,6 +102,10 @@ name: AIRIA Python gate (shared)
 # A project that sets it must have pytest-xdist in its dev dependencies: without it the job
 # fails with `No xdist`, never a silent serial run.
 #
+# SHARDS (airia-ci#168). `shards` (default 1, 1 to 8) splits the test job: with N > 1 each `test` job runs the ids at
+# positions i, i+N, i+2N… of `pytest --collect-only -q` at `-n 4`, a `coverage` job combines the shards' coverage data and
+# holds the floor, and `gate` still reports one result (`ci / gate`, the required check). With 1 nothing changes.
+#
 # TEST BUDGET (airia-ci#156). `test-budget-minutes` (default 10) is the time one pytest run may
 # take: Andrea, 2026-11-24, "a suite runs in 10 minutes or less". The test job times its pytest
 # step alone (the wait for a runner slot before the job starts is not counted), rounds up to a
@@ -232,6 +236,15 @@ on:
         required: false
         type: number
         default: 25
+      shards:
+        description: >-
+          How many parallel jobs the test job is split into (default 1 = today's single job). A whole
+          number from 1 to 8. With N > 1 each `test` job runs one even slice of the collected test ids
+          at `-n 4`, a `coverage` job combines the slices' coverage data and holds the floor, and `gate`
+          still reports one result. See HOWTO.md.
+        required: false
+        type: number
+        default: 1
       docs-paths:
         description: >-
           Git glob pathspecs (one per line or space-separated) of documentation.
@@ -275,6 +288,22 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
     steps:
+      - name: Shards check
+        timeout-minutes: 5
+        env:
+          SHARDS: ${{ inputs.shards }}
+          RATCHET: ${{ inputs.debt-ratchet }}
+        run: |
+          # The test matrix reads this value: anything but a whole number from 1 to 8 is refused before it expands.
+          if ! [[ "$SHARDS" =~ ^[1-8]$ ]]; then
+            echo "::error title=shards::shards must be a whole number from 1 to 8, not '$SHARDS'"
+            exit 1
+          fi
+          # A slice sees only its own failing ids, so the ratchet's baseline comparison cannot be made per shard.
+          if [ "$SHARDS" -gt 1 ] && [ "$RATCHET" = true ]; then
+            echo "::error title=shards::shards above 1 cannot be combined with debt-ratchet: a baseline id outside a slice would read as fixed"
+            exit 1
+          fi
       - if: github.event_name == 'pull_request' && inputs.docs-paths != ''
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -424,7 +453,7 @@ jobs:
           fi
 
   test:
-    name: test ${{ matrix.python || '(.python-version)' }}
+    name: test ${{ matrix.python || '(.python-version)' }}${{ inputs.shards > 1 && format(' shard {0}/{1}', matrix.shard, inputs.shards) || '' }}
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
@@ -434,6 +463,8 @@ jobs:
       fail-fast: false
       matrix:
         python: ${{ fromJSON(inputs.python-versions != '' && inputs.python-versions || '[""]') }}
+        # The shard indexes, 1..N: expressions have no range, so a table indexed by N (0 and 1 are one job).
+        shard: ${{ fromJSON('[[0],[0],[1,2],[1,2,3],[1,2,3,4],[1,2,3,4,5],[1,2,3,4,5,6],[1,2,3,4,5,6,7],[1,2,3,4,5,6,7,8]]')[inputs.shards] }}
     services:
       postgres:
         image: ${{ inputs.postgres-image }}
@@ -494,6 +525,8 @@ jobs:
           WORKERS: ${{ inputs.pytest-workers }}
           TEST_TIMEOUT: ${{ inputs.pytest-timeout-seconds }}
           RATCHET: ${{ inputs.debt-ratchet }}
+          SHARDS: ${{ inputs.shards }}
+          SHARD: ${{ matrix.shard }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
             echo "::error title=durations::durations must be a whole number of tests to list (0 lists all), not '$DURATIONS'"
@@ -529,6 +562,63 @@ jobs:
             fi
             ptimeout=("--timeout=$TEST_TIMEOUT")
           fi
+          # One slice of the collected ids per job (shards > 1); with 1 nothing below runs and pytest is called as before.
+          # The slice is every id whose 0-based position in `pytest --collect-only -q` is SHARD-1 modulo SHARDS: the shards are
+          # disjoint, together they are the whole suite, and sizes differ by at most one. Stable because collection order is
+          # deterministic for one commit (files, then definition order); ids that embed a random value would break it.
+          # No dependency is added to the caller's lockfile. Each shard holds a partial coverage figure: the floor is held
+          # on the combined data by the `coverage` job, so a slice runs with floor 0.
+          ids=()
+          if [ "$SHARDS" -gt 1 ]; then
+            if [ -z "$WORKERS" ]; then
+              xdist=(-n 4)
+            elif ! [[ "$WORKERS" =~ ^[1-4]$ ]]; then
+              echo "::error title=pytest-workers::with shards above 1 pytest-workers must be empty or 1 to 4 (4 is the most a job runs), not '$WORKERS'"
+              exit 1
+            fi
+            collected="$RUNNER_TEMP/collected.txt"
+            if ! pytest --collect-only -q --no-cov -p no:cacheprovider > "$collected"; then
+              cat "$collected"
+              echo "::error title=Collection failed::pytest could not collect the tests, so they cannot be split into shards"
+              exit 1
+            fi
+            # `-q` in the project's addopts turns the listing into `file: count` lines: refuse, never guess.
+            if grep -Eq '^[^[:space:]]+: [0-9]+$' "$collected"; then
+              echo "::error title=Collection format::pytest --collect-only -q printed per-file counts, not test ids; remove -q from addopts so the suite can be sharded"
+              exit 1
+            fi
+            # An id is a line that starts at column 0 and holds `::`; it may hold spaces and `::` inside its brackets
+            # (`t.py::test_f[hello world]`), so it is read whole, line by line, and passed as one argument.
+            all=()
+            while IFS= read -r id; do
+              all+=("$id")
+            done < <(grep -E '^[^[:space:]].*::' "$collected")
+            # Never silent: pytest's own count (`N tests collected`, `N/M tests collected (K deselected)`) must equal the ids kept.
+            summary="$(grep -Eo '^[0-9]+(/[0-9]+)? tests? collected' "$collected" | tail -n 1 || true)"
+            if [ -n "$summary" ]; then
+              expected="${summary%% *}"
+              expected="${expected%%/*}"
+              if [ "${#all[@]}" -ne "$expected" ]; then
+                echo "::error title=Collection count::pytest collected $expected tests but ${#all[@]} ids were read from its listing, so a test would run in no shard"
+                exit 1
+              fi
+            fi
+            i=0
+            for id in "${all[@]}"; do
+              if [ $((i % SHARDS)) -eq $((SHARD - 1)) ]; then
+                ids+=("$id")
+              fi
+              i=$((i + 1))
+            done
+            if [ "${#ids[@]}" -eq 0 ]; then
+              echo "Shard $SHARD of $SHARDS has no tests: it passes and uploads no coverage data."
+              exit 0
+            fi
+            echo "Shard $SHARD of $SHARDS runs ${#ids[@]} tests at ${xdist[*]}."
+            mkdir -p "$RUNNER_TEMP/shard-cov"
+            export COVERAGE_FILE="$RUNNER_TEMP/shard-cov/.coverage.$SHARD"
+            FLOOR=0
+          fi
           report="$RUNNER_TEMP/coverage.json"
           rm -f "$report"
           if [ "$RATCHET" = true ]; then
@@ -540,7 +630,7 @@ jobs:
             status=${PIPESTATUS[0]}
             python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
           else
-            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR"
+            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" "${ids[@]}"
           fi
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
@@ -569,6 +659,66 @@ jobs:
             echo "pytest took $minutes min, within the $BUDGET-minute budget" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           exit 0
+      - name: Upload this shard's coverage data
+        if: inputs.shards > 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.python || 'default' }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-cov/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 1
+
+  coverage:
+    name: coverage ${{ matrix.python || '(.python-version)' }}
+    needs: [changes, test]
+    # Only a sharded run has partial figures to combine; `gate` accepts the skip at shards = 1.
+    if: needs.changes.outputs.code == 'true' && inputs.shards > 1
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJSON(inputs.python-versions != '' && inputs.python-versions || '[""]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: toolchain
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/python-toolchain@main
+        with:
+          python-version: ${{ matrix.python }}
+          type-checker: ${{ inputs.type-checker }}
+          coverage-floor: ${{ inputs.coverage-floor }}
+          debt-ratchet: ${{ inputs.debt-ratchet }}
+          services: ${{ toJSON(job.services) }}
+          job-env: ${{ inputs.job-env }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        timeout-minutes: 5
+        with:
+          pattern: coverage-${{ matrix.python || 'default' }}-*
+          path: ${{ runner.temp }}/shard-cov
+          merge-multiple: true
+      - name: The combined coverage holds the floor
+        timeout-minutes: 10
+        env:
+          FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
+        run: |
+          # The slices' data files were written by `pytest --cov` in the shards; the data lists absolute paths, so a caller on
+          # runners with different workspaces sets `[tool.coverage.run] relative_files = true`.
+          data="$RUNNER_TEMP/shard-cov"
+          if ! compgen -G "$data/.coverage.*" > /dev/null; then
+            echo "::error title=No coverage data::no shard uploaded coverage data, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\")."
+            exit 1
+          fi
+          export COVERAGE_FILE="$RUNNER_TEMP/combined/.coverage"
+          mkdir -p "$RUNNER_TEMP/combined"
+          coverage combine "$data"
+          report="$RUNNER_TEMP/coverage.json"
+          coverage report
+          coverage json -o "$report"
+          jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
@@ -603,7 +753,7 @@ jobs:
         run: zizmor --offline --config "$ZIZMOR_CONFIG" .github
 
   gate:
-    needs: [changes, lint, test, security]
+    needs: [changes, lint, test, coverage, security]
     if: always()
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions: {}
@@ -614,6 +764,7 @@ jobs:
           OWN: ${{ toJSON(needs) }}
           EXTRA: ${{ inputs.extra-jobs }}
           CODE: ${{ needs.changes.outputs.code }}
+          SHARDS: ${{ inputs.shards }}
         run: |
           if ! jq -e 'type == "object"' <<< "$EXTRA" > /dev/null 2>&1; then
             echo "::error title=extra-jobs::extra-jobs must be toJSON(needs) of the call job, a JSON object; got: $EXTRA"
@@ -626,8 +777,12 @@ jobs:
           # test were skipped on purpose. Any other skip, and any failure, fails.
           skippable='[]'
           if [ "$CODE" = false ]; then
-            skippable='["lint", "test"]'
+            skippable='["lint", "test", "coverage"]'
             echo "Docs only: lint and test were not run." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # `coverage` only runs for a sharded test job: unsharded, its skip is the normal state.
+          if [ "$SHARDS" = 1 ]; then
+            skippable="$(jq -c '. + ["coverage"]' <<< "$skippable")"
           fi
           failed="$(jq -r --argjson skip "$skippable" 'to_entries[]
             | select(.value.result != "success" and (.value.result == "skipped" and (.key | IN($skip[]))) == false)
