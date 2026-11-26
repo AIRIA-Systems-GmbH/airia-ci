@@ -253,6 +253,25 @@ on:
         required: false
         type: string
         default: ""
+      records-paths:
+        description: >-
+          Git glob pathspecs (as docs-paths) of the record or documentation paths this
+          project's own tests READ, `.airia/` ones included (the only way to name them: the
+          `.airia/` rail is lifted for what is listed here). A pull request whose every
+          changed path is in docs-paths or here, with at least one here, runs only
+          `records-tests` and skips lint, the other tests and the coverage job. Needs
+          `records-tests`; ignored with `debt-ratchet`. Empty (the default): never (airia-ci#175).
+        required: false
+        type: string
+        default: ""
+      records-tests:
+        description: >-
+          The pytest arguments of the tests that read those records: a marker (`-m records`)
+          or test paths (`tests/test_records.py tests/stories`). Used only on a records-only
+          pull request. The project lists them from its own grep; airia-ci does not know.
+        required: false
+        type: string
+        default: ""
       extra-allow:
         description: The review's extra permission-allow rules (see reusable-claude-review.yml).
         required: false
@@ -287,6 +306,7 @@ jobs:
       contents: read
     outputs:
       code: ${{ steps.diff.outputs.code }}
+      scope: ${{ steps.diff.outputs.scope }}
     steps:
       - name: Shards check
         timeout-minutes: 5
@@ -304,7 +324,7 @@ jobs:
             echo "::error title=shards::shards above 1 cannot be combined with debt-ratchet: a baseline id outside a slice would read as fixed"
             exit 1
           fi
-      - if: github.event_name == 'pull_request' && inputs.docs-paths != ''
+      - if: github.event_name == 'pull_request' && (inputs.docs-paths != '' || (inputs.records-paths != '' && inputs.records-tests != ''))
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -317,11 +337,20 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           DOCS_PATHS: ${{ inputs.docs-paths }}
+          RECORDS_PATHS: ${{ inputs.records-paths }}
+          RECORDS_TESTS: ${{ inputs.records-tests }}
+          RATCHET: ${{ inputs.debt-ratchet }}
         run: |
           code=true
+          scope=all
           read -ra patterns <<< "$(tr '\n' ' ' <<< "$DOCS_PATHS")"
-          if [ "$EVENT" != pull_request ] || [ "${#patterns[@]}" -eq 0 ]; then
-            echo "Every gate runs: no docs-paths, or not a pull request ($EVENT)."
+          read -ra rpatterns <<< "$(tr '\n' ' ' <<< "$RECORDS_PATHS")"
+          # A records run needs the tests to run, and no debt ratchet (a subset cannot be compared with its baseline).
+          if [ -z "${RECORDS_TESTS// /}" ] || [ "$RATCHET" = true ]; then
+            rpatterns=()
+          fi
+          if [ "$EVENT" != pull_request ] || [ "$(( ${#patterns[@]} + ${#rpatterns[@]} ))" -eq 0 ]; then
+            echo "Every gate runs: no docs-paths or records-paths, or not a pull request ($EVENT)."
           elif ! git rev-parse -q --verify 'HEAD^2' > /dev/null; then
             echo "::notice title=Every gate runs::the checkout is not the PR's merge commit, so its change cannot be read"
           else
@@ -331,29 +360,42 @@ jobs:
             for p in "${patterns[@]}"; do
               excluded+=(":(glob,exclude)$p")
             done
+            rexcluded=()
+            for p in "${rpatterns[@]}"; do
+              rexcluded+=(":(glob,exclude)$p")
+            done
             not_docs="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- . "${excluded[@]}")"
-            # Never docs, whatever docs-paths says.
-            always_code=(.airia .github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/*.toml' '**/uv.lock'
+            not_covered="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- . "${excluded[@]}" "${rexcluded[@]}")"
+            # Never docs and never records, whatever the patterns say: workflows, tests, code and tool configuration.
+            always_code=(.github '**/tests/**' '**/test/**' '**/*.py' '**/*.pyi' '**/*.toml' '**/uv.lock'
               '**/.python-version' '**/setup.cfg' '**/*.ini' '**/.importlinter' '**/.coveragerc'
               '**/requirements*.txt' '**/Dockerfile*')
             never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
+            # `.airia/` is never docs (suites read it): only what records-paths names is lifted out of that rail.
+            airia="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- .airia "${rexcluded[@]}")"
             if [ -z "$changed" ]; then
               echo "Every gate runs: the pull request changes no file."
-            elif [ -n "$not_docs$never" ]; then
-              echo "Every gate runs: these changed paths are not docs:"
-              printf '%s\n' "$not_docs" "$never" | sort -u | sed '/^$/d; s/^/  /'
+            elif [ -n "$not_covered$never$airia" ]; then
+              echo "Every gate runs: these changed paths are not docs or records:"
+              printf '%s\n' "$not_covered" "$never" "$airia" | sort -u | sed '/^$/d; s/^/  /'
+            elif [ -n "$not_docs" ]; then
+              scope=records
+              echo "Records only: only the records tests run. Changed:"
+              while IFS= read -r f; do echo "  $f"; done <<< "$changed"
             else
               code=false
+              scope=none
               echo "Docs only: lint and test are skipped. Changed:"
               while IFS= read -r f; do echo "  $f"; done <<< "$changed"
             fi
           fi
           echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "code changed: $code" >> "$GITHUB_STEP_SUMMARY"
+          echo "scope=$scope" >> "$GITHUB_OUTPUT"
+          echo "code changed: $code (scope: $scope)" >> "$GITHUB_STEP_SUMMARY"
 
   lint:
     needs: [changes]
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records'
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
@@ -527,6 +569,8 @@ jobs:
           RATCHET: ${{ inputs.debt-ratchet }}
           SHARDS: ${{ inputs.shards }}
           SHARD: ${{ matrix.shard }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
+          RECORDS_TESTS: ${{ inputs.records-tests }}
         run: |
           if ! [[ "$DURATIONS" =~ ^[0-9]+$ ]]; then
             echo "::error title=durations::durations must be a whole number of tests to list (0 lists all), not '$DURATIONS'"
@@ -570,7 +614,17 @@ jobs:
           # No dependency is added to the caller's lockfile. Each shard holds a partial coverage figure: the floor is held
           # on the combined data by the `coverage` job, so a slice runs with floor 0.
           ids=()
-          if [ "$SHARDS" -gt 1 ]; then
+          # A records-only pull request (airia-ci#175): the project's own records tests, nothing else, with no coverage
+          # floor (a subset cannot hold one; the push to the default branch runs everything). Sharded, shard 1 runs them.
+          if [ "$SCOPE" = records ]; then
+            if [ "$SHARDS" -gt 1 ] && [ "$SHARD" -ne 1 ]; then
+              echo "Records run: shard 1 runs the records tests; shard $SHARD has nothing to do."
+              exit 0
+            fi
+            read -ra ids <<< "$RECORDS_TESTS"
+            FLOOR=0
+            echo "Records run: pytest ${xdist[*]} ${ids[*]}"
+          elif [ "$SHARDS" -gt 1 ]; then
             if [ -z "$WORKERS" ]; then
               xdist=(-n 4)
             elif ! [[ "$WORKERS" =~ ^[1-4]$ ]]; then
@@ -660,7 +714,7 @@ jobs:
     name: coverage ${{ matrix.python || '(.python-version)' }}
     needs: [changes, test]
     # Only a sharded run has partial figures to combine; `gate` accepts the skip at shards = 1.
-    if: needs.changes.outputs.code == 'true' && inputs.shards > 1
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && inputs.shards > 1
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
@@ -751,6 +805,7 @@ jobs:
           OWN: ${{ toJSON(needs) }}
           EXTRA: ${{ inputs.extra-jobs }}
           CODE: ${{ needs.changes.outputs.code }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
           SHARDS: ${{ inputs.shards }}
         run: |
           if ! jq -e 'type == "object"' <<< "$EXTRA" > /dev/null 2>&1; then
@@ -766,6 +821,11 @@ jobs:
           if [ "$CODE" = false ]; then
             skippable='["lint", "test", "coverage"]'
             echo "Docs only: lint and test were not run." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          # A records-only run (airia-ci#175) runs `test` (the records tests) and skips lint and coverage on purpose.
+          if [ "$CODE" = true ] && [ "$SCOPE" = records ]; then
+            skippable='["lint", "coverage"]'
+            echo "Records only: lint and the other tests were not run." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           # `coverage` only runs for a sharded test job: unsharded, its skip is the normal state.
           if [ "$SHARDS" = 1 ]; then

@@ -75,7 +75,7 @@ class Shape(unittest.TestCase):
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
             "extra-prompt", "debt-ratchet", "pytest-workers", "test-timeout-minutes",
-            "pytest-timeout-seconds", "test-budget-minutes", "shards"})
+            "pytest-timeout-seconds", "test-budget-minutes", "shards", "records-paths", "records-tests"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -169,8 +169,9 @@ class Shape(unittest.TestCase):
         # The one condition: lint and test wait for `changes` and skip on a docs-only PR.
         # security never skips: REUSE and gitleaks hold for a doc too.
         # `coverage` also waits for `test` and only exists for a sharded run (`gate` excuses its skip at shards = 1 only).
-        conditions = {"lint": "needs.changes.outputs.code == 'true'", "test": "needs.changes.outputs.code == 'true'",
-                      "coverage": "needs.changes.outputs.code == 'true' && inputs.shards > 1"}
+        conditions = {"lint": "needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records'",
+                      "test": "needs.changes.outputs.code == 'true'",
+                      "coverage": "needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && inputs.shards > 1"}
         for name in ("changes", "lint", "test", "coverage", "security"):
             job = JOBS[name]
             with self.subTest(job=name):
@@ -186,10 +187,12 @@ class Shape(unittest.TestCase):
 
     def test_changes_reads_the_merge_commit_only_when_it_needs_to(self):
         _, checkout, diff = JOBS["changes"]["steps"]
-        self.assertEqual(checkout["if"], "github.event_name == 'pull_request' && inputs.docs-paths != ''")
+        self.assertEqual(checkout["if"], "github.event_name == 'pull_request' && (inputs.docs-paths != '' || "
+                                         "(inputs.records-paths != '' && inputs.records-tests != ''))")
         self.assertEqual(checkout["with"], {"fetch-depth": 2, "persist-credentials": False})
         self.assertNotIn("ref", checkout["with"])  # the default on a pull request: refs/pull/N/merge
-        self.assertEqual(JOBS["changes"]["outputs"], {"code": f"${{{{ steps.{diff['id']}.outputs.code }}}}"})
+        self.assertEqual(JOBS["changes"]["outputs"], {"code": f"${{{{ steps.{diff['id']}.outputs.code }}}}",
+                                                      "scope": f"${{{{ steps.{diff['id']}.outputs.scope }}}}"})
 
     def test_every_gate_job_starts_from_the_standard_toolchain(self):
         for name in ("lint", "test", "security"):
