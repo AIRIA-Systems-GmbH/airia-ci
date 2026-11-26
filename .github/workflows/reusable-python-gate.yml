@@ -78,6 +78,11 @@ name: AIRIA Python gate (shared)
 # that configure the tools or the build (any `*.toml`, `uv.lock`,
 # `.python-version`, `setup.cfg`, `*.ini`, `.importlinter`, `.coveragerc`,
 # `requirements*.txt`, `Dockerfile*`).
+# RECORDS FAST PATH (airia-ci#175), opt-in on `records-paths` AND `records-tests`. A pull request whose every changed
+# path is in `docs-paths` or `records-paths` (at least one in the latter) has `scope` records: `test` runs only
+# `records-tests` at no coverage floor, `lint` and `coverage` are skipped and `gate` accepts exactly those skips. `.airia/`
+# stays never-docs except what `records-paths` names; workflows, tests, code and configuration are never records. A
+# debt ratchet or an empty `records-tests` turns it off.
 # Then the automatic Claude review, chained after `gate` and run even when it
 # is red (a red gate is review input). On a PR it never skips silently: no
 # Claude credential fails it with the reason.

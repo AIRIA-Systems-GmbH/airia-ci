@@ -659,14 +659,77 @@ class Changes(unittest.TestCase):
         self.assertEqual(code, "true")
         self.assertIn("::notice title=Every gate runs::", out)
 
+    def scoped(self, docs: str = "docs/**", records: str = "", tests: str = "-m records", ratchet: str = "false"):
+        p = self.r.run(WORKFLOW, self.STEP, cwd=self.repo, EVENT="pull_request", DOCS_PATHS=docs, RECORDS_PATHS=records,
+                       RECORDS_TESTS=tests, RATCHET=ratchet)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        out = self.r.outputs()
+        return out["code"], out["scope"], p.stdout
+
+    def test_a_records_only_pr_has_scope_records_and_still_counts_as_code(self):
+        # airia-ci#175: the lane's own records tests run; lint and the rest skip. `code` stays true for every caller.
+        self.pr({".airia/memory/story/S1.md": "s", "docs/guide.md": "g2"})
+        code, scope, out = self.scoped(records=".airia/memory/story/**")
+        self.assertEqual((code, scope), ("true", "records"))
+        self.assertIn("Records only", out)
+        self.assertIn("scope: records", self.r.summary.read_text())
+
+    def test_records_paths_lifts_only_what_it_names_out_of_the_airia_rail(self):
+        self.pr({".airia/memory/story/S1.md": "s", ".airia/memory/plan/P1.md": "p"})
+        self.assertEqual(self.scoped(records=".airia/memory/story/**")[:2], ("true", "all"))
+        self.assertEqual(self.scoped(records=".airia/memory/**")[:2], ("true", "records"))
+
+    def test_a_records_path_never_lifts_workflows_tests_or_code(self):
+        for path in (".github/workflows/ci.yml", "tests/data/case.md", "src/app.py", "pyproject.toml"):
+            with self.subTest(path=path):
+                git(self.repo, "reset", "-q", "--hard", self.base)
+                git(self.repo, "branch", "-qD", "pr") if "pr" in git(self.repo, "branch") else None
+                self.pr({path: "changed", ".airia/memory/story/S1.md": "s"})
+                self.assertEqual(self.scoped(records="**")[:2], ("true", "all"))
+
+    def test_a_docs_only_pr_stays_scope_none_beside_records_paths(self):
+        self.pr({"docs/guide.md": "g2"})
+        self.assertEqual(self.scoped(records=".airia/memory/**")[:2], ("false", "none"))
+
+    def test_records_paths_without_records_tests_or_with_the_ratchet_is_off(self):
+        self.pr({".airia/memory/story/S1.md": "s"})
+        self.assertEqual(self.scoped(records=".airia/memory/**", tests="")[:2], ("true", "all"))
+        self.assertEqual(self.scoped(records=".airia/memory/**", ratchet="true")[:2], ("true", "all"))
+
+    def test_records_paths_alone_without_docs_paths_works(self):
+        self.pr({".airia/memory/story/S1.md": "s"})
+        self.assertEqual(self.scoped(docs="", records=".airia/memory/**")[:2], ("true", "records"))
+
+    def test_a_records_pr_that_also_touches_an_unlisted_path_runs_everything(self):
+        self.pr({".airia/memory/story/S1.md": "s", "README.md": "r2"})
+        self.assertEqual(self.scoped(records=".airia/memory/**")[:2], ("true", "all"))
+
 
 class Gate(unittest.TestCase):
     STEP = "Every gate succeeded"
 
-    def verdict(self, own: str, extra: str = "{}", code: str = "true", shards: str = "1"):
+    def verdict(self, own: str, extra: str = "{}", code: str = "true", shards: str = "1", scope: str = "all"):
         r = Runner(self)
-        p = r.run(WORKFLOW, self.STEP, OWN=own, EXTRA=extra, CODE=code, SHARDS=shards)
+        p = r.run(WORKFLOW, self.STEP, OWN=own, EXTRA=extra, CODE=code, SCOPE=scope, SHARDS=shards)
         return p, r
+
+    def test_a_records_run_passes_with_lint_and_coverage_skipped_and_test_green(self):
+        own = needs(changes="success", lint="skipped", test="success", coverage="skipped", security="success")
+        for shards in ("1", "2"):
+            p, r = self.verdict(own, code="true", scope="records", shards=shards)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertIn("Records only", r.summary.read_text())
+
+    def test_a_records_run_never_excuses_a_skipped_or_failed_test_or_security(self):
+        for test in ("skipped", "failure"):
+            own = needs(changes="success", lint="skipped", test=test, coverage="skipped", security="success")
+            self.assertEqual(self.verdict(own, scope="records")[0].returncode, 1, test)
+        own = needs(changes="success", lint="skipped", test="success", coverage="skipped", security="skipped")
+        self.assertEqual(self.verdict(own, scope="records")[0].returncode, 1)
+
+    def test_a_skipped_lint_is_not_excused_without_records_scope(self):
+        own = needs(changes="success", lint="skipped", test="success", coverage="skipped", security="success")
+        self.assertEqual(self.verdict(own, scope="all")[0].returncode, 1)
 
     def test_docs_only_passes_with_lint_and_test_skipped(self):
         p, r = self.verdict(needs(changes="success", lint="skipped", test="skipped", security="success"), code="false")
@@ -816,6 +879,24 @@ class Shards(unittest.TestCase):
         up = next(s for s in JOBS["test"]["steps"] if s.get("name") == "Upload this shard's coverage data")
         self.assertEqual(up["with"]["path"], "${{ runner.temp }}/shard-cov/")
         self.assertIs(up["with"]["include-hidden-files"], True, ".coverage.N is a hidden file")
+
+    def test_a_records_run_runs_only_the_records_tests_with_no_floor_and_never_collects(self):
+        p = self.run_step(SHARDS="1", SHARD="0", SCOPE="records", RECORDS_TESTS="-m records tests/stories")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        (call,) = self.calls()
+        self.assertNotIn("--collect-only", call)
+        self.assertTrue(call.endswith(" -m records tests/stories"), call)
+        self.assertIn("--cov-fail-under=0", call)
+
+    def test_a_sharded_records_run_runs_in_shard_1_only(self):
+        first = self.run_step(SHARDS="3", SHARD="1", SCOPE="records", RECORDS_TESTS="-m records")
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertTrue(self.calls()[-1].endswith(" -m records"), self.calls())
+        self.setUp()
+        other = self.run_step(SHARDS="3", SHARD="2", SCOPE="records", RECORDS_TESTS="-m records")
+        self.assertEqual(other.returncode, 0, other.stdout + other.stderr)
+        self.assertIn("shard 2 has nothing to do", other.stdout)
+        self.assertEqual(self.calls(), [])
 
     def test_an_empty_slice_passes_without_running_pytest(self):
         p = self.run_step(SHARDS="4", SHARD="4", FAKE_COLLECT="a.py::t0\nb.py::t1")
