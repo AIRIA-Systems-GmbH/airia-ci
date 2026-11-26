@@ -17,7 +17,7 @@ description: >-
 #
 # HOW A LANE USES IT. The caller's job `changes` runs this action; its heavy
 # jobs (test, lint, type-check) say `needs: changes` and
-# `if: needs.changes.outputs.code != 'false'`. A job-level `if` reports the
+# `if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}`. A job-level `if` reports the
 # required check as skipped, which satisfies it; `on.paths` and `paths-ignore`
 # leave a required check pending, so they are never used. Security, REUSE and
 # gitleaks jobs NEVER take that `if`.
