@@ -333,12 +333,13 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.code != 'false'
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.code != 'false') }}
     # ... the lane's heavy job, unchanged
 ```
 
 `code` is `'false'` only for a `pull_request` whose every changed path matches `skip-paths`. It is `'true'` for anything else: a push or `merge_group` event, an empty file list, 3000 files (the API's cap), a failed or cut read, an empty `skip-paths`, one path that matches none of it. The step summary says how many paths matched.
 
+- **The `if` must fail open too.** A bare `if: needs.changes.outputs.code != 'false'` gets GitHub's implicit `success()`: if `changes` itself fails, the heavy job is skipped and a skipped job satisfies the required check, so a broken classifier would merge untested code. Use the full condition above: it runs the job whenever `changes` did not succeed (airia-ci#176).
 - **Gate only the heavy jobs** (test, lint, type-check) with the `if`. **Never** a security, REUSE or gitleaks job: they run on every pull request. A job-level `if` reports the required check as skipped, which satisfies it; do not use `on.paths` or `paths-ignore`, which leave a required check pending. A job that `needs` a gated job is skipped too: give it `if: ${{ !cancelled() && needs.test.result != 'failure' }}`, or the skip reaches it.
 - **Patterns are git pathspecs**, as `docs-paths` of the Python gate reads them: `*` crosses `/` (so `*.md` is every Markdown file in the tree), `docs/**` is everything under `docs/`, and `:(glob)*.md` stops at one directory. A path with no match makes the whole change code.
 - **airia-ci does not decide which paths are safe.** List a path only after you have checked that no test or script of your repository reads it.
