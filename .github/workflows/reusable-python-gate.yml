@@ -377,7 +377,10 @@ jobs:
               '**/requirements*.txt' '**/Dockerfile*')
             never="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- "${always_code[@]/#/:(glob)}")"
             # `.airia/` is never docs (suites read it): only what records-paths names is lifted out of that rail.
-            airia="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- .airia "${rexcluded[@]}")"
+            # The two baselines the lint job tightens are never lifted, whatever records-paths says.
+            airia_never=(.airia/ruff-baseline.json .airia/debt-baseline.json)
+            airia="$(git diff --no-renames --name-only 'HEAD^1' HEAD -- .airia "${rexcluded[@]}"
+              git diff --no-renames --name-only 'HEAD^1' HEAD -- "${airia_never[@]}")"
             if [ -z "$changed" ]; then
               echo "Every gate runs: the pull request changes no file."
             elif [ -n "$not_covered$never$airia" ]; then

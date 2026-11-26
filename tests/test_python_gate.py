@@ -687,6 +687,14 @@ class Changes(unittest.TestCase):
                 self.pr({path: "changed", ".airia/memory/story/S1.md": "s"})
                 self.assertEqual(self.scoped(records="**")[:2], ("true", "all"))
 
+    def test_the_two_baselines_are_never_records(self):
+        for path in (".airia/ruff-baseline.json", ".airia/debt-baseline.json"):
+            with self.subTest(path=path):
+                git(self.repo, "reset", "-q", "--hard", self.base)
+                git(self.repo, "branch", "-qD", "pr") if "pr" in git(self.repo, "branch") else None
+                self.pr({path: "{}"})
+                self.assertEqual(self.scoped(records=".airia/**")[:2], ("true", "all"))
+
     def test_a_docs_only_pr_stays_scope_none_beside_records_paths(self):
         self.pr({"docs/guide.md": "g2"})
         self.assertEqual(self.scoped(records=".airia/memory/**")[:2], ("false", "none"))
