@@ -38,9 +38,13 @@ jobs:
       - id: changes
         uses: ./.github/actions/changes
         with:
+          # Audited: no test reads these (tests read HOWTO.md and README.md, so those run everything).
+          # The ungated `coverage` job reruns the whole suite and is the backstop.
           skip-paths: |
-            *.md
-            docs/**
+            design/**
+            runners/*.md
+            CONTRIBUTING.md
+            BACKLOG.md
 
   unittest:
     needs: changes
