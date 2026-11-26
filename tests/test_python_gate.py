@@ -31,6 +31,7 @@ import yaml
 from steps import ROOT, Runner
 
 WORKFLOW = ROOT / ".github/workflows/reusable-python-gate.yml"
+SHARD_PY = ROOT / ".github/actions/python-toolchain/shard.py"
 DOC = yaml.safe_load(WORKFLOW.read_text())
 JOBS = DOC["jobs"]
 INPUTS = DOC[True]["workflow_call"]["inputs"]  # PyYAML reads the key `on` as True
@@ -770,7 +771,7 @@ class Shards(unittest.TestCase):
 
     def run_step(self, **env):
         base = {"FLOOR": "95", "FAKE_PERCENT": "40", "DURATIONS": "25", "FAKE_COLLECT": "\n".join(self.IDS)}
-        return self.r.run(WORKFLOW, self.STEP, cwd=self.project, **{**base, **env})
+        return self.r.run(WORKFLOW, self.STEP, cwd=self.project, AIRIA_SHARD=str(SHARD_PY), **{**base, **env})
 
     def calls(self) -> list[str]:
         f = self.r.bin / "calls"
@@ -784,25 +785,26 @@ class Shards(unittest.TestCase):
         self.assertNotIn("::", call)
         self.assertIn("--cov-fail-under=95", call)
 
-    def test_a_shard_runs_its_modulo_slice_at_n_4_and_holds_no_partial_floor(self):
-        p = self.run_step(SHARDS="3", SHARD="2")
+    def test_a_shard_runs_its_files_at_n_4_and_holds_no_partial_floor(self):
+        p = self.run_step(SHARDS="3", SHARD="1")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         collect, run = self.calls()
         self.assertIn("--collect-only -q --no-cov", collect)
         self.assertTrue(run.startswith("pytest -n 4 "), run)
         self.assertIn("--cov-fail-under=0", run, "a slice cannot reach the floor; the coverage job holds it")
-        self.assertTrue(run.endswith("tests/test_a.py::t1 tests/test_a.py::t4"), run)  # positions 1 and 4 of 0..6
+        self.assertTrue(run.endswith(" tests/test_a.py"), run)  # whole files, not node ids
+        self.assertNotIn("::", run)
+
+    FILES = {"tests/a.py": 3, "tests/b.py": 2, "tests/c.py": 2, "tests/d.py": 1}
 
     def test_the_shards_are_disjoint_and_together_the_whole_suite(self):
+        listing = "\n".join(f"{f}::t{n}" for f, c in self.FILES.items() for n in range(c))
         seen = []
         for shard in (1, 2, 3):
             self.setUp()
-            self.run_step(SHARDS="3", SHARD=str(shard))
-            mine = [i for i in self.IDS if self.IDS.index(i) % 3 == shard - 1]
-            ran = self.calls()[1].split()[-len(mine):]
-            self.assertEqual(ran, mine)
-            seen += ran
-        self.assertEqual(sorted(seen), sorted(self.IDS))
+            self.run_step(SHARDS="3", SHARD=str(shard), FAKE_COLLECT=listing)
+            seen += [a for a in self.calls()[-1].split() if a.endswith(".py")] if len(self.calls()) > 1 else []
+        self.assertEqual(sorted(seen), sorted(self.FILES))
 
     def test_a_shard_writes_its_coverage_data_where_the_upload_reads_it(self):
         p = self.run_step(SHARDS="2", SHARD="1")
@@ -822,32 +824,24 @@ class Shards(unittest.TestCase):
         noise = "\n".join(["a.py::t0", "", "=== warnings summary ===", "x.py:1: UserWarning: no", "1 test collected in 0.1s"])
         p = self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT=noise)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertTrue(self.calls()[1].endswith("a.py::t0"))
+        self.assertTrue(self.calls()[1].endswith(" a.py"))
 
-    ODD = ["t.py::test_f[hello world]", "t.py::test_g[a::b]", "t.py::test_h[x y::z w]", "t.py::plain"]
+    ODD = ["t y.py::test_f[hello world]", "t y.py::test_g[a::b]", "u[1].py::test_h[x y::z w]", "u[1].py::plain"]
 
-    def test_ids_with_spaces_or_colons_inside_brackets_are_kept_whole_in_exactly_one_shard(self):
+    def test_files_with_spaces_or_brackets_and_ids_with_colons_are_kept_whole_in_exactly_one_shard(self):
         # airia-ci#169 F1: a space in a parametrized id once dropped the test from every shard.
         listing = "\n".join(self.ODD + ["", f"{len(self.ODD)} tests collected in 0.02s"])
         landed = []
-        for shard in (1, 2, 3):
+        for shard in (1, 2):
             self.setUp()
-            p = self.run_step(SHARDS="3", SHARD=str(shard), FAKE_COLLECT=listing)
+            argv = self.r.bin / "argv"
+            self.r.tool("pytest", FAKE_PYTEST.replace('echo "pytest $*" >> "$(dirname "$0")/calls"',
+                                                      'echo "pytest $*" >> "$(dirname "$0")/calls"; '
+                                                      'for a in "$@"; do echo "[$a]" >> "$(dirname "$0")/argv"; done'))
+            p = self.run_step(SHARDS="2", SHARD=str(shard), FAKE_COLLECT=listing)
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-            mine = [i for n, i in enumerate(self.ODD) if n % 3 == shard - 1]
-            run = self.calls()[1]
-            for i in mine:
-                self.assertIn(" " + i, run)  # the whole id, as one argument
-            landed += mine
-        self.assertEqual(sorted(landed), sorted(self.ODD))
-
-    def test_an_id_with_a_space_reaches_pytest_as_one_argument(self):
-        argv = self.r.bin / "argv"
-        self.r.tool("pytest", FAKE_PYTEST.replace('echo "pytest $*" >> "$(dirname "$0")/calls"',
-                                                  'echo "pytest $*" >> "$(dirname "$0")/calls"; '
-                                                  'for a in "$@"; do echo "[$a]" >> "$(dirname "$0")/argv"; done'))
-        self.run_step(SHARDS="2", SHARD="1", FAKE_COLLECT="t.py::test_f[hello world]\n1 test collected")
-        self.assertIn("[t.py::test_f[hello world]]", argv.read_text().splitlines())
+            landed += [a[1:-1] for a in argv.read_text().splitlines() if a.endswith(".py]")]
+        self.assertEqual(sorted(landed), ["t y.py", "u[1].py"])  # each file once, as one argument
 
     def test_the_count_guard_fails_when_ids_read_differ_from_pytests_count(self):
         for listing, expected in (("a.py::t0\nb.py::t1\n3 tests collected in 0.1s", 3),
