@@ -18,7 +18,37 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    # The shared `changes` action, at THIS commit (a change to it runs here
+    # before it merges). Gates only the pure test/lint jobs below. The gate
+    # `coverage` (which reruns the whole suite), `actions`, `python-toolchain`
+    # and the review never take the `if`: they run on every pull request.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      # The action reads the file list from the API and needs no checkout; a
+      # local `uses: ./` only needs the action's own directory.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/actions/changes
+      - id: changes
+        uses: ./.github/actions/changes
+        with:
+          # Audited: no test reads these (tests read HOWTO.md and README.md, so those run everything).
+          # The ungated `coverage` job reruns the whole suite and is the backstop.
+          skip-paths: |
+            design/**
+            runners/*.md
+            CONTRIBUTING.md
+            BACKLOG.md
+
   unittest:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -36,6 +66,8 @@ jobs:
           tests/coverage.sh
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,7 +91,9 @@ jobs:
     # The composite actions at THIS commit. The reusable workflows call them
     # @main, so the review below runs main's, not this PR's: this job is the
     # only one that runs a change to an action before it merges.
+    # `unittest` is skipped on a docs-only pull request; this job still runs then.
     needs: unittest
+    if: ${{ !cancelled() && needs.unittest.result != 'failure' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read

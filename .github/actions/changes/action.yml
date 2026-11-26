@@ -1,0 +1,73 @@
+# SPDX-FileCopyrightText: 2026 AIRIA Systems GmbH
+# SPDX-License-Identifier: Apache-2.0
+
+name: Did the change touch code
+description: >-
+  Output `code`: `false` only when a pull request changes nothing but paths
+  the lane has audited as safe to skip (`skip-paths`); otherwise `true`. Reads
+  the changed files from the GitHub API, so the job needs no checkout.
+
+# WHY. About half of merged PRs are .md-only and rerun every job for nothing
+# (airia-ci#170). One call contract for every lane, instead of one classifier
+# per repository.
+#
+# FAIL OPEN. Anything unclear is `code=true`: a push or merge_group event, an
+# empty file list, 3000 files (the API's cap), a failed or cut read, an empty
+# `skip-paths`, a path that matches none of it.
+#
+# HOW A LANE USES IT. The caller's job `changes` runs this action; its heavy
+# jobs (test, lint, type-check) say `needs: changes` and
+# `if: needs.changes.outputs.code != 'false'`. A job-level `if` reports the
+# required check as skipped, which satisfies it; `on.paths` and `paths-ignore`
+# leave a required check pending, so they are never used. Security, REUSE and
+# gitleaks jobs NEVER take that `if`.
+#
+# WHICH PATHS ARE SAFE is the lane's audit, not airia-ci's: list only the
+# paths no test or script of the repository reads.
+#
+#   changes:
+#     runs-on: ubuntu-24.04
+#     permissions:
+#       pull-requests: read
+#     outputs:
+#       code: ${{ steps.changes.outputs.code }}
+#     steps:
+#       - id: changes
+#         uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/changes@main
+#         with:
+#           skip-paths: |
+#             *.md
+#             docs/**
+
+inputs:
+  skip-paths:
+    description: >-
+      Git pathspecs, one per line or separated by spaces: the paths this
+      repository has audited as safe to skip, records included. Read as git
+      reads a pathspec (`*` crosses `/`; `:(glob)` makes it stop at one).
+      Empty means every change is code.
+    required: false
+    default: ""
+  github-token:
+    description: "Reads the pull request's files; needs `pull-requests: read`."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  code:
+    description: "`false` only for a pull request whose every changed path matches skip-paths; otherwise `true`."
+    value: ${{ steps.classify.outputs.code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Classify the changed paths
+      id: classify
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        SKIP_PATHS: ${{ inputs.skip-paths }}
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: bash "$GITHUB_ACTION_PATH/changes.sh"

@@ -311,6 +311,45 @@ jobs:
 
 The weekly conformance scan (`conformance.yml`) checks each consumer against this list. It keeps one issue, "airia-ci standard drift", in any consumer that falls short, and closes it once nothing drifts.
 
+## Skip heavy jobs on a docs-only or records-only pull request
+
+About half of merged pull requests change only documentation, and every job reruns for nothing. The `changes` action tells a lane whether a pull request touched anything outside the paths **the lane has audited as safe to skip**. It reads the changed files from the API (both sides of a rename), so the job needs no checkout.
+
+```yaml
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - id: changes
+        uses: AIRIA-Systems-GmbH/airia-ci/.github/actions/changes@main
+        with:
+          skip-paths: |
+            *.md
+            docs/**
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code != 'false'
+    # ... the lane's heavy job, unchanged
+```
+
+`code` is `'false'` only for a `pull_request` whose every changed path matches `skip-paths`. It is `'true'` for anything else: a push or `merge_group` event, an empty file list, 3000 files (the API's cap), a failed or cut read, an empty `skip-paths`, one path that matches none of it. The step summary says how many paths matched.
+
+- **Gate only the heavy jobs** (test, lint, type-check) with the `if`. **Never** a security, REUSE or gitleaks job: they run on every pull request. A job-level `if` reports the required check as skipped, which satisfies it; do not use `on.paths` or `paths-ignore`, which leave a required check pending. A job that `needs` a gated job is skipped too: give it `if: ${{ !cancelled() && needs.test.result != 'failure' }}`, or the skip reaches it.
+- **Patterns are git pathspecs**, as `docs-paths` of the Python gate reads them: `*` crosses `/` (so `*.md` is every Markdown file in the tree), `docs/**` is everything under `docs/`, and `:(glob)*.md` stops at one directory. A path with no match makes the whole change code.
+- **airia-ci does not decide which paths are safe.** List a path only after you have checked that no test or script of your repository reads it.
+
+| Lane | `skip-paths` |
+| --- | --- |
+| Docs only | `*.md` and `docs/**` |
+| Records-aware (a repository whose records live under `.airia/`) | the docs lines, **minus** `*.md` (it also matches `.airia/**/*.md`), plus **only** the record paths audited as unread by its tests, e.g. `README.md`, `docs/**`, `.airia/memory/task/*.md`, `.airia/memory/issue/*.md`, `.airia/handover/*.md` |
+
+A records-aware lane lists each record path it has audited, one by one; a record kind it did not list (a plan, a config file, a record a test globs by file name) is code. Add one `skip-paths` line only with the audit in the pull request.
+
 ## Write your review rules
 
 `.github/claude-review.md` is read by the reviewer before anything else. Put there only what is particular to the repository: how each gate runs locally, what a reviewer must not run, and the traps a newcomer falls into. The review procedure itself lives in airia-ci; do not restate it.
