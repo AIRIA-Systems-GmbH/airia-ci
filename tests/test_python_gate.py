@@ -78,7 +78,21 @@ class Shape(unittest.TestCase):
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
             "extra-prompt", "debt-ratchet", "pytest-workers", "test-timeout-minutes",
             "pytest-timeout-seconds", "test-budget-minutes", "shards", "records-paths", "records-tests",
-            "shard-groups", "shard-workers"})
+            "shard-groups", "shard-workers", "uv-sync-args", "rust-sdist-build"})
+
+    def test_the_sync_inputs_are_off_by_default_and_reach_every_toolchain_call(self):
+        """Every job that provisions the toolchain gets both (lint, each test shard, coverage, security): one left out
+        would sync without the caller's extras, or compile its Rust sdist with fat LTO."""
+        self.assertEqual((INPUTS["uv-sync-args"]["type"], INPUTS["uv-sync-args"]["default"]), ("string", ""))
+        self.assertEqual(INPUTS["rust-sdist-build"]["type"], "boolean")
+        self.assertIs(INPUTS["rust-sdist-build"]["default"], False)
+        calls = {name: s["with"] for name, job in JOBS.items() for s in job.get("steps", [])
+                 if "python-toolchain" in s.get("uses", "")}
+        self.assertEqual(set(calls), {"lint", "test", "coverage", "security"})
+        for name, with_ in calls.items():
+            with self.subTest(job=name):
+                self.assertEqual(with_["uv-sync-args"], "${{ inputs.uv-sync-args }}")
+                self.assertEqual(with_["rust-sdist-build"], "${{ inputs.rust-sdist-build }}")
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,

@@ -45,7 +45,8 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-from steps import FAKE_RUFF, ROOT, Runner
+import yaml
+from steps import FAKE_RUFF, ROOT, Runner, step
 
 ACTION = ROOT / ".github/actions/python-toolchain/action.yml"
 SCRIPT = ACTION.parent / "toolchain.py"
@@ -521,6 +522,139 @@ class Steps(unittest.TestCase):
     def test_the_project_is_installed_from_the_lock_only(self):
         self.assertEqual(self.run_step("Install the locked project").returncode, 0)
         self.assertEqual((self.r.bin / "uv-calls").read_text(), "sync --locked\n")
+
+    VALUED = ("--extra", "--no-extra", "--group", "--only-group", "--no-group", "--no-install-package")
+    FLAGS = ("--all-extras", "--all-groups", "--no-dev", "--no-default-groups", "--no-install-project",
+             "--no-install-workspace")
+
+    def test_good_sync_arguments_pass_the_check_and_reach_the_sync(self):
+        cases = {
+            "": "",
+            " \n ": "",
+            "--extra dev": " --extra dev",
+            "--group test": " --group test",
+            "--extra=dev --all-groups": " --extra=dev --all-groups",
+            "--extra dev\n--group test\n": " --extra dev --group test",
+            "--all-extras --no-install-package airia_surreal.db-2": " --all-extras --no-install-package airia_surreal.db-2",
+        }
+        # Every allowed name, in both forms where it takes a value.
+        for name in self.VALUED:
+            cases[f"{name} x"] = f" {name} x"
+            cases[f"{name}=x"] = f" {name}=x"
+        for name in self.FLAGS:
+            cases[name] = f" {name}"
+        for given, added in cases.items():
+            with self.subTest(args=given):
+                (self.r.bin / "uv-calls").unlink(missing_ok=True)
+                p = self.run_step("Check the sync arguments", UV_SYNC_ARGS=given)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                p = self.run_step("Install the locked project", UV_SYNC_ARGS=given)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual((self.r.bin / "uv-calls").read_text(), f"sync --locked{added}\n")
+
+    def test_any_other_sync_argument_fails_by_name(self):
+        # (value, the word named): a short option, a bare or second value, and every way to smuggle in shell syntax.
+        cases = [
+            ("dev", "dev"), ("-U", "-U"), ("--extra -U", "-U"), ("--", "--"),
+            ("--extra dev test", "test"), ("--extra=dev test", "test"), ("--extra=", "--extra="),
+            ("--extra dev; id", "dev;"), ("--extra $(id)", "$(id)"), ("--extra `id`", "`id`"),
+            ("--extra dev && id", "&&"), ("--extra dev | id", "|"), ("--extra > out", ">"),
+            ("--extra 'dev'", "'dev'"), ("--extra=$HOME", "--extra=$HOME"), ("--extra *", "*"),
+            ("--extra ../other", "../other"), ("--extra=a/b", "--extra=a/b"),
+            ("--group test\nrm -rf x", "rm"),  # a second line is words like any other
+            # A flag takes no value, and a name is whole: no prefix or suffix of an allowed one passes.
+            ("--no-dev dev", "dev"), ("--all-extras=x", "--all-extras=x"), ("--extras dev", "--extras"),
+            ("--no-install-local", "--no-install-local"), ("x--no-dev", "x--no-dev"),
+            # Another project, configuration or interpreter than the job checked, and any other uv option.
+            ("--project sub", "--project"), ("--project=sub", "--project=sub"), ("--directory sub", "--directory"),
+            ("--no-config", "--no-config"), ("--python 3.9", "--python"),
+            ("--extra dev --python=3.14", "--python=3.14"), ("--managed-python", "--managed-python"),
+            ("--no-managed-python", "--no-managed-python"), ("--no-python-downloads", "--no-python-downloads"),
+            ("--python-preference only-managed", "--python-preference"), ("--frozen", "--frozen"),
+            ("--index-url=https://x.test", "--index-url=https://x.test"),
+        ]
+        for given, named in cases:
+            with self.subTest(args=given):
+                p = self.run_step("Check the sync arguments", UV_SYNC_ARGS=given)
+                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+                self.assertIn(f"::error title=uv-sync-args::refused: '{named}'. Allowed", p.stdout)
+                # The message is the caller's way out: it names every allowed option.
+                for name in self.VALUED + self.FLAGS:
+                    self.assertRegex(p.stdout, rf"{name}[,;.]")
+
+    def test_the_arguments_are_checked_in_every_job_and_the_rust_environment_precedes_the_sync(self):
+        steps = yaml.safe_load(ACTION.read_text())["runs"]["steps"]
+        by_name = {s.get("name"): s for s in steps}
+        names = [s.get("name") for s in steps]
+        check, rust = by_name["Check the sync arguments"], by_name["Prepare the build of Rust sdists"]
+        sync = by_name["Install the locked project"]
+        self.assertNotIn("if", check)
+        self.assertEqual(rust["if"], "inputs.rust-sdist-build == 'true' && inputs.sync == 'true'")
+        self.assertLess(names.index(check["name"]), names.index(sync["name"]))
+        self.assertLess(names.index(rust["name"]), names.index(sync["name"]))
+        for s in (check, sync):
+            self.assertEqual(s["env"]["UV_SYNC_ARGS"], "${{ inputs.uv-sync-args }}")
+        inputs = yaml.safe_load(ACTION.read_text())["inputs"]
+        self.assertEqual((inputs["uv-sync-args"]["default"], inputs["rust-sdist-build"]["default"]), ("", "false"))
+
+    def rust_step(self, cache: Path) -> tuple[Path, str]:
+        """Run the Rust step for owner/Some.Repo against this cache volume; return the workspace and stdout."""
+        workspace = self.r.tmp / "workspace"
+        (workspace / ".git").mkdir(parents=True, exist_ok=True)
+        self.r.github_env.unlink(missing_ok=True)
+        p = self.run_step("Prepare the build of Rust sdists", CARGO_CACHE_ROOT=str(cache),
+                          GITHUB_WORKSPACE=str(workspace), GITHUB_REPOSITORY="owner/Some.Repo")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return workspace, p.stdout
+
+    def exported(self, target: Path) -> None:
+        self.assertEqual(self.r.github_env.read_text().splitlines(), [
+            f"CARGO_TARGET_DIR={target}", "CARGO_PROFILE_RELEASE_LTO=false", "CARGO_PROFILE_RELEASE_OPT_LEVEL=1"])
+        self.assertTrue(target.is_dir())
+
+    def test_rust_sdists_build_on_the_cache_volume_under_the_repository_name(self):
+        cache = self.r.tmp / "cache"
+        cache.mkdir()
+        workspace, _ = self.rust_step(cache)
+        self.exported(cache / "cargo-target/Some.Repo")
+        self.assertFalse((workspace / ".cargo-target").exists())
+        self.assertFalse((workspace / ".git/info/exclude").exists())
+
+    def test_without_the_cache_volume_the_build_stays_in_the_workspace_and_out_of_git(self):
+        cache = self.r.tmp / "no-volume"
+        workspace, out = self.rust_step(cache)
+        self.exported(workspace / ".cargo-target")
+        self.assertIn("::notice title=rust-sdist-build::", out)
+        self.assertFalse(cache.exists(), "a missing volume is not created")
+        # A workspace kept between jobs gets the line once, and keeps what the file held.
+        exclude = workspace / ".git/info/exclude"
+        exclude.write_text("keep\n" + exclude.read_text())
+        self.rust_step(cache)
+        lines = exclude.read_text().splitlines()
+        self.assertEqual((lines[0], lines.count("/.cargo-target/")), ("keep", 1))
+
+    def test_a_cache_volume_that_cannot_take_the_directory_falls_back(self):
+        # A file where the directory belongs stops mkdir for any user, root included (as in the coverage container).
+        cache = self.r.tmp / "cache"
+        cache.mkdir()
+        (cache / "cargo-target").write_text("")
+        workspace, _ = self.rust_step(cache)
+        self.exported(workspace / ".cargo-target")
+
+    def test_a_target_directory_that_is_not_writable_falls_back(self):
+        cache = self.r.tmp / "cache"
+        target = cache / "cargo-target/Some.Repo"
+        target.mkdir(parents=True)
+        target.chmod(0o555)
+        self.addCleanup(target.chmod, 0o755)
+        workspace, _ = self.rust_step(cache)
+        # Root writes through the mode bits, so the coverage container keeps the volume.
+        self.exported(target if os.access(target, os.W_OK) else workspace / ".cargo-target")
+
+    def test_the_cache_volume_is_the_runners(self):
+        # Every test above overrides the root: this holds the one a runner gets.
+        self.assertIn('root="${CARGO_CACHE_ROOT:-/var/cache/ci}"',
+                      step(ACTION, "Prepare the build of Rust sdists")["run"])
 
     def test_check_passes_a_conforming_project(self):
         p = self.run_step("Check uv.lock and the workflows against the pins", TYPE_CHECKER="pyright", PYYAML="6.0.3")
