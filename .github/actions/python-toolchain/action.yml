@@ -71,6 +71,19 @@ inputs:
     description: "`true` installs the project (`uv sync --locked`); a job that only reads the lock passes `false`."
     required: false
     default: "true"
+  uv-sync-args:
+    description: >-
+      Extra arguments for `uv sync --locked`, e.g. `--extra dev --group test`. Each option starts with `--`
+      (`--name` or `--name=value`) and may be followed by one value word; letters, digits, `.`, `_` and `-`
+      only. Anything else fails, also with `sync: false`. Empty (the default): none.
+    required: false
+    default: ""
+  rust-sdist-build:
+    description: >-
+      `true` prepares the build of a dependency shipped as an sdist with Rust before the sync: CARGO_TARGET_DIR
+      on the runner's cache volume (else in the workspace), release builds without LTO at opt-level 1.
+    required: false
+    default: "false"
 
 outputs:
   python:
@@ -105,10 +118,64 @@ runs:
         # On the Thor pool UV_CACHE_DIR is the runner's persistent volume.
         enable-cache: false
 
+    # No `sync` condition: a bad value fails the security job too, which still runs on a docs-only PR.
+    - name: Check the sync arguments
+      shell: bash
+      env:
+        UV_SYNC_ARGS: ${{ inputs.uv-sync-args }}
+      run: |
+        # An option (`--name`, `--name=value`), or the one value word after a `--name`. No shell metacharacter passes.
+        read -ra args <<< "$(tr '\n' ' ' <<< "$UV_SYNC_ARGS")"
+        option='^--[a-z0-9][a-z0-9-]*(=[A-Za-z0-9_][A-Za-z0-9._-]*)?$'
+        value='^[A-Za-z0-9_][A-Za-z0-9._-]*$'
+        takes_value=false
+        for arg in "${args[@]}"; do
+          if [[ "$arg" =~ $option ]]; then
+            takes_value=true
+            [[ "$arg" != *=* ]] || takes_value=false
+          elif [ "$takes_value" = true ] && [[ "$arg" =~ $value ]]; then
+            takes_value=false
+          else
+            echo "::error title=uv-sync-args::uv-sync-args takes options starting with -- (--name or --name=value), each followed by at most one value of letters, digits, '.', '_' and '-'; refused: '$arg'"
+            exit 1
+          fi
+        done
+
+    # A step of its own, before the sync: GITHUB_ENV reaches only the later steps.
+    - name: Prepare the build of Rust sdists
+      if: inputs.rust-sdist-build == 'true' && inputs.sync == 'true'
+      shell: bash
+      run: |
+        # A fat-LTO release build of a Rust sdist (airia-surrealdb) took the Thor pool's shared cgroup to its memory
+        # cap (airia-ci#184). uv keeps the built wheel in UV_CACHE_DIR, so each version compiles once.
+        root="${CARGO_CACHE_ROOT:-/var/cache/ci}"
+        target="$root/cargo-target/${GITHUB_REPOSITORY##*/}"
+        # The volume itself is never created: without it there is nothing persistent to build into.
+        if ! { [ -d "$root" ] && mkdir -p "$target" && [ -w "$target" ]; }; then
+          echo "::notice title=rust-sdist-build::$target is not available (no cache volume, or not writable): building in the workspace"
+          target="$GITHUB_WORKSPACE/.cargo-target"
+          mkdir -p "$target"
+          # Hidden from git, so no later gate reads the build tree as the project's files.
+          exclude="$GITHUB_WORKSPACE/.git/info/exclude"
+          if [ -d "$GITHUB_WORKSPACE/.git" ] && ! grep -qxF '/.cargo-target/' "$exclude" 2> /dev/null; then
+            mkdir -p "$GITHUB_WORKSPACE/.git/info"
+            printf '\n/.cargo-target/\n' >> "$exclude"
+          fi
+        fi
+        echo "CARGO_TARGET_DIR=$target" >> "$GITHUB_ENV"
+        echo "CARGO_PROFILE_RELEASE_LTO=false" >> "$GITHUB_ENV"
+        echo "CARGO_PROFILE_RELEASE_OPT_LEVEL=1" >> "$GITHUB_ENV"
+        echo "Rust sdists build in $target, without LTO, at opt-level 1."
+
     - name: Install the locked project
       if: inputs.sync == 'true'
       shell: bash
-      run: uv sync --locked
+      env:
+        UV_SYNC_ARGS: ${{ inputs.uv-sync-args }}
+      run: |
+        # Checked above, and split here the same way. Empty adds no argument.
+        read -ra args <<< "$(tr '\n' ' ' <<< "$UV_SYNC_ARGS")"
+        uv sync --locked "${args[@]}"
 
     - name: Check uv.lock and the workflows against the pins
       shell: bash

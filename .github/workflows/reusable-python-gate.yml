@@ -63,6 +63,10 @@ name: AIRIA Python gate (shared)
 #             each one succeeded. A skipped gate is a failed gate, with one
 #             exception, below.
 #
+# THE SYNC (airia-ci#184). `uv-sync-args` adds arguments to every job's `uv sync --locked` (an extra or a dependency
+# group the tests need); anything but `--` options and their values fails the job. `rust-sdist-build` (default false)
+# sets, before the sync, a CARGO_TARGET_DIR on the runner's cache volume and a release profile without LTO.
+#
 # THE DOCS-ONLY FAST PATH, opt-in. `changes` decides whether a PR touched
 # code. With `docs-paths` empty (the default) the answer is always yes and
 # every gate runs, as before. With it set (git glob pathspecs, one per line or
@@ -302,6 +306,22 @@ on:
         required: false
         type: string
         default: ""
+      uv-sync-args:
+        description: >-
+          Extra arguments for the gate's `uv sync --locked` in every job that syncs, so tests whose tools
+          live in an extra or a dependency group can run (`--extra dev`, `--group test`). Options start with
+          `--`, each with at most one value word; letters, digits, `.`, `_` and `-` only. Empty (the default): none.
+        required: false
+        type: string
+        default: ""
+      rust-sdist-build:
+        description: >-
+          `true` for a project with a dependency shipped as an sdist with Rust: before the sync,
+          CARGO_TARGET_DIR goes to /var/cache/ci/cargo-target/<repo> (else the workspace's .cargo-target),
+          CARGO_PROFILE_RELEASE_LTO to false and CARGO_PROFILE_RELEASE_OPT_LEVEL to 1.
+        required: false
+        type: boolean
+        default: false
       extra-allow:
         description: The review's extra permission-allow rules (see reusable-claude-review.yml).
         required: false
@@ -462,6 +482,8 @@ jobs:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
+          uv-sync-args: ${{ inputs.uv-sync-args }}
+          rust-sdist-build: ${{ inputs.rust-sdist-build }}
           tools: ${{ inputs.type-checker == 'pyright' && 'ruff pyright' || 'ruff' }}
       - name: Debt baseline only tightens
         timeout-minutes: 20
@@ -586,6 +608,8 @@ jobs:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
+          uv-sync-args: ${{ inputs.uv-sync-args }}
+          rust-sdist-build: ${{ inputs.rust-sdist-build }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
       - name: Test timeout check
@@ -842,6 +866,8 @@ jobs:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
+          uv-sync-args: ${{ inputs.uv-sync-args }}
+          rust-sdist-build: ${{ inputs.rust-sdist-build }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
       - name: No shard data from an earlier job
@@ -897,6 +923,8 @@ jobs:
           type-checker: ${{ inputs.type-checker }}
           coverage-floor: ${{ inputs.coverage-floor }}
           debt-ratchet: ${{ inputs.debt-ratchet }}
+          uv-sync-args: ${{ inputs.uv-sync-args }}
+          rust-sdist-build: ${{ inputs.rust-sdist-build }}
           tools: reuse pip-audit zizmor gitleaks
           sync: "false"
       - name: Licences (REUSE)
