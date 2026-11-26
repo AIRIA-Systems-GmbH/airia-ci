@@ -75,7 +75,8 @@ inputs:
     description: >-
       Extra arguments for `uv sync --locked`, e.g. `--extra dev --group test`. Each option starts with `--`
       (`--name` or `--name=value`) and may be followed by one value word; letters, digits, `.`, `_` and `-`
-      only. Anything else fails, also with `sync: false`. Empty (the default): none.
+      only. `--python` is refused (`python-version` picks the interpreter). Anything else fails, also with
+      `sync: false`. Empty (the default): none.
     required: false
     default: ""
   rust-sdist-build:
@@ -130,6 +131,11 @@ runs:
         value='^[A-Za-z0-9_][A-Za-z0-9._-]*$'
         takes_value=false
         for arg in "${args[@]}"; do
+          # --python would sync another interpreter than the one checked against pins.toml and named by the job.
+          if [[ "$arg" = --python || "$arg" = --python=* ]]; then
+            echo "::error title=uv-sync-args::uv-sync-args may not choose the interpreter ('$arg'): use .python-version, or the gate's python-versions"
+            exit 1
+          fi
           if [[ "$arg" =~ $option ]]; then
             takes_value=true
             [[ "$arg" != *=* ]] || takes_value=false

@@ -560,6 +560,16 @@ class Steps(unittest.TestCase):
                 self.assertIn("::error title=uv-sync-args::", p.stdout)
                 self.assertIn(f"refused: '{named}'", p.stdout)
 
+    def test_the_sync_arguments_cannot_choose_the_interpreter(self):
+        # uv would rebuild .venv on it: a Python pins.toml never allowed, under a job named for another one.
+        for given in ("--python 3.9", "--extra dev --python=3.14"):
+            with self.subTest(args=given):
+                p = self.run_step("Check the sync arguments", UV_SYNC_ARGS=given)
+                self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+                self.assertIn("::error title=uv-sync-args::uv-sync-args may not choose the interpreter", p.stdout)
+        self.assertEqual(self.run_step("Check the sync arguments",
+                                       UV_SYNC_ARGS="--python-preference only-managed").returncode, 0)
+
     def test_the_arguments_are_checked_in_every_job_and_the_rust_environment_precedes_the_sync(self):
         steps = yaml.safe_load(ACTION.read_text())["runs"]["steps"]
         by_name = {s.get("name"): s for s in steps}

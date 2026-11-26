@@ -310,7 +310,8 @@ on:
         description: >-
           Extra arguments for the gate's `uv sync --locked` in every job that syncs, so tests whose tools
           live in an extra or a dependency group can run (`--extra dev`, `--group test`). Options start with
-          `--`, each with at most one value word; letters, digits, `.`, `_` and `-` only. Empty (the default): none.
+          `--`, each with at most one value word; letters, digits, `.`, `_` and `-` only; not `--python`
+          (`python-versions` picks the interpreters). Empty (the default): none.
         required: false
         type: string
         default: ""
