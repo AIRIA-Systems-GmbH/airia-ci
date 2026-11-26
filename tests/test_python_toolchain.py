@@ -285,6 +285,9 @@ class Install(unittest.TestCase):
         self.assertEqual(self.path.read_text().splitlines(), [f"{base}/bin"])
         self.assertIn(f"AIRIA_TOOLCHAIN={SCRIPT}", self.r.github_env.read_text().splitlines(),
                       "the gate's later steps run the ruff floor by this name")
+        for name, script in (("AIRIA_DEBT", "debt.py"), ("AIRIA_SHARD", "shard.py"), ("AIRIA_PEAK_RSS", "peak_rss.py")):
+            # Without AIRIA_PEAK_RSS every shard job would die on `python3 ""`.
+            self.assertIn(f"{name}={SCRIPT.parent / script}", self.r.github_env.read_text().splitlines())
 
     def test_a_locked_tool_runs_at_the_locked_version(self):
         self.assertEqual(self.install("reuse"), ["reuse 99.1 (locked)"])

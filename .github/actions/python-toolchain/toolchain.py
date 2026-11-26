@@ -379,6 +379,7 @@ def install(pins: dict, env: dict, root: Path) -> list[str]:
     output("AIRIA_TOOLCHAIN", str(HERE / "toolchain.py"), "GITHUB_ENV")
     output("AIRIA_DEBT", str(HERE / "debt.py"), "GITHUB_ENV")
     output("AIRIA_SHARD", str(HERE / "shard.py"), "GITHUB_ENV")
+    output("AIRIA_PEAK_RSS", str(HERE / "peak_rss.py"), "GITHUB_ENV")
     if "zizmor" in env.get("TOOLS", "").split():
         # The standard's zizmor policy: hash pins, except this harness, followed at `@main`.
         output("ZIZMOR_CONFIG", str(HERE / "zizmor.yml"), "GITHUB_ENV")

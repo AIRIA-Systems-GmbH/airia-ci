@@ -95,8 +95,10 @@ class CiLocal(unittest.TestCase):
     def test_its_commands_are_the_gates_own(self):
         # The gate's lines, with its variable names, are ci-local's after `uv run`.
         ours = SCRIPT.read_text().replace("\\\n  ", "")
-        # The gate adds `-n $WORKERS`; ci-local leaves -n to the project's addopts, never shards (`ids` is empty unless shards > 1) and caps `auto` with the env.
-        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations", '"${xdist[@]}" ': "", '"${ptimeout[@]}" ': "", ' "${ids[@]}"': ""}
+        # The gate adds `-n $WORKERS`; ci-local leaves -n to the project's addopts, never shards (`ids` and the memory
+        # `wrap` are empty unless the run is sharded, and `|| status=$?` only reads rest's exit 5) and caps `auto` with the env.
+        names = {"$FLOOR": "$floor", "$DURATIONS": "$durations", '"${xdist[@]}" ': "", '"${ptimeout[@]}" ': "",
+                 ' "${ids[@]}"': "", ' || status=$?': ""}
         seen = 0
         ratchet_lines = []
         for name in ("Ruff", "Type check", "Pytest at the coverage floor"):
@@ -115,6 +117,7 @@ class CiLocal(unittest.TestCase):
                     in_ratchet = indent
                     continue
                 cmd = line.strip().removeprefix("pyright) ").removeprefix("mypy-strict) ").removesuffix(" ;;")
+                cmd = cmd.removeprefix('"${wrap[@]}" ')
                 if re.match(r"(ruff|pyright|mypy|pytest) ", cmd):
                     for theirs, mine in names.items():
                         cmd = cmd.replace(theirs, mine)
@@ -125,7 +128,7 @@ class CiLocal(unittest.TestCase):
         # The skip must not swallow a renamed line: the ratchet's pyright command is there, and is the one skipped.
         self.assertTrue(any(re.match(r"pyright --outputjson ", c) for c in ratchet_lines), ratchet_lines)
         # Likewise the test job's: pytest with -rfE is the ratchet's, and the plain pytest command beside it is checked.
-        self.assertTrue(any(re.match(r"pytest .* -rfE ", c) for c in ratchet_lines), ratchet_lines)
+        self.assertTrue(any(re.match(r'"\$\{wrap\[@\]\}" pytest .* -rfE ', c) for c in ratchet_lines), ratchet_lines)
 
     def test_mypy_import_contracts_paths_and_every_cpu_when_asked(self):
         (self.repo / "pyproject.toml").write_text("[tool.importlinter]\nroot_package = 'app'\n")
@@ -312,13 +315,13 @@ class CiLocalWriteDebtBaseline(unittest.TestCase):
         """The ratchet's pyright and pytest lines in the gate are the writer's, `uv run` in front, so the figures
         it writes are the ones the gate will see. The one difference is deliberate: no coverage floor (see below)."""
         ours = SCRIPT.read_text().replace("\\\n  ", "")
-        lines = [line.strip() for name in ("Type check", "Pytest at the coverage floor")
+        lines = [line.strip().removeprefix('"${wrap[@]}" ') for name in ("Type check", "Pytest at the coverage floor")
                  for line in step(GATE, name)["run"].splitlines()]
         pyright = [line for line in lines if line.startswith("pyright --outputjson ")]
         pytest = [line for line in lines if re.match(r"pytest .* -rfE ", line)]
         self.assertEqual((len(pyright), len(pytest)), (1, 1), lines)
         self.assertIn("uv run " + pyright[0].split(" > ")[0], ours)
-        cmd = pytest[0].split(" 2>&1")[0].replace('"${xdist[@]}" ', "").replace('"${ptimeout[@]}" ', "").replace("$DURATIONS", "$durations").replace('"--cov-fail-under=$FLOOR"',
+        cmd = pytest[0].split(" 2>&1")[0].replace(' "${ids[@]}"', "").replace('"${xdist[@]}" ', "").replace('"${ptimeout[@]}" ', "").replace("$DURATIONS", "$durations").replace('"--cov-fail-under=$FLOOR"',
                                                                                          '"--cov-fail-under=0"')
         self.assertIn("uv run " + cmd, ours)
 

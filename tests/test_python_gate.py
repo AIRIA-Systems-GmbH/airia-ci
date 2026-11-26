@@ -32,6 +32,8 @@ from steps import ROOT, Runner
 
 WORKFLOW = ROOT / ".github/workflows/reusable-python-gate.yml"
 SHARD_PY = ROOT / ".github/actions/python-toolchain/shard.py"
+PEAK_RSS_PY = ROOT / ".github/actions/python-toolchain/peak_rss.py"
+DEBT_PY = ROOT / ".github/actions/python-toolchain/debt.py"
 DOC = yaml.safe_load(WORKFLOW.read_text())
 JOBS = DOC["jobs"]
 INPUTS = DOC[True]["workflow_call"]["inputs"]  # PyYAML reads the key `on` as True
@@ -75,7 +77,8 @@ class Shape(unittest.TestCase):
             "type-checker", "coverage-floor", "python-versions", "paths", "extra-jobs", "postgres-image",
             "qdrant-image", "job-env", "runner", "durations", "docs-paths", "extra-allow", "extra-deny",
             "extra-prompt", "debt-ratchet", "pytest-workers", "test-timeout-minutes",
-            "pytest-timeout-seconds", "test-budget-minutes", "shards", "records-paths", "records-tests"})
+            "pytest-timeout-seconds", "test-budget-minutes", "shards", "records-paths", "records-tests",
+            "shard-groups", "shard-workers"})
 
     def test_the_debt_ratchet_is_off_by_default_and_reaches_every_toolchain_call(self):
         """Default false keeps every existing caller as it is; the input must reach each job's toolchain call,
@@ -171,7 +174,8 @@ class Shape(unittest.TestCase):
         # `coverage` also waits for `test` and only exists for a sharded run (`gate` excuses its skip at shards = 1 only).
         conditions = {"lint": "needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records'",
                       "test": "needs.changes.outputs.code == 'true'",
-                      "coverage": "needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && inputs.shards > 1"}
+                      "coverage": "needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && "
+                                  "needs.changes.outputs.shards > 1"}
         for name in ("changes", "lint", "test", "coverage", "security"):
             job = JOBS[name]
             with self.subTest(job=name):
@@ -186,13 +190,15 @@ class Shape(unittest.TestCase):
                         self.assertNotIn("if", s)
 
     def test_changes_reads_the_merge_commit_only_when_it_needs_to(self):
-        _, checkout, diff = JOBS["changes"]["steps"]
+        count, checkout, diff = JOBS["changes"]["steps"]
         self.assertEqual(checkout["if"], "github.event_name == 'pull_request' && (inputs.docs-paths != '' || "
                                          "(inputs.records-paths != '' && inputs.records-tests != ''))")
         self.assertEqual(checkout["with"], {"fetch-depth": 2, "persist-credentials": False})
         self.assertNotIn("ref", checkout["with"])  # the default on a pull request: refs/pull/N/merge
         self.assertEqual(JOBS["changes"]["outputs"], {"code": f"${{{{ steps.{diff['id']}.outputs.code }}}}",
-                                                      "scope": f"${{{{ steps.{diff['id']}.outputs.scope }}}}"})
+                                                      "scope": f"${{{{ steps.{diff['id']}.outputs.scope }}}}",
+                                                      "shards": f"${{{{ steps.{count['id']}.outputs.shards }}}}",
+                                                      "shard-matrix": f"${{{{ steps.{count['id']}.outputs.matrix }}}}"})
 
     def test_every_gate_job_starts_from_the_standard_toolchain(self):
         for name in ("lint", "test", "security"):
@@ -809,28 +815,31 @@ class ShardShape(unittest.TestCase):
 
     def test_at_one_shard_the_job_names_are_todays(self):
         # Expressions cannot be evaluated here, so this holds the structure: with the shard suffix expression removed (it is
-        # empty unless `inputs.shards > 1`) the test job's name is the old literal, `gate` has no `name:` of its own (so its
-        # check is still `ci / gate`), and the only job added is `coverage`, which is skipped at 1.
-        suffix = "${{ inputs.shards > 1 && format(' shard {0}/{1}', matrix.shard, inputs.shards) || '' }}"
+        # empty unless the shard count is above 1) the test job's name is the old literal, `gate` has no `name:` of its own
+        # (so its check is still `ci / gate`), and the only job added is `coverage`, which is skipped at 1.
+        suffix = ("${{ needs.changes.outputs.shards > 1 && "
+                  "format(' shard {0}/{1}', matrix.shard, needs.changes.outputs.shards) || '' }}")
         name = JOBS["test"]["name"]
         self.assertTrue(name.endswith(suffix), name)
         self.assertEqual(name.removesuffix(suffix), "test ${{ matrix.python || '(.python-version)' }}")
         self.assertNotIn("name", JOBS["gate"])
         self.assertEqual(list(JOBS), ["changes", "lint", "test", "coverage", "security", "gate", "claude-review"])
-        self.assertIn("inputs.shards > 1", JOBS["coverage"]["if"])
+        self.assertIn("needs.changes.outputs.shards > 1", JOBS["coverage"]["if"])
 
-    def test_the_matrix_is_one_job_per_python_at_one_shard_and_n_at_n(self):
-        table = re.search(r"fromJSON\('(.*)'\)\[inputs.shards\]", JOBS["test"]["strategy"]["matrix"]["shard"]).group(1)
-        rows = json.loads(table)
-        self.assertEqual(rows[1], [0], "one shard: the single index 0, not shown in the name")
-        for n in range(2, 9):
-            self.assertEqual(rows[n], list(range(1, n + 1)))
+    def test_the_matrix_is_the_one_changes_computed(self):
+        self.assertEqual(JOBS["test"]["strategy"]["matrix"]["shard"], "${{ fromJSON(needs.changes.outputs.shard-matrix) }}")
         self.assertNotIn("max-parallel", JOBS["test"]["strategy"])
         self.assertNotIn("timeout-minutes", JOBS["test"])
 
+    def test_no_job_reads_the_raw_shards_input_so_groups_cannot_leave_a_run_looking_unsharded(self):
+        # With shard-groups, `shards` stays 1: a job that read it would skip the upload, the floor and the ratchet, green.
+        uses = [line.strip() for line in WORKFLOW.read_text().splitlines()
+                if re.search(r"\$\{\{[^}]*inputs\.shards\b|^\s*if:.*inputs\.shards\b", line)]
+        self.assertEqual(uses, ["SHARDS: ${{ inputs.shards }}"], "only the `Shards check` step reads it")
+
     def test_gate_waits_for_coverage_and_knows_the_shard_count(self):
         self.assertIn("coverage", JOBS["gate"]["needs"])
-        self.assertEqual(JOBS["gate"]["steps"][0]["env"]["SHARDS"], "${{ inputs.shards }}")
+        self.assertEqual(JOBS["gate"]["steps"][0]["env"]["SHARDS"], "${{ needs.changes.outputs.shards }}")
 
 
 class Shards(unittest.TestCase):
@@ -845,7 +854,8 @@ class Shards(unittest.TestCase):
 
     def run_step(self, **env):
         base = {"FLOOR": "95", "FAKE_PERCENT": "40", "DURATIONS": "25", "FAKE_COLLECT": "\n".join(self.IDS)}
-        return self.r.run(WORKFLOW, self.STEP, cwd=self.project, AIRIA_SHARD=str(SHARD_PY), **{**base, **env})
+        return self.r.run(WORKFLOW, self.STEP, cwd=self.project, AIRIA_SHARD=str(SHARD_PY),
+                          AIRIA_PEAK_RSS=str(PEAK_RSS_PY), **{**base, **env})
 
     def calls(self) -> list[str]:
         f = self.r.bin / "calls"
@@ -980,25 +990,47 @@ class Shards(unittest.TestCase):
 class ShardsCheck(unittest.TestCase):
     STEP = "Shards check"
 
-    def run_step(self, shards, ratchet="false"):
-        return Runner(self).run(WORKFLOW, self.STEP, SHARDS=shards, RATCHET=ratchet)
+    def run_step(self, shards, groups="", workers=""):
+        r = Runner(self)
+        p = r.run(WORKFLOW, self.STEP, SHARDS=shards, SHARD_GROUPS=groups, SHARD_WORKERS=workers)
+        out = r.outputs()
+        return (p, out.get("shards"), json.loads(out["matrix"]) if "matrix" in out else None)
 
-    def test_one_to_eight_pass(self):
-        for n in "12345678":
-            self.assertEqual(self.run_step(n).returncode, 0, n)
+    def test_one_to_eight_pass_and_one_is_the_single_unnamed_job(self):
+        for n in range(1, 9):
+            p, total, matrix = self.run_step(str(n))
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            self.assertEqual((total, matrix), (str(n), [0] if n == 1 else list(range(1, n + 1))))
+
+    def test_groups_make_one_job_each_plus_rest_and_shards_is_ignored(self):
+        groups = "\nengine: tests/engine\n\n  api: tests/api\n"
+        for shards in ("1", "8", "not-a-number"):
+            with self.subTest(shards=shards):
+                p, total, matrix = self.run_step(shards, groups, "engine: 3")
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertEqual((total, matrix), ("3", [1, 2, 3]))
+
+    def test_a_blank_shard_groups_is_none(self):
+        self.assertEqual(self.run_step("1", " \n \n")[1:], ("1", [0]))
+
+    def test_at_most_seven_groups(self):
+        seven = "".join(f"g{n}: tests/g{n}\n" for n in range(7))
+        self.assertEqual(self.run_step("1", seven)[1], "8")
+        p, total, _ = self.run_step("1", seven + "g7: tests/g7\n")
+        self.assertEqual((p.returncode, total), (1, None))
+        self.assertIn("::error title=shard-groups::", p.stdout)
+
+    def test_shard_workers_without_groups_is_refused_not_ignored(self):
+        p, _, _ = self.run_step("2", "", "engine: 2")
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("::error title=shard-workers::", p.stdout)
 
     def test_anything_else_is_refused_by_name(self):
         for bad in ("0", "9", "2.5", "", "x", "-1"):
             with self.subTest(shards=bad):
-                p = self.run_step(bad)
-                self.assertEqual(p.returncode, 1)
+                p, total, _ = self.run_step(bad)
+                self.assertEqual((p.returncode, total), (1, None))
                 self.assertIn("::error title=shards::", p.stdout)
-
-    def test_the_debt_ratchet_cannot_be_sharded(self):
-        p = self.run_step("2", "true")
-        self.assertEqual(p.returncode, 1)
-        self.assertIn("debt-ratchet", p.stdout)
-        self.assertEqual(self.run_step("1", "true").returncode, 0)
 
 
 class CombinedCoverage(unittest.TestCase):
@@ -1074,6 +1106,18 @@ class ShardedGate(unittest.TestCase):
         p, _ = self.verdict(needs(changes="success", lint="skipped", test="skipped", coverage="skipped",
                                   security="success"), code="false", shards="2")
         self.assertEqual(p.returncode, 0, p.stdout)
+
+    def test_the_callers_extra_jobs_count_on_a_sharded_run_too(self):
+        # Owed since #168: the one required check still carries the caller's own gates when the test job is a matrix.
+        own = needs(changes="success", lint="success", test="success", coverage="success", security="success")
+        p, r = self.verdict(own, needs(e2e="success"), shards="3")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("- extra: e2e: success", r.summary.read_text())
+        for result in ("failure", "skipped"):
+            with self.subTest(e2e=result):
+                p, _ = self.verdict(own, needs(e2e=result), shards="3")
+                self.assertEqual(p.returncode, 1)
+                self.assertIn(f"::error title=Gate not passed::extra: e2e: {result}", p.stdout)
 
 
 if __name__ == "__main__":

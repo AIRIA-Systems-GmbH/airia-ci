@@ -7,6 +7,8 @@
     debt.py [--file PATH] [--today YYYY-MM-DD] pyright REPORT
     debt.py [--file PATH] mypy-guard
     debt.py [--file PATH] [--today YYYY-MM-DD] tests [--coverage REPORT] STATUS OUTPUT
+    debt.py record --out RESULT STATUS OUTPUT
+    debt.py [--file PATH] [--today YYYY-MM-DD] tests-shards [--coverage REPORT] SHARDS DIR
     debt.py [--file PATH] write [--pyright REPORT] [--tests STATUS OUTPUT] [--coverage REPORT]
 
 Design: design/gate-debt-ratchet.md (sections 1 to 4). The file is a dated,
@@ -44,6 +46,12 @@ text, run with `-rfE`. The failing and erroring ids come from the `short test su
 fail passes with a `::notice`. Exit codes 2-5 (and anything but 0 or 1) fail outright, and exit 1 with no parsed id
 fails: a crash, or a coverage miss with nothing failing, is not "no failures". A file with no `tests` section, or one
 outside `set`..`expires`, holds the standard: nothing may fail.
+
+A sharded test job cannot be judged slice by slice: a baselined id outside a slice would read as fixed (airia-ci#181).
+`record` writes one shard's result, `{"status": N, "failing": [ids]}`, and fails on a run `tests` would refuse as
+unfinished. `tests-shards` reads `debt-shard.1.json` to `debt-shard.SHARDS.json` from DIR and applies the `tests` rule
+ONCE to the union of their ids; the highest of their exit codes is the run's. It fails when a shard left no result, and
+holds each result to the exit-code rule on its own, so one shard's ids cannot hide another's exit 1 with none.
 
 `coverage_floor` (called by toolchain.py's `standard`) turns the `coverage` section into the floor the test
 job's pytest step holds. The `coverage` section, `types` (by `pyright` above) and `tests` (by `tests` above) are
@@ -450,6 +458,11 @@ def tests(baseline: Path, status: int, output: Path, today: datetime.date, cover
     except Invalid as e:
         print(f"::error title=Pytest::{e.args[0][0]}")
         return 1
+    return judge(data, failing, today, coverage)
+
+
+def judge(data: dict, failing: set[str], today: datetime.date, coverage: Path | None) -> int:
+    """The `tests` rule on a finished run's failing ids, against the loaded baseline `data`."""
     in_date = datetime.date.fromisoformat(data["set"]) <= today <= datetime.date.fromisoformat(data["expires"])
     allowed = set(data.get("tests", {}).get("failing", [])) if in_date else set()
     new = sorted(failing - allowed)
@@ -463,6 +476,61 @@ def tests(baseline: Path, status: int, output: Path, today: datetime.date, cover
             parts = [f"{len(fixed)} baselined test(s) did not fail: {', '.join(fixed)}"] if fixed else []
             report_tightened(better, replacement, "; ".join(parts + [b for b in better if b.startswith("coverage")]))
     return 1 if new else 0
+
+
+def record(status: int, output: Path, out: Path) -> int:
+    """One shard's pytest result for `tests-shards`; a run that did not finish writes nothing and fails the shard."""
+    try:
+        failing = pytest_failing(status, output.read_text(encoding="utf-8", errors="replace"))
+        out.write_text(json.dumps({"status": status, "failing": sorted(failing)}) + "\n", encoding="utf-8")
+    except Invalid as e:
+        print(f"::error title=Pytest::{e.args[0][0]}")
+        return 1
+    except OSError as e:
+        print(f"::error title=Pytest output::cannot record this shard's result: {e}")
+        return 1
+    return 0
+
+
+def shard_result(path: Path) -> tuple[int, set[str]]:
+    """(exit code, failing ids) of one recorded result; Invalid when it is absent, unreadable or not a finished run."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        status, failing = data["status"], data["failing"]
+    except FileNotFoundError:
+        raise Invalid([f"{path.name}: this shard left no result, so its failing tests are unknown"]) from None
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise Invalid([f"{path.name} is not a shard result: {e!r}"]) from None
+    if not is_count(status) or not isinstance(failing, list) or not all(isinstance(i, str) for i in failing):
+        raise Invalid([f"{path.name} is not a shard result: it needs a whole-number status and a list of test ids"])
+    if status not in (0, 1) or (status == 1) != bool(failing):
+        raise Invalid([f"{path.name}: exit status {status} with {len(failing)} failing id(s) is not a finished run"])
+    return status, set(failing)
+
+
+def tests_shards(baseline: Path, shards: int, directory: Path, today: datetime.date,
+                 coverage: Path | None = None) -> int:
+    """The `tests` rule once, on the union of the failing ids of shards 1..`shards`; each must have left a result."""
+    try:
+        data = load(baseline)
+    except Invalid as e:
+        for reason in e.args[0]:
+            print(f"::error title=Debt baseline::{reason}")
+        return 1
+    results, errors = [], []
+    for shard in range(1, shards + 1):
+        try:
+            results.append(shard_result(directory / f"debt-shard.{shard}.json"))
+        except Invalid as e:
+            errors += e.args[0]
+    for reason in errors:
+        print(f"::error title=Shard result::{reason}")
+    if errors or not results:
+        return 1
+    failing = set().union(*(ids for _, ids in results))
+    print(f"{shards} shard results: highest pytest exit status {max(s for s, _ in results)}, "
+          f"{len(failing)} failing test id(s)")
+    return judge(data, failing, today, coverage)
 
 
 def mypy_guard(baseline: Path) -> int:
@@ -572,6 +640,14 @@ def main(argv: list[str] | None = None) -> int:
     tst.add_argument("status", type=int, help="pytest's exit code")
     tst.add_argument("output", type=Path, help="pytest's output")
     tst.add_argument("--coverage", type=Path, help="coverage's JSON report, to notice a floor that can rise")
+    rec = sub.add_parser("record", help="write one shard's pytest result for tests-shards")
+    rec.add_argument("--out", type=Path, required=True)
+    rec.add_argument("status", type=int, help="pytest's exit code")
+    rec.add_argument("output", type=Path, help="pytest's output")
+    shd = sub.add_parser("tests-shards", help="the tests rule once, on the union of every shard's recorded result")
+    shd.add_argument("shards", type=int, help="how many results must be there")
+    shd.add_argument("directory", type=Path, help="where the debt-shard.N.json files are")
+    shd.add_argument("--coverage", type=Path, help="coverage's JSON report of the combined data")
     wr = sub.add_parser("write", help="lower the baseline file to the measurements; never raises a figure")
     wr.add_argument("--pyright", type=Path, help="pyright --outputjson report")
     wr.add_argument("--tests", nargs=2, metavar=("STATUS", "OUTPUT"), help="pytest's exit code and its -rfE output")
@@ -583,6 +659,10 @@ def main(argv: list[str] | None = None) -> int:
         return write(args.file, pyright_report=args.pyright, tests_run=tests_run, coverage_report=args.coverage)
     if args.command == "tests":
         return tests(args.file, args.status, args.output, today, args.coverage)
+    if args.command == "record":
+        return record(args.status, args.output, args.out)
+    if args.command == "tests-shards":
+        return tests_shards(args.file, args.shards, args.directory, today, args.coverage)
     if args.command == "pyright":
         return pyright(args.file, args.report, today)
     if args.command == "mypy-guard":
