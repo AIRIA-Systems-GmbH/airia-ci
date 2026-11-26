@@ -762,7 +762,8 @@ jobs:
             fi
             if [ "$SHARDS" -gt 1 ]; then
               # A slice sees only its own failing ids, so it judges nothing: the `coverage` job holds the union of every
-              # shard's to the baseline. A run that did not finish still fails here.
+              # shard's to the baseline. A run that did not finish still fails here. A records run, which skips `coverage`,
+              # never gets here: `changes` never says `records` with debt-ratchet.
               python3 "$AIRIA_DEBT" record --out "$data/debt-shard.$SHARD.json" "$status" "$output"
             else
               python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"

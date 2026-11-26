@@ -25,6 +25,7 @@ from pathlib import Path
 from unittest import mock
 
 from steps import ROOT, Runner, run_block
+from test_python_gate import git, needs
 
 TOOLCHAIN = ROOT / ".github/actions/python-toolchain"
 WORKFLOW = ROOT / ".github/workflows/reusable-python-gate.yml"
@@ -395,6 +396,75 @@ class CombineStepWithTheRatchet(unittest.TestCase):
         p = r.run(WORKFLOW, "No shard data from an earlier job")
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertFalse((r.tmp / "shard-cov").exists())
+
+
+class RecordsOnlyPrUnderTheRatchet(unittest.TestCase):
+    """A shard under the ratchet only records, and a records run has no `coverage` job to judge the record (it is skipped).
+    The two never meet because `changes` turns the records path off with the ratchet. Held here from end to end, through
+    the shipped steps: a records-only pull request of a sharded ratchet caller with a failing records test is red."""
+
+    FAILING = "tests/engine/test_records.py::test_stories"
+
+    def records_only_pr(self, r: Runner, ratchet: str) -> tuple[Path, str]:
+        """`changes` on a real merge commit that touches only a records path; (checkout, the scope it says)."""
+        repo = r.tmp / "repo"
+        for name in ("tests/engine/t", "tests/api/t", ".airia/memory/story/S1.md"):
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (repo / name).write_text("base")
+        # Dates long past, so the standard applies: any failing id is outside the baseline.
+        (repo / ".airia/debt-baseline.json").write_text(json.dumps(BASELINE))
+        git(repo, "init", "-q", "-b", "main")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "base")
+        git(repo, "checkout", "-qb", "pr")
+        (repo / ".airia/memory/story/S1.md").write_text("changed")
+        git(repo, "commit", "-qam", "pr")
+        git(repo, "checkout", "-q", "main")
+        git(repo, "merge", "-q", "--no-ff", "-m", "merge", "pr")
+        p = r.run(WORKFLOW, "Did the change touch code", cwd=repo, EVENT="pull_request", DOCS_PATHS="docs/**",
+                  RECORDS_PATHS=".airia/memory/**", RECORDS_TESTS="-m records", RATCHET=ratchet)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return repo, r.outputs()["scope"]
+
+    def test_the_same_pr_is_a_records_run_without_the_ratchet(self):
+        # The control: the paths and inputs do make a records-only pull request; only the ratchet turns it off.
+        self.assertEqual(self.records_only_pr(Runner(self), "false")[1], "records")
+
+    def test_with_the_ratchet_the_failing_records_test_fails_the_gate(self):
+        for groups, shards in (("", 2), ("engine: tests/engine\napi: tests/api\n", 3)):
+            with self.subTest(groups=groups):
+                r = Runner(self)
+                r.tool("pytest", FAKE_PYTEST.replace(
+                    'echo "pytest $*" >> "$(dirname "$0")/calls"',
+                    'case " $* " in *" --collect-only "*) printf "tests/engine/a.py::t\\ntests/api/b.py::t\\n"; '
+                    'exit 0;; esac'))
+                repo, scope = self.records_only_pr(r, "true")
+                self.assertEqual(scope, "all", "so every shard runs, and the `coverage` job's condition holds")
+                tools = {"AIRIA_SHARD": str(TOOLCHAIN / "shard.py"), "AIRIA_DEBT": str(TOOLCHAIN / "debt.py"),
+                         "AIRIA_PEAK_RSS": str(TOOLCHAIN / "peak_rss.py")}
+                uploaded = {}
+                for n in range(1, shards + 1):
+                    failing = n == 1
+                    p = r.run(WORKFLOW, "Pytest at the coverage floor", cwd=repo, FLOOR="90", DURATIONS="25",
+                              SHARDS=str(shards), SHARD=str(n), SCOPE=scope, RECORDS_TESTS="-m records",
+                              SHARD_GROUPS=groups, SHARD_WORKERS="", WORKERS="", RATCHET="true",
+                              FAKE_PYTEST_EXIT="1" if failing else "0",
+                              FAKE_SUMMARY=f"FAILED {self.FAILING} - boom" if failing else "", **tools)
+                    self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                    uploaded |= {f.name: f.read_text() for f in (r.tmp / "shard-cov").iterdir()}
+                for name, text in {**uploaded, ".coverage.1": "x"}.items():
+                    (r.tmp / "shard-cov" / name).write_text(text)
+                r.tool("coverage", '#!/bin/sh\n[ "$1" = json ] && echo \'{"totals": {"percent_covered": 99}}\' > "$3"\n'
+                                   "exit 0\n")
+                combine = r.run(WORKFLOW, "The combined coverage holds the floor", cwd=repo, FLOOR="90",
+                                RATCHET="true", SHARDS=str(shards), **tools)
+                self.assertEqual(combine.returncode, 1, combine.stdout + combine.stderr)
+                self.assertIn(f"::error title=Test outside the debt baseline::{self.FAILING}", combine.stdout)
+                gate = r.run(WORKFLOW, "Every gate succeeded", CODE="true", SCOPE=scope, SHARDS=str(shards), EXTRA="{}",
+                             OWN=needs(changes="success", lint="success", test="success", coverage="failure",
+                                       security="success"))
+                self.assertEqual(gate.returncode, 1, gate.stdout)
+                self.assertIn("::error title=Gate not passed::coverage: failure", gate.stdout)
 
 
 def fake_proc(root: Path, table: dict[int, tuple[int, int | None]]) -> Path:
