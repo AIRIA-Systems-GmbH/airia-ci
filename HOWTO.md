@@ -268,12 +268,36 @@ uvx zizmor@<pin> --offline .github
 | `durations` | how many of the slowest tests pytest lists after every run (default 25; `0` lists all) | always printed; there is no way to switch it off |
 | `pytest-workers` | pytest-xdist workers for the test job (`-n N`); a positive number or `auto`; default empty, which keeps your own addopts (the intended shared default is 4, later) | needs `pytest-xdist` in your dev dependencies, or the job fails with `No xdist`. (airia-ci#154) |
 | `test-budget-minutes` | the minutes the test job's pytest step may take (default `10`; the wait for a runner slot is not counted); over it the job prints `::warning title=Test budget::` and a summary line; empty turns the report off | warning only, it never fails the job; anything but empty or a positive whole number is refused before pytest runs. (airia-ci#156) |
-| `shards` | how many parallel jobs the test job is split into: a whole number from 1 to 8, default `1` (today's single `test` job, unchanged). With N > 1 the test job is a matrix: each `test <python> shard i/N` job runs every Nth id of `pytest --collect-only -q` at `-n 4` (never more; `pytest-workers` may only lower it), a `coverage` job combines the shards' coverage data and holds the floor, and `ci / gate` still reports one result, so your required checks do not change. Nothing is pinned: you call `@main`, and nothing is added to your lockfile | needs `pytest-xdist`; `-q` must not be in your `addopts` (refused, not guessed); not with `debt-ratchet`; an empty slice passes; on runners with different workspace paths set `[tool.coverage.run] relative_files = true`. (airia-ci#168) **Shards only help with as many free runners as shards**: on a lane with a single runner the shards run one after the other and cost more wall time (Portfolio-Dashboard#267 on one runner: about 27 min sharded against 14.6 min unsharded), so count your runners before setting it. Each shard runs whole files by node, so a test that does `from conftest import X` (which resolves to whichever `conftest.py` pytest imports first) can break: put shared helpers in a named module (Portfolio-Dashboard moved them to `tests/architecture_support.py`). |
+| `shards` | how many parallel jobs the test job is split into: a whole number from 1 to 8, default `1` (today's single `test` job, unchanged). With N > 1 the test job is a matrix: each `test <python> shard i/N` job runs a share of the test files (whole files, balanced by test count from `pytest --collect-only -q`) at `-n 4` (never more; `pytest-workers` may only lower it), a `coverage` job combines the shards' coverage data and holds the floor, and `ci / gate` still reports one result, so your required checks do not change. Nothing is pinned: you call `@main`, and nothing is added to your lockfile | needs `pytest-xdist`; `-q` must not be in your `addopts` (refused, not guessed); ignored when `shard-groups` is set; an empty slice passes; on runners with different workspace paths, see [Shards](#shards). (airia-ci#168) **Shards only help with as many free runners as shards**: on a lane with a single runner the shards run one after the other and cost more wall time (Portfolio-Dashboard#267 on one runner: about 27 min sharded against 14.6 min unsharded), so count your runners before setting it. Each shard runs whole files by node, so a test that does `from conftest import X` (which resolves to whichever `conftest.py` pytest imports first) can break: put shared helpers in a named module (Portfolio-Dashboard moved them to `tests/architecture_support.py`). |
+| `shard-groups` | named shards instead of the by-file split, one `name: paths` per line: [Shards](#shards) | files and directories only; at most 7 groups; `shards` is then ignored. (airia-ci#181) |
+| `shard-workers` | `name: N` lines, a named shard's `-n` (a group, or `rest`); a shard not named gets `pytest-workers`, else 4 | 1 to 4, never more; only with `shard-groups` |
 | `docs-paths` | the docs-only fast path, see below | some paths are never docs |
 | `records-paths`, `records-tests` | the records fast path, see below: record or doc paths your own tests read, and the pytest arguments of the tests that read them | a records run holds no coverage floor; the push to the default branch runs everything; `.github`, tests, code and tool configuration are never records |
 | `extra-allow`, `extra-deny`, `extra-prompt` | the review's allowlist, denylist and prompt | the shared deny list always wins |
 
 There is no `skip-*` input, and none will be added.
+
+### Shards
+
+**Named shards** (`shard-groups`) put the split in your hands, for suites that need their own worker count or whose files do not balance:
+
+```yaml
+    with:
+      shard-groups: |
+        unit-engine: tests/unit/engine
+        unit-api: tests/unit/api tests/unit/cli
+        acceptance: tests/acceptance
+      shard-workers: |
+        unit-engine: 3
+```
+
+That is four jobs: the three groups and `rest`, the whole suite with an `--ignore` for each of their paths, so a directory you add tomorrow runs in `rest` without touching the workflow. `rest` passes when nothing is left for it; a group that collects no test fails. A group takes **files and directories only**. An option (`-m`, `-k`, `--ignore`) or a `::` id is refused, because `rest` ignores the whole path and whatever the group left out would run nowhere; so is a path that does not exist, or one that overlaps another group's. The jobs are numbered (`shard 1/4`, in the order of your lines, `rest` last) and each log names its group. Your required checks do not change.
+
+**With `debt-ratchet`**, a shard judges nothing: it records its failing ids and pytest's exit code, and the `coverage` job holds the union to `.airia/debt-baseline.json` once. It fails when a shard left no result. If it fails on a flaky test, re-run **all** jobs: re-running only the failed ones judges the same recorded results again.
+
+**Memory.** Each shard job adds the peak resident memory of its pytest process tree to the step summary, sampled every second: a short spike can be missed, and memory two processes share counts twice. It never fails the job.
+
+**Different workspace paths.** Coverage data holds absolute paths. If your runners check out to different directories, map them onto your tree in `pyproject.toml` (the `coverage` job reads it; `relative_files` is then not needed): `[tool.coverage.paths]` with `source = ["src/", "*/src/"]`, the first entry your own directory.
 
 **The docs-only fast path** (`docs-paths`, off by default). A PR that changes only documentation need not wait for the test matrix. Name your documentation as git glob pathspecs, one per line:
 

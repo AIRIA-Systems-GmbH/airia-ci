@@ -110,6 +110,15 @@ name: AIRIA Python gate (shared)
 # SHARDS (airia-ci#168). `shards` (default 1, 1 to 8) splits the test job: with N > 1 each `test` job runs a share of the test files
 # of `pytest --collect-only -q` (balanced by test count, whole files; #171) at `-n 4`, a `coverage` job combines the shards' coverage data and
 # holds the floor, and `gate` still reports one result (`ci / gate`, the required check). With 1 nothing changes.
+# With `debt-ratchet` (airia-ci#181) a shard judges nothing: it records its failing ids and pytest's exit code, and `coverage`
+# applies the baseline once to the union (debt.py `tests-shards`), failing when a shard left no result. Each shard job adds
+# the peak resident memory of its pytest process tree to the step summary (peak_rss.py; sampling never fails the job).
+#
+# SHARD GROUPS (airia-ci#181). `shard-groups`, one `name: paths` per line, replaces the by-file split and `shards` is then
+# ignored: one job per line, in order, plus `rest`, the whole suite with an `--ignore` for each group's path, so a new
+# directory is run, never skipped (`rest` with nothing to collect passes). At most 7 groups. A group takes files and
+# directories only (shard.py says why). `shard-workers`, `name: N` lines, sets a shard's `-n` (1 to 4); a shard it does not
+# name gets `pytest-workers`, else 4.
 #
 # TEST BUDGET (airia-ci#156). `test-budget-minutes` (default 10) is the time one pytest run may
 # take: Andrea, 2026-11-24, "a suite runs in 10 minutes or less". The test job times its pytest
@@ -246,10 +255,26 @@ on:
           How many parallel jobs the test job is split into (default 1 = today's single job). A whole
           number from 1 to 8. With N > 1 each `test` job runs one even slice of the collected test ids
           at `-n 4`, a `coverage` job combines the slices' coverage data and holds the floor, and `gate`
-          still reports one result. See HOWTO.md.
+          still reports one result. Ignored when `shard-groups` is set. See HOWTO.md.
         required: false
         type: number
         default: 1
+      shard-groups:
+        description: >-
+          Named shards, one `name: paths` per line (files and directories only, no pytest options),
+          at most 7. One job per line plus an automatic `rest`: the whole suite with an `--ignore` for
+          each of those paths. When set, `shards` is ignored. Empty (the default): the by-file split
+          of `shards`.
+        required: false
+        type: string
+        default: ""
+      shard-workers:
+        description: >-
+          With `shard-groups`: `name: N` lines, the pytest-xdist workers of that shard (a group's name
+          or `rest`), 1 to 4. A shard not named gets `pytest-workers`, else 4.
+        required: false
+        type: string
+        default: ""
       docs-paths:
         description: >-
           Git glob pathspecs (one per line or space-separated) of documentation.
@@ -312,23 +337,40 @@ jobs:
     outputs:
       code: ${{ steps.diff.outputs.code }}
       scope: ${{ steps.diff.outputs.scope }}
+      # How many shard jobs each Python has (1: the single, unsharded job) and their indexes, for the matrix.
+      shards: ${{ steps.shards.outputs.shards }}
+      shard-matrix: ${{ steps.shards.outputs.matrix }}
     steps:
       - name: Shards check
+        id: shards
         timeout-minutes: 5
         env:
           SHARDS: ${{ inputs.shards }}
-          RATCHET: ${{ inputs.debt-ratchet }}
+          SHARD_GROUPS: ${{ inputs.shard-groups }}
+          SHARD_WORKERS: ${{ inputs.shard-workers }}
         run: |
-          # The test matrix reads this value: anything but a whole number from 1 to 8 is refused before it expands.
-          if ! [[ "$SHARDS" =~ ^[1-8]$ ]]; then
-            echo "::error title=shards::shards must be a whole number from 1 to 8, not '$SHARDS'"
-            exit 1
+          # The test matrix reads these: a count outside 1..8 is refused before it expands.
+          if [ -n "${SHARD_GROUPS//[[:space:]]/}" ]; then
+            # One job per non-blank line, plus `rest`; shard.py reads and refuses the lines themselves. `shards` is ignored.
+            total=$(( $(grep -c '[^[:space:]]' <<< "$SHARD_GROUPS") + 1 ))
+            if [ "$total" -gt 8 ]; then
+              echo "::error title=shard-groups::shard-groups takes at most 7 groups (8 jobs with rest), not $(( total - 1 ))"
+              exit 1
+            fi
+          else
+            if [ -n "${SHARD_WORKERS//[[:space:]]/}" ]; then
+              echo "::error title=shard-workers::shard-workers names the shards of shard-groups, which is empty; for the by-file split use pytest-workers"
+              exit 1
+            fi
+            if ! [[ "$SHARDS" =~ ^[1-8]$ ]]; then
+              echo "::error title=shards::shards must be a whole number from 1 to 8, not '$SHARDS'"
+              exit 1
+            fi
+            total="$SHARDS"
           fi
-          # A slice sees only its own failing ids, so the ratchet's baseline comparison cannot be made per shard.
-          if [ "$SHARDS" -gt 1 ] && [ "$RATCHET" = true ]; then
-            echo "::error title=shards::shards above 1 cannot be combined with debt-ratchet: a baseline id outside a slice would read as fixed"
-            exit 1
-          fi
+          echo "shards=$total" >> "$GITHUB_OUTPUT"
+          # Unsharded is the single index 0, which the job name does not show.
+          echo "matrix=$(jq -cn --argjson n "$total" 'if $n == 1 then [0] else [range(1; $n + 1)] end')" >> "$GITHUB_OUTPUT"
       - if: github.event_name == 'pull_request' && (inputs.docs-paths != '' || (inputs.records-paths != '' && inputs.records-tests != ''))
         timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -503,7 +545,7 @@ jobs:
           fi
 
   test:
-    name: test ${{ matrix.python || '(.python-version)' }}${{ inputs.shards > 1 && format(' shard {0}/{1}', matrix.shard, inputs.shards) || '' }}
+    name: test ${{ matrix.python || '(.python-version)' }}${{ needs.changes.outputs.shards > 1 && format(' shard {0}/{1}', matrix.shard, needs.changes.outputs.shards) || '' }}
     needs: [changes]
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(inputs.runner) }}
@@ -513,8 +555,8 @@ jobs:
       fail-fast: false
       matrix:
         python: ${{ fromJSON(inputs.python-versions != '' && inputs.python-versions || '[""]') }}
-        # The shard indexes, 1..N: expressions have no range, so a table indexed by N (0 and 1 are one job).
-        shard: ${{ fromJSON('[[0],[0],[1,2],[1,2,3],[1,2,3,4],[1,2,3,4,5],[1,2,3,4,5,6],[1,2,3,4,5,6,7],[1,2,3,4,5,6,7,8]]')[inputs.shards] }}
+        # The shard indexes, 1..N, or [0] for the one unsharded job (the `Shards check` step of `changes`).
+        shard: ${{ fromJSON(needs.changes.outputs.shard-matrix) }}
     services:
       postgres:
         image: ${{ inputs.postgres-image }}
@@ -575,8 +617,10 @@ jobs:
           WORKERS: ${{ inputs.pytest-workers }}
           TEST_TIMEOUT: ${{ inputs.pytest-timeout-seconds }}
           RATCHET: ${{ inputs.debt-ratchet }}
-          SHARDS: ${{ inputs.shards }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
           SHARD: ${{ matrix.shard }}
+          SHARD_GROUPS: ${{ inputs.shard-groups }}
+          SHARD_WORKERS: ${{ inputs.shard-workers }}
           SCOPE: ${{ needs.changes.outputs.scope }}
           RECORDS_TESTS: ${{ inputs.records-tests }}
         run: |
@@ -639,6 +683,37 @@ jobs:
               echo "::error title=pytest-workers::with shards above 1 pytest-workers must be empty or 1 to 4 (4 is the most a job runs), not '$WORKERS'"
               exit 1
             fi
+          fi
+          # A shard job runs pytest through peak_rss.py, which adds the process tree's peak memory to the step summary and
+          # passes pytest's output and exit status through.
+          wrap=()
+          # `rest` of shard-groups may have nothing left to run (pytest exit 5): the groups covered the suite.
+          rest=false
+          # Where a shard's coverage data and, with the debt ratchet, its result are uploaded from. Cleared first, so a
+          # RUNNER_TEMP kept between jobs cannot lend a shard another run's files.
+          data="$RUNNER_TEMP/shard-cov"
+          if [ "$SHARDS" -gt 1 ]; then
+            wrap=(python3 "$AIRIA_PEAK_RSS")
+            rm -rf "$data"
+            mkdir -p "$data"
+          fi
+          if [ "$SCOPE" != records ] && [ "$SHARDS" -gt 1 ] && [ -n "${SHARD_GROUPS//[[:space:]]/}" ]; then
+            # Named shards (airia-ci#181): shard.py prints the name, the workers and one pytest argument per line.
+            if ! plan="$(python3 "$AIRIA_SHARD" group "$SHARD")"; then
+              echo "$plan"
+              exit 1
+            fi
+            {
+              read -r name
+              read -r workers
+              while IFS= read -r arg; do ids+=("$arg"); done
+            } <<< "$plan"
+            xdist=(-n "$workers")
+            [ "$name" != rest ] || rest=true
+            echo "Shard $SHARD of $SHARDS ($name) runs at ${xdist[*]}: ${ids[*]}"
+            export COVERAGE_FILE="$data/.coverage.$SHARD"
+            FLOOR=0
+          elif [ "$SCOPE" != records ] && [ "$SHARDS" -gt 1 ]; then
             collected="$RUNNER_TEMP/collected.txt"
             if ! pytest --collect-only -q --no-cov -p no:cacheprovider > "$collected"; then
               cat "$collected"
@@ -661,11 +736,14 @@ jobs:
             done <<< "$assigned"
             if [ "${#ids[@]}" -eq 0 ]; then
               echo "Shard $SHARD of $SHARDS has no tests: it passes and uploads no coverage data."
+              if [ "$RATCHET" = true ]; then
+                : > "$RUNNER_TEMP/pytest.out"
+                python3 "$AIRIA_DEBT" record --out "$data/debt-shard.$SHARD.json" 0 "$RUNNER_TEMP/pytest.out"
+              fi
               exit 0
             fi
             echo "Shard $SHARD of $SHARDS runs ${#ids[@]} test files at ${xdist[*]}."
-            mkdir -p "$RUNNER_TEMP/shard-cov"
-            export COVERAGE_FILE="$RUNNER_TEMP/shard-cov/.coverage.$SHARD"
+            export COVERAGE_FILE="$data/.coverage.$SHARD"
             FLOOR=0
           fi
           report="$RUNNER_TEMP/coverage.json"
@@ -675,11 +753,33 @@ jobs:
             # -rfE lists every failing and erroring id. The coverage floor below still holds, whatever the ids say.
             output="$RUNNER_TEMP/pytest.out"
             # The step runs under `bash -e` without pipefail, so the pipeline ends in tee's status; pytest's is read after it.
-            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" 2>&1 | tee "$output"
+            "${wrap[@]}" pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" -rfE --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" "${ids[@]}" 2>&1 | tee "$output"
             status=${PIPESTATUS[0]}
-            python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
+            empty=false
+            if [ "$rest" = true ] && [ "$status" -eq 5 ]; then
+              empty=true
+              status=0
+            fi
+            if [ "$SHARDS" -gt 1 ]; then
+              # A slice sees only its own failing ids, so it judges nothing: the `coverage` job holds the union of every
+              # shard's to the baseline. A run that did not finish still fails here.
+              python3 "$AIRIA_DEBT" record --out "$data/debt-shard.$SHARD.json" "$status" "$output"
+            else
+              python3 "$AIRIA_DEBT" tests --coverage "$report" "$status" "$output"
+            fi
           else
-            pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" "${ids[@]}"
+            status=0
+            "${wrap[@]}" pytest "${xdist[@]}" "${ptimeout[@]}" "--durations=$DURATIONS" --cov-report=term-missing "--cov-report=json:$report" "--cov-fail-under=$FLOOR" "${ids[@]}" || status=$?
+            empty=false
+            if [ "$rest" = true ] && [ "$status" -eq 5 ]; then
+              empty=true
+            elif [ "$status" -ne 0 ]; then
+              exit "$status"
+            fi
+          fi
+          if [ "$empty" = true ]; then
+            echo "rest has no tests: the groups cover the whole suite."
+            exit 0
           fi
           if [ ! -s "$report" ]; then
             echo "::error title=No coverage figure::pytest wrote no coverage report, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\") and remove any --no-cov."
@@ -709,7 +809,7 @@ jobs:
           fi
           exit 0
       - name: Upload this shard's coverage data
-        if: inputs.shards > 1
+        if: needs.changes.outputs.shards > 1
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-${{ matrix.python || 'default' }}-${{ matrix.shard }}
@@ -722,7 +822,7 @@ jobs:
     name: coverage ${{ matrix.python || '(.python-version)' }}
     needs: [changes, test]
     # Only a sharded run has partial figures to combine; `gate` accepts the skip at shards = 1.
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && inputs.shards > 1
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.scope != 'records' && needs.changes.outputs.shards > 1
     runs-on: ${{ fromJSON(inputs.runner) }}
     permissions:
       contents: read
@@ -743,6 +843,10 @@ jobs:
           debt-ratchet: ${{ inputs.debt-ratchet }}
           services: ${{ toJSON(job.services) }}
           job-env: ${{ inputs.job-env }}
+      - name: No shard data from an earlier job
+        timeout-minutes: 5
+        # A RUNNER_TEMP kept between jobs must not stand in for a shard that left nothing this time.
+        run: rm -rf "$RUNNER_TEMP/shard-cov"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 5
         with:
@@ -755,7 +859,8 @@ jobs:
           FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
         run: |
           # The slices' data files were written by `pytest --cov` in the shards; the data lists absolute paths, so a caller on
-          # runners with different workspaces sets `[tool.coverage.run] relative_files = true`.
+          # runners with different workspaces maps them onto this checkout with `[tool.coverage.paths]` (this runs at its
+          # root, so coverage reads the caller's pyproject.toml) or sets `[tool.coverage.run] relative_files = true`.
           data="$RUNNER_TEMP/shard-cov"
           if ! compgen -G "$data/.coverage.*" > /dev/null; then
             echo "::error title=No coverage data::no shard uploaded coverage data, so the ${FLOOR}% floor cannot be held. Measure the package in pyproject.toml ([tool.pytest.ini_options] addopts = \"--cov=<package>\")."
@@ -768,6 +873,17 @@ jobs:
           coverage report
           coverage json -o "$report"
           jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
+      - name: The shards' failing tests are within the debt baseline
+        timeout-minutes: 5
+        env:
+          RATCHET: ${{ inputs.debt-ratchet }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
+        run: |
+          if [ "$RATCHET" != true ]; then
+            echo "No debt baseline: every shard's tests had to pass in its own job."
+            exit 0
+          fi
+          python3 "$AIRIA_DEBT" tests-shards --coverage "$RUNNER_TEMP/coverage.json" "$SHARDS" "$RUNNER_TEMP/shard-cov"
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
@@ -814,7 +930,7 @@ jobs:
           EXTRA: ${{ inputs.extra-jobs }}
           CODE: ${{ needs.changes.outputs.code }}
           SCOPE: ${{ needs.changes.outputs.scope }}
-          SHARDS: ${{ inputs.shards }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
         run: |
           if ! jq -e 'type == "object"' <<< "$EXTRA" > /dev/null 2>&1; then
             echo "::error title=extra-jobs::extra-jobs must be toJSON(needs) of the call job, a JSON object; got: $EXTRA"
