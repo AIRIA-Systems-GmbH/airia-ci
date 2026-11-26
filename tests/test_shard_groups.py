@@ -351,23 +351,32 @@ class RatchetAcrossShards(unittest.TestCase):
 
 
 class CombineStepWithTheRatchet(unittest.TestCase):
-    STEP = "The shards' failing tests are within the debt baseline"
+    STEP = "The combined coverage holds the floor"
 
-    def run_step(self, ratchet: str, results: dict[int, list[str]]):
+    def run_step(self, ratchet: str, results: dict[int, list[str]], percent: int = 96):
         r = Runner(self)
+        r.tool("coverage", f'#!/bin/sh\n[ "$1" = json ] && echo \'{{"totals": {{"percent_covered": {percent}}}}}\' > "$3"\nexit 0\n')
         (r.tmp / ".airia").mkdir()
         today = {"set": "2000-01-01", "expires": "2000-03-01"}
         (r.tmp / ".airia/debt-baseline.json").write_text(json.dumps({**BASELINE, **today}))
         (r.tmp / "shard-cov").mkdir()
+        (r.tmp / "shard-cov" / ".coverage.1").write_text("x")
         for n, failing in results.items():
             (r.tmp / "shard-cov" / f"debt-shard.{n}.json").write_text(
                 json.dumps({"status": int(bool(failing)), "failing": failing}))
-        return r.run(WORKFLOW, self.STEP, RATCHET=ratchet, SHARDS="2", AIRIA_DEBT=str(TOOLCHAIN / "debt.py"))
+        return r.run(WORKFLOW, self.STEP, FLOOR="95", RATCHET=ratchet, SHARDS="2",
+                     AIRIA_DEBT=str(TOOLCHAIN / "debt.py"))
 
-    def test_without_the_ratchet_the_step_says_so_and_reads_nothing(self):
+    def test_without_the_ratchet_no_shard_result_is_expected(self):
         p = self.run_step("false", {})
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("No debt baseline", p.stdout)
+        self.assertNotIn("shard result", p.stdout)
+
+    def test_the_floor_still_holds_and_a_new_failure_is_named_when_both_fail(self):
+        self.assertNotEqual(self.run_step("true", {1: [], 2: []}, percent=94).returncode, 0)
+        p = self.run_step("true", {1: ["a.py::known"], 2: []}, percent=94)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn("a.py::known fails", p.stdout)
 
     def test_with_the_ratchet_it_judges_every_expected_shard(self):
         # The file's dates are long past, so the standard applies: any failing id is red, none is green.

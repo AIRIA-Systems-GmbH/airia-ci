@@ -857,6 +857,8 @@ jobs:
         timeout-minutes: 10
         env:
           FLOOR: ${{ steps.toolchain.outputs.coverage-floor || inputs.coverage-floor }}
+          RATCHET: ${{ inputs.debt-ratchet }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
         run: |
           # The slices' data files were written by `pytest --cov` in the shards; the data lists absolute paths, so a caller on
           # runners with different workspaces maps them onto this checkout with `[tool.coverage.paths]` (this runs at its
@@ -872,18 +874,12 @@ jobs:
           report="$RUNNER_TEMP/coverage.json"
           coverage report
           coverage json -o "$report"
-          jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
-      - name: The shards' failing tests are within the debt baseline
-        timeout-minutes: 5
-        env:
-          RATCHET: ${{ inputs.debt-ratchet }}
-          SHARDS: ${{ needs.changes.outputs.shards }}
-        run: |
-          if [ "$RATCHET" != true ]; then
-            echo "No debt baseline: every shard's tests had to pass in its own job."
-            exit 0
+          # Debt ratchet: the shards judged nothing, so every shard's failing ids are held to the baseline here, once,
+          # before the floor, so a new failure is named even when the figure is short too.
+          if [ "$RATCHET" = true ]; then
+            python3 "$AIRIA_DEBT" tests-shards --coverage "$report" "$SHARDS" "$data"
           fi
-          python3 "$AIRIA_DEBT" tests-shards --coverage "$RUNNER_TEMP/coverage.json" "$SHARDS" "$RUNNER_TEMP/shard-cov"
+          jq -e --argjson floor "$FLOOR" '.totals.percent_covered >= $floor' "$report" > /dev/null
 
   security:
     runs-on: ${{ fromJSON(inputs.runner) }}
