@@ -640,8 +640,10 @@ class RuffFloor(unittest.TestCase):
 
     def test_the_baseline_is_never_docs_so_a_pr_that_raises_it_runs_lint(self):
         gate = (ROOT / ".github/workflows/reusable-python-gate.yml").read_text()
-        always_code = re.search(r"always_code=\((.*?)\)", gate, re.S).group(1).split()
-        self.assertIn(tc.BASELINE.split("/")[0], always_code)
+        # `.airia/` as a whole is never docs unless a records-paths names part of it (airia-ci#175); the baselines never lift.
+        never = re.search(r"airia_never=\((.*?)\)", gate, re.S).group(1).split()
+        self.assertIn(tc.BASELINE, never)
+        self.assertIn(".airia/debt-baseline.json", never)
 
     def test_a_project_on_the_template_passes(self):
         # init.py writes the template's [tool.ruff] where a project has none, so no select means this.
